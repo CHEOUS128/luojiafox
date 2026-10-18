@@ -1,6 +1,8 @@
 # 下位机代码（lower-machine）
 
 > **26 赛季全向轮步兵**的主控固件（STM32）。
+>
+> **版本：10.14 版本规则发布前（2026-10-14）** —— 这是与 `autoaim/my_lf_INF_20261013` **通信协议匹配的最新版本**。
 
 ---
 
@@ -20,35 +22,66 @@ lower-machine/
 | `chassis_project` | 底盘运动控制、功率管理、超级电容、底盘状态上报 |
 | `gimbal_project` | 云台控制、发射机构、视觉通信、IMU 解算 |
 
-两个工程分别烧录到独立主控（或同一主控的不同任务）。
-
 ---
 
 ## 平台
 
 | 项目 | 配置 |
 |---|---|
-| 主控 | STM32（RoboMaster 开发板） |
+| 主控 | STM32F407（RoboMaster 开发板 C 型） |
 | 开发环境 | Keil MDK-ARM |
 | 底盘类型 | **全向轮** |
 | 赛季 | 26 赛季 |
-| 代码版本 | 10.14 版本规则发布前 |
+| 代码版本 | **10.14 版本规则发布前** |
 
 ---
 
-## 与自瞄的接口
+## 与自瞄的接口（重要）
 
-自瞄（`autoaim/`）通过串口与云台主控通信，协议为**自定义 16 字节帧**：
+### 三阶指令协议（32 字节帧）
 
+本版本实现了「三阶指令」协议升级，是自瞄 `my_lf_INF_20261013` 所等待的配套版本。
+
+**定义文件**：`gimbal_project/application/Self_aim.h`
+
+```c
+typedef struct {
+    uint8_t fire_advicec;   // 0:不发 1:发(视觉决策)
+    float   yaw;            // 云台 yaw 目标角 (度)
+    float   yaw_vel;        // yaw 角速度 (度/秒)
+    float   yaw_acc;        // yaw 角加速度 (度/秒²)
+    float   pitch;          // pitch 目标角 (度)
+    float   pitch_vel;      // pitch 角速度 (度/秒)
+    float   pitch_acc;      // pitch 角加速度 (度/秒²)
+    float   distance;       // 目标距离 (米)
+} __attribute__((packed)) InputData;
+
+#define RECEIVE_DATA_SIZE 32   // ← 旧版为 12
+#define SEND_DATA_SIZE    19
+#define FRAME_HEADER_FF  0xFF
+#define FRAME_TAIL        0x0D
 ```
-帧头 0xFF ... 帧尾 0x0D
-角度单位为「度」（不是弧度）
+
+### 版本差异对照
+
+| 项目 | 旧版（已废弃） | **本版本（正确）** |
+|---|---|---|
+| 接收帧长 | 12 字节 | **32 字节** |
+| 字段 | fire / pitch / yaw / distance | **fire / yaw / yaw_vel / yaw_acc / pitch / pitch_vel / pitch_acc / distance** |
+| `Self_aim.h` 大小 | 1579 字节（2026-03-10） | **2093 字节（2026-10-14）** |
+| `CAN_receive.c` 大小 | 18534 字节（2026-02-27） | **19499 字节（2026-10-14）** |
+
+> ⚠️ **必须使用本版本**。旧版 12 字节协议常量与 `autoaim/my_lf_INF_20261013` 的三阶指令管道**不兼容**。
+
+### 自瞄侧对应配置
+
+`autoaim/my_lf_INF_20261013/configs/` 中：
+
+```yaml
+three_order_enable: true    # 电控协议已就绪，可开启
 ```
 
-具体字段定义见 `gimbal_project` 中的串口解析代码。
-
-> 注：`autoaim/my_lf_INF_20261013` 正在等待「三阶指令协议」（角度+角速度+角加速度，32 字节帧）
-> 在电控侧落地后启用。
+开启后自瞄将发送 32 字节三阶帧，下位机 `Self_aim.c` 解析后用于前馈控制。
 
 ---
 
@@ -57,17 +90,18 @@ lower-machine/
 ### 环境要求
 
 - Keil MDK-ARM（建议 5.x）
-- STM32 对应芯片支持包
-- 工程文件 `.uvprojx` 在 `MDK-ARM/` 目录
+- STM32F4xx 器件支持包
 
 ### 步骤
 
-1. 打开 `MDK-ARM/chassis_task.uvprojx`（底盘）或 `MDK-ARM/gimbal_task.uvprojx`（云台）
+1. 打开：
+   - 底盘：`chassis_project/MDK-ARM/chassis_task.uvprojx`
+   - 云台：`gimbal_project/MDK-ARM/standard_robot.uvprojx`
 2. 编译（F7）
 3. 烧录（F8）
 
-> **本仓库未包含 `MDK-ARM/` 编译产物目录**（`.o` / `.axf` / `Objects` / `Listings` 等，
-> 原目录约 350MB）。请自行用 Keil 重新编译生成。
+> **本仓库未包含编译中间产物**（`.o` / `.crf` / `.d` / `.axf` / `Objects` / `Listings` 等，
+> 原目录约 350MB）。首次编译会全量重建，耗时较长属正常。
 
 ---
 
@@ -75,13 +109,11 @@ lower-machine/
 
 ### 底盘（全向轮）
 
-全向轮（麦克纳姆轮 / 全向轮）运动学与普通舵轮不同，
-`chassis_project/application` 中的运动学解算需与实车轮胎布局一致。
+全向轮运动学与普通舵轮不同，`chassis_project/application` 中的解算需与实车轮胎布局一致。
 
 ### 云台
 
-云台使用 C 板内置 IMU（BMI088）做姿态解算，
-电机控制环路参数在 `gimbal_project/application` 中。
+使用 C 板内置 IMU（BMI088）做姿态解算，电机控制环路参数在 `gimbal_project/application`。
 
 ---
 

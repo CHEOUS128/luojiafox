@@ -63,10 +63,16 @@ autoaim/
 
 新增 `[DualModel]` 日志，输出 `armor_vy / vehicle_vy / w / r`，便于上车对比两套速度估计。
 
-### 4. 三阶指令管道（备用）
+### 4. 三阶指令管道（协议已就绪，可开启）
 
 `gimbal.cpp` 已具备发送「角度 + 角速度 + 角加速度」（32 字节帧）的能力，
-受 `three_order_enable` 开关控制，**默认关闭**，待电控协议就绪后开启。
+受 `three_order_enable` 开关控制。
+
+**下位机侧协议已就绪**：`lower-machine/26赛季全向轮步兵` 的 10.14 版本
+（`Self_aim.h` 中 `RECEIVE_DATA_SIZE = 32`）已支持三阶帧解析。
+
+开启方式：`configs/*.yaml` 中把 `three_order_enable` 改为 `true`。
+开启后需注意 W3 缺陷（vel/acc 未过滤波限速），见下文。
 
 ---
 

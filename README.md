@@ -64,9 +64,12 @@ luojiafox/
 | `chassis_project` | 底盘运动控制、功率管理 |
 | `gimbal_project` | 云台控制、发射机构、视觉通信 |
 
-**开发环境**：Keil MDK-ARM，STM32
+**版本**：10.14 版本规则发布前（2026-10-14）—— 与 `autoaim/my_lf_INF_20261013` 协议匹配
 
-**与自瞄接口**：串口 16 字节自定义帧（帧头 `0xFF`，帧尾 `0x0D`，角度单位为度）
+**开发环境**：Keil MDK-ARM，STM32F407
+
+**与自瞄接口**：**三阶指令协议，32 字节帧**（帧头 `0xFF`，帧尾 `0x0D`，角度单位为度）
+字段：`fire_advicec`(u8) + `yaw/yaw_vel/yaw_acc` + `pitch/pitch_vel/pitch_acc` + `distance`（7×float）
 
 详见 [`lower-machine/README.md`](lower-machine/README.md)。
 
@@ -101,7 +104,7 @@ luojiafox/
 |---|---|---|
 | luojiamaster | v1.0 | 2026-10-17 |
 | autoaim | my_lf_INF_20261013 | 2026-10-13 |
-| lower-machine | 10.14 版本规则发布前 | 2025-10-14 |
+| lower-machine | 10.14 版本规则发布前（协议匹配） | 2026-10-14 |
 
 ---
 
