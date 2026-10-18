@@ -1,6 +1,6 @@
 # luojiafox
 
-同济大学 SuperPower（罗家班）RoboMaster RM26 赛季软件集合。
+**珞珈狐战队** RoboMaster RM26 赛季软件集合。
 
 ## 目录结构
 
@@ -40,7 +40,10 @@ luojiafox/
 
 > **当前版本针对 26 赛季全向轮步兵调校。**
 
-基于 [同济大学 SuperPower 25 赛季自瞄](https://github.com/TongjiSuperPower) 二次开发。
+**代码来源**：基于 [同济大学 SuperPower 战队 25 赛季自瞄](https://github.com/TongjiSuperPower) 开源方案二次开发。
+本仓库中的版本由**珞珈狐战队**维护与改造（双模型跟踪、协议修复、三阶指令管道）。
+
+> 上游开源代码的署名与协议保持原样，不做改动。
 
 **核心特性**：
 - 双模型跟踪（装甲板 KF + 整车 EKF 并行）
