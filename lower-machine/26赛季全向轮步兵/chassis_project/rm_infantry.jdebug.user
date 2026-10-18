@@ -1,0 +1,24 @@
+
+GraphedExpression="(shoot_control).speed_set", DisplayFormat=DISPLAY_FORMAT_DEC, Color=#a00909
+GraphedExpression="((shoot_control).trigger_motor_speed_pid).Pout", Color=#00ffff
+GraphedExpression="((shoot_control).trigger_motor_speed_pid).Iout", Color=#09a087
+GraphedExpression="((shoot_control).trigger_motor_speed_pid).Dout", Color=#0984a0
+GraphedExpression="((shoot_control).shoot_motor_measure)->speed_rpm", DisplayFormat=DISPLAY_FORMAT_DEC, Color=#0964a0
+OpenDocument="main.c", FilePath="E:/02GC/01RM_infantry_git/WHU_chassis_task/Src/main.c", Line=0
+OpenToolbar="Debug", Floating=0, x=0, y=0
+OpenWindow="Source Files", DockArea=LEFT, x=0, y=0, w=842, h=583, FilterBarShown=0, TotalValueBarShown=0, ToolBarShown=0
+OpenWindow="Memory 1", DockArea=BOTTOM, x=2, y=0, w=1059, h=292, FilterBarShown=0, TotalValueBarShown=0, ToolBarShown=0, EditorAddress=0x2D0
+OpenWindow="Watched Data 1", DockArea=LEFT, x=0, y=1, w=842, h=545, FilterBarShown=0, TotalValueBarShown=0, ToolBarShown=0
+OpenWindow="Terminal", DockArea=BOTTOM, x=1, y=0, w=364, h=292, FilterBarShown=0, TotalValueBarShown=0, ToolBarShown=0
+OpenWindow="Data Sampling", DockArea=RIGHT, x=0, y=1, w=1532, h=259, FilterBarShown=0, TotalValueBarShown=0, ToolBarShown=0, VisibleTab=0, UniformSampleSpacing=0
+OpenWindow="Timeline", DockArea=RIGHT, x=0, y=0, w=1532, h=869, FilterBarShown=0, TotalValueBarShown=0, ToolBarShown=1, DataPaneShown=1, PowerPaneShown=0, CodePaneShown=0, PinCursor="Cursor Movable", TimePerDiv="5 s / Div", TimeStampFormat="Time", DataGraphDrawAsPoints=0, DataGraphLegendShown=1, DataGraphUniformSampleSpacing=0, DataGraphLegendPosition="1017;0", PowerGraphDrawAsPoints=0, PowerGraphLegendShown=0, PowerGraphAvgFilterTime=Off, PowerGraphAvgFilterLen=Off, PowerGraphUniformSampleSpacing=0, PowerGraphLegendPosition="1305;-69", CodeGraphLegendShown=0, CodeGraphLegendPosition="1321;0"
+OpenWindow="Console", DockArea=BOTTOM, x=0, y=0, w=1135, h=292, FilterBarShown=0, TotalValueBarShown=0, ToolBarShown=0
+TableHeader="Source Files", SortCol="File", SortOrder="DESCENDING", VisibleCols=["File";"Status";"Size";"#Insts";"Path"], ColWidths=[271;100;100;100;950]
+TableHeader="Data Sampling Table", SortCol="None", SortOrder="ASCENDING", VisibleCols=["Index";"Time";" (shoot_control).speed_set";" ((shoot_control).trigger_motor_speed_pid).Pout";" ((shoot_control).trigger_motor_speed_pid).Iout";" ((shoot_control).trigger_motor_speed_pid).Dout";" ((shoot_control).shoot_motor_measure)->speed_rpm"], ColWidths=[100;100;100;100;100;100;100]
+TableHeader="Data Sampling Setup", SortCol="Expression", SortOrder="DESCENDING", VisibleCols=["Expression";"Type";"Value";"Min";"Max";"Average";"# Changes";"Min. Change";"Max. Change"], ColWidths=[587;100;124;100;100;114;110;126;171]
+TableHeader="Power Sampling", SortCol="Index", SortOrder="ASCENDING", VisibleCols=["Index";"Time";"Ch 0"], ColWidths=[100;100;100]
+TableHeader="Watched Data 1", SortCol="Expression", SortOrder="ASCENDING", VisibleCols=["Expression";"Value";"Location";"Refresh"], ColWidths=[322;100;100;294]
+TableHeader="RegisterSelectionDialog", SortCol="None", SortOrder="ASCENDING", VisibleCols=[], ColWidths=[]
+TableHeader="TargetExceptionDialog", SortCol="Name", SortOrder="ASCENDING", VisibleCols=["Name";"Value";"Address";"Description"], ColWidths=[200;100;100;340]
+WatchedExpression="shoot_control", Window=Watched Data 1
+WatchedExpression=" ", Window=Watched Data 1

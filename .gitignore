@@ -1,6 +1,18 @@
 # ===== 编译产物 =====
 build/
+# Keil 编译产物（保留 .uvprojx 工程文件）
+MDK-ARM/Objects/
+MDK-ARM/Listings/
+MDK-ARM/*.uvguix.*
+MDK-ARM/*.scvd
+MDK-ARM/RTE/
+Objects/
+Listings/
 *.obj
+*.o
+*.d
+*.axf
+*.hex
 *.pdb
 *.ilk
 *.map
@@ -10,14 +22,19 @@ build/
 logs/
 *.log
 
-# ===== 体积过大的依赖包（GitHub 单文件上限 100MB）=====
-# 3rdparty_downloads 中的 boost 压缩包 103.5MB，必须排除
+# ===== 大体积资源（GitHub 单文件上限 100MB）=====
+# 依赖压缩包（boost 103.5MB）
 luojiamaster/源码/3rdparty_downloads/_archives/
+# 自瞄：演示视频与模型文件
+autoaim/**/assets/
+autoaim/**/*.mp4
+autoaim/**/record_*.mp4
 
 # ===== IDE / 系统 =====
 .vs/
 .vscode/
 .idea/
+.marscode/
 Thumbs.db
 desktop.ini
 
@@ -29,3 +46,4 @@ desktop.ini
 # ===== 注意：不要排除 *.lib =====
 # luojiamaster/源码/3rdparty/ffmpeg/lib/windows_x86_64/ 下的
 # avcodec.lib / avutil.lib / swscale.lib 是必需的预编译静态库
+# lower-machine 下的 arm_cortexM4lf_math.lib 也是必需的 CMSIS DSP 库
