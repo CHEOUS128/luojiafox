@@ -1,0 +1,31 @@
+# ===== 编译产物 =====
+build/
+*.obj
+*.pdb
+*.ilk
+*.map
+*.exp
+
+# ===== 运行时产物 =====
+logs/
+*.log
+
+# ===== 体积过大的依赖包（GitHub 单文件上限 100MB）=====
+# 3rdparty_downloads 中的 boost 压缩包 103.5MB，必须排除
+luojiamaster/源码/3rdparty_downloads/_archives/
+
+# ===== IDE / 系统 =====
+.vs/
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini
+
+# ===== 临时文件 =====
+*.tmp
+*.bak
+*~
+
+# ===== 注意：不要排除 *.lib =====
+# luojiamaster/源码/3rdparty/ffmpeg/lib/windows_x86_64/ 下的
+# avcodec.lib / avutil.lib / swscale.lib 是必需的预编译静态库
