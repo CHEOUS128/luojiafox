@@ -1,15 +1,20 @@
 #!/usr/bin/env bash
-# 一键切换：20261025 版本 + 图传开启 + 开机自启
+# 一次性切换：20261025 版本 + 图传开启 + 开机自启
 #
-# 前置条件（缺一不可）：
-#   1. 电控已按《双摄像头-电控改造说明.md》完成：USB 分流 + 转发 VT03
-#   2. 电控侧验证通过：假帧能原样转发到 VT03 串口（309 字节逐字节一致）
+# 执行时间：现在（不是等电控改完之后）
+# 执行效果：以后每次开机都自动运行 20261025 版本 + 图传，
+#           电控把接收侧改好后，上位机这边不需要再做任何操作。
 #
 # 作用：
-#   - 把 configs/standard3.yaml 的 video_send_enable 改为 true
+#   - 把 configs/standard3.yaml 的 video_send_enable 改为 true（永久生效）
 #   - 创建并启用 autoaim-20261025.service（开机自启，跑新版本+图传）
-#   - 停用旧的 autoaim.service（指向 20261013，已备份配置）
+#   - 停用旧的 autoaim.service（指向 20261013）
 #   - 启动后等待 20 秒打印状态，确认在跑
+#
+# ⚠️ 重要：脚本执行后，视频帧就会开始往串口发。
+#    在电控刷入新固件之前，309 字节视频帧会被旧主控当作控制帧解析，
+#    云台控制会受影响。这段时间不要用这辆车做云台相关测试；
+#    如果必须用，先执行 scripts/rollback_to_20261013.sh 回滚。
 #
 # 用法：
 #   sudo bash scripts/enable_video_service.sh
@@ -45,13 +50,16 @@ if ! grep -q "video_send_enable" "$CONFIG"; then
   exit 1
 fi
 
-echo "=== 即将执行 ==="
+echo "=== 即将执行（一次性，之后开机自动生效）==="
 echo "  版本目录 : $ROOT"
 echo "  配置文件 : $CONFIG"
 echo "  服务名   : $SERVICE"
-echo "  图传     : 由 false 改为 true"
+echo "  图传     : 由 false 改为 true（永久）"
 echo ""
-read -p "电控改造与假帧转发验证都已完成？(输入 yes 继续) " ans
+echo "⚠️  电控新固件刷入前，视频帧会影响旧主控的云台控制。"
+echo "    这段时间不要用车做云台测试；需要用车请先跑回滚脚本。"
+echo ""
+read -p "确认现在切换？(输入 yes 继续) " ans
 [[ "$ans" == "yes" ]] || { echo "已取消。"; exit 1; }
 
 # ---------- 1. 备份并打开图传 ----------
@@ -101,4 +109,5 @@ echo "=== 最近日志 ==="
 tail -n 15 "$ROOT/logs/autostart.log" 2>/dev/null || echo "(暂无日志)"
 echo ""
 echo "完成。以后开机自动运行：20261025 版本 + 图传开启。"
+echo "电控改好后，上位机不需要再做任何操作。"
 echo "回滚命令：sudo bash $ROOT/scripts/rollback_to_20261013.sh"
