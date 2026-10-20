@@ -23,7 +23,7 @@ namespace
 // 0x0310 帧的固定字段
 constexpr std::uint8_t kFrameSOF = 0xA5;
 constexpr std::uint16_t kCmdId = 0x0310;
-constexpr std::uint16_t kDataLen = 300;
+constexpr std::size_t kDataLen = 300;   // 用 size_t 避免与 size_t 运算时类型推导失败
 
 void write_u16_le(std::uint8_t * out, std::uint16_t v)
 {
@@ -262,7 +262,7 @@ std::vector<std::uint8_t> VideoSender::make_frame(
 {
   std::vector<std::uint8_t> f(kVideoFrameBytes, 0);
   f[0] = kFrameSOF;
-  write_u16_le(f.data() + 1, kDataLen);
+  write_u16_le(f.data() + 1, static_cast<std::uint16_t>(kDataLen));
   f[3] = impl_->seq++;                     // 包序号自增
   f[4] = tools::get_crc8(f.data(), 4);     // CRC8 覆盖前 4 字节
   write_u16_le(f.data() + 5, kCmdId);      // 0x0310
