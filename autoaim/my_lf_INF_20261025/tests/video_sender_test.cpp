@@ -57,7 +57,8 @@ cv::Mat makeTestFrame(int index, int width, int height)
   return img;
 }
 
-// 从 0x0310 帧里提取 H.264 payload（跳过 7 字节头 + 去掉尾部补 0）
+// 从 0x0310 帧里提取 H.264 payload（只跳过 7 字节头，不裁尾部）
+// 注意：中间包 300 字节全是真实数据，绝不能裁；只有整条流最后的补 0 才需要去掉
 std::vector<uint8_t> extractPayload(const std::vector<uint8_t> & frame)
 {
   constexpr size_t kHeaderBytes = 7;
@@ -65,14 +66,9 @@ std::vector<uint8_t> extractPayload(const std::vector<uint8_t> & frame)
   if (frame.size() != kHeaderBytes + kDataBytes + 2) {
     return {};
   }
-  std::vector<uint8_t> payload(
+  return std::vector<uint8_t>(
     frame.begin() + static_cast<std::ptrdiff_t>(kHeaderBytes),
     frame.begin() + static_cast<std::ptrdiff_t>(kHeaderBytes + kDataBytes));
-  // 去掉尾部补 0（H.264 码流不会以连续 0 结束，起码头后不会）
-  while (!payload.empty() && payload.back() == 0) {
-    payload.pop_back();
-  }
-  return payload;
 }
 
 }  // namespace
@@ -116,6 +112,7 @@ int main(int argc, char ** argv)
   size_t total_bytes = 0;
   size_t total_h264_bytes = 0;
   int frames_with_output = 0;
+  std::vector<uint8_t> h264_stream;   // 先全部攒起来，最后统一裁尾部补 0
 
   std::cout << "生成 " << kTotalFrames << " 帧测试画面（" << src_w << "x" << src_h
             << " → 裁剪 300x300）...\n";
@@ -141,13 +138,9 @@ int main(int argc, char ** argv)
       ++total_packets;
       total_bytes += pkt.size();
 
-      // 写入纯 H.264 码流（用于 ffplay）
+      // 累加纯 H.264 码流（暂不写文件，最后统一裁尾部补 0）
       const auto payload = extractPayload(pkt);
-      if (!payload.empty()) {
-        stream_out.write(reinterpret_cast<const char *>(payload.data()),
-                         static_cast<std::streamsize>(payload.size()));
-        total_h264_bytes += payload.size();
-      }
+      h264_stream.insert(h264_stream.end(), payload.begin(), payload.end());
     }
 
     // 模拟真实帧率（12fps → 83ms 间隔），确保节流逻辑生效
@@ -162,11 +155,17 @@ int main(int argc, char ** argv)
     ++total_packets;
     total_bytes += pkt.size();
     const auto payload = extractPayload(pkt);
-    if (!payload.empty()) {
-      stream_out.write(reinterpret_cast<const char *>(payload.data()),
-                       static_cast<std::streamsize>(payload.size()));
-      total_h264_bytes += payload.size();
-    }
+    h264_stream.insert(h264_stream.end(), payload.begin(), payload.end());
+  }
+
+  // 只有整条流最末尾才是补 0，这里统一裁掉
+  while (!h264_stream.empty() && h264_stream.back() == 0) {
+    h264_stream.pop_back();
+  }
+  total_h264_bytes = h264_stream.size();
+  if (!h264_stream.empty()) {
+    stream_out.write(reinterpret_cast<const char *>(h264_stream.data()),
+                     static_cast<std::streamsize>(h264_stream.size()));
   }
 
   const auto t_end = std::chrono::steady_clock::now();
