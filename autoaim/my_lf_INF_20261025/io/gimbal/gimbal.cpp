@@ -276,12 +276,19 @@ void Gimbal::send(io::VisionToGimbal VisionToGimbal)
 
 void Gimbal::send_raw(const std::uint8_t * data, std::size_t len)
 {
-  if (data == nullptr || len == 0) return;
+  try_send_raw(data, len);
+}
+
+bool Gimbal::try_send_raw(const std::uint8_t * data, std::size_t len)
+{
+  if (data == nullptr || len == 0) return false;
   try {
     std::lock_guard<std::mutex> lock(write_mutex_);
     serial_.write(data, len);
+    return true;
   } catch (const std::exception & e) {
-    // 视频帧发送失败不刷屏，只静默计数（交给上层决定）
+    // 视频帧发送失败不刷屏；返回 false 让上层丢包
+    return false;
   }
 }
 

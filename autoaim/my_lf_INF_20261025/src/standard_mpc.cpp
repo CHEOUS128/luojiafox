@@ -57,9 +57,12 @@ int main(int argc, char * argv[])
             if (cfg_yaml["video_bitrate_kbps"]) vs_cfg.bitrate_kbps = cfg_yaml["video_bitrate_kbps"].as<int>();
             if (cfg_yaml["video_crop_size"])  vs_cfg.crop_size = cfg_yaml["video_crop_size"].as<int>();
             if (cfg_yaml["video_x264_preset"]) vs_cfg.x264_preset = cfg_yaml["video_x264_preset"].as<std::string>();
+            if (cfg_yaml["video_keep_aspect"]) vs_cfg.keep_aspect = cfg_yaml["video_keep_aspect"].as<bool>();
+            if (cfg_yaml["video_sharpen"])     vs_cfg.sharpen = cfg_yaml["video_sharpen"].as<double>();
             video_sender.emplace(vs_cfg);
-            tools::logger()->info("[VideoSender] 已启用（{}x{} @{:.0f}fps）",
-                                  vs_cfg.width, vs_cfg.height, vs_cfg.fps);
+            tools::logger()->info("[VideoSender] 已启用（{}x{} @{:.0f}fps {}kbps preset={} keep_aspect={} sharpen={}）",
+                                  vs_cfg.width, vs_cfg.height, vs_cfg.fps, vs_cfg.bitrate_kbps,
+                                  vs_cfg.x264_preset, vs_cfg.keep_aspect, vs_cfg.sharpen);
         } else {
             tools::logger()->info("[VideoSender] 未启用（配置 video_send_enable: false）");
         }
@@ -70,6 +73,7 @@ int main(int argc, char * argv[])
     auto last_frame_time = std::chrono::steady_clock::now();
     int frame_count = 0;
     constexpr double fps_update_interval = 1.0;
+    constexpr int kVideoPacketsPerCycle = 16;  // 每主循环最多发的视频包数（兜底）
 
     // -------------------- 主循环 --------------------
     while (!exiter.exit()) {
@@ -107,11 +111,22 @@ int main(int argc, char * argv[])
             plan.pitch_acc);
 
         // ---- 视频帧：工业相机画面 → 0x0310 → 同一条串口 ----
+        // 发送节奏：VideoSender 内部按 40Hz 节拍出包（平均每轮主循环约 0.5 个包）。
+        //   每轮最多发 kVideoPacketsPerCycle 个包作为兜底，串口写失败就丢弃剩余包，
+        //   保证自瞄主循环（云台控制）永远不被图传拖慢。
         if (video_sender.has_value()) {
             const auto ts_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
               frame_start.time_since_epoch()).count();
-            for (const auto & frame : video_sender->feed(img, ts_ns)) {
-                gimbal.send_raw(frame.data(), frame.size());
+            int budget = kVideoPacketsPerCycle;
+            for (auto & frame : video_sender->feed(img, ts_ns)) {
+                if (budget-- <= 0) {
+                    tools::logger()->warn("[VideoSender] 单周期包数超预算，丢弃剩余视频包");
+                    break;
+                }
+                if (!gimbal.try_send_raw(frame.data(), frame.size())) {
+                    tools::logger()->warn("[VideoSender] 串口写失败，丢弃剩余视频包");
+                    break;
+                }
             }
         }
 

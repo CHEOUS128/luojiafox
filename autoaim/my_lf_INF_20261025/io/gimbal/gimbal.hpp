@@ -95,6 +95,10 @@ public:
   // 线程安全：内部加锁，与 send() 互斥
   void send_raw(const std::uint8_t * data, std::size_t len);
 
+  // try_send_raw 同 send_raw，但串口写失败/阻塞抛异常时返回 false（不静默吞掉），
+  // 方便上层在主循环里做视频包丢弃预算，保证自瞄控制不被图传拖慢。
+  bool try_send_raw(const std::uint8_t * data, std::size_t len);
+
 private:
   serial::Serial serial_;
   std::mutex write_mutex_;   // 保护 serial_.write（控制帧与视频帧共用同一串口）

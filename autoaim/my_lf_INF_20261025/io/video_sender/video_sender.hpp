@@ -1,7 +1,7 @@
 // video_sender.hpp —— 自瞄工业相机画面 → 0x0310 视频帧
 //
-// 作用：把自瞄主循环读到的 BGR 图像，裁成 300×300、H.264 编码、
-//       切成 300 字节定长包，再包成官方 0x0310 图传帧（309 字节），
+// 作用：把自瞄主循环读到的 BGR 图像，缩放到 300×300（默认保比例、全视野）、
+//       H.264 编码、切成 300 字节定长包，再包成官方 0x0310 图传帧（309 字节），
 //       通过 USB CDC 串口发给下位机。
 //
 // 协议依据：《RoboMaster 2026 高校系列赛通信协议 V2.0.0》表 1-41
@@ -30,16 +30,20 @@
 namespace io
 {
 
-// 视频编码参数（默认值即 ACE 实战验证过的配置）
+// 视频编码参数
 struct VideoSenderConfig
 {
   int width = 300;              // 输出宽（协议带宽限制）
-  int height = 300;             // 输出高
-  double fps = 12.0;            // 帧率
-  int bitrate_kbps = 80;        // 码率
-  int keyframe_interval = 24;   // 关键帧间隔（帧）
-  std::string x264_preset = "veryfast";  // Jetson 上用 veryfast 省 CPU
-  int crop_size = 300;          // 从原图中心裁多少（原图 1280×1024 时裁 300×300）
+  int height = 240;             // 输出高：300×240 = 5:4，与相机 1280×1024 完全一致，
+                                // 全视野缩放时不留黑边（设 300×300 的话上下黑边会白占 20% 码率）
+  bool keep_aspect = true;      // true：整幅画面缩放到 width×height（保比例，不留黑边即全视野）
+                                // false：从原图中心裁 crop_size×crop_size 再缩放
+  double fps = 10.0;            // 帧率（12→10，同带宽下每帧比特数 +20%）
+  int bitrate_kbps = 90;        // 码率（通道上限 40Hz×296B≈94.7kbps，留一点余量防丢包）
+  int keyframe_interval = 20;   // 关键帧间隔（帧）
+  std::string x264_preset = "slow";  // Jetson 8 核，slow 每帧约 3-5ms，扛得住（veryfast 画质明显差）
+  int crop_size = 300;          // keep_aspect=false 时从原图中心裁多少像素
+  double sharpen = 0.6;         // USM 锐化强度（0=关闭；提升主观清晰度，几乎不加码率）
 };
 
 // 0x0310 帧常量
@@ -58,9 +62,9 @@ public:
   VideoSender(const VideoSender &) = delete;
   VideoSender & operator=(const VideoSender &) = delete;
 
-  // 输入 BGR 图像（原图任意尺寸，内部会中心裁剪到 crop_size 再缩放到 width×height）
-  // 返回该帧生成的所有 0x0310 帧（每帧最多 300 字节负载，可能需要多包）
-  // 若本帧不满足发送节流（未到 fps 间隔），返回空 vector
+  // 输入 BGR 图像（原图任意尺寸；keep_aspect=true 时整幅缩放，否则中心裁剪后缩放）
+  // 返回本轮「到点」的 0x0310 帧：封好的包按 40Hz 节拍均匀放出，
+  // 所以每次调用不一定是"一帧的包"，也可能为空。定时器（flush）会忽略节拍全部放出。
   std::vector<std::vector<uint8_t>> feed(
     const cv::Mat & bgr_frame,
     std::int64_t timestamp_ns);
@@ -75,9 +79,15 @@ private:
   std::unique_ptr<Impl> impl_;
   VideoSenderConfig config_;
 
-  // make_frame 把 300 字节负载包成 309 字节的 0x0310 帧
-  std::vector<std::uint8_t> make_frame(
+  // make_transport_packet 把一段 H.264 数据封成 300 字节 transport packet，
+  // 再包进 309 字节的 0x0310 帧。
+  // 内层结构：[2B 长度 BE][2B 序号 BE][H.264 数据]，剩余补 0
+  std::vector<std::uint8_t> make_transport_packet(
     const std::uint8_t * payload, std::size_t payload_size);
+
+  // drain_due 按 40Hz 节拍（与 ACE 编码端一致）把排队中的包放出来。
+  // force=true 时（flush）忽略节拍全部放出。
+  void drain_due(std::vector<std::vector<std::uint8_t>> & out, bool force);
 };
 
 }  // namespace io

@@ -6,7 +6,9 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <cmath>
 #include <cstring>
+#include <deque>
 #include <stdexcept>
 
 extern "C" {
@@ -20,15 +22,36 @@ extern "C" {
 namespace
 {
 
-// 0x0310 帧的固定字段
+// ---- 0x0310 帧固定字段 ----
 constexpr std::uint8_t kFrameSOF = 0xA5;
 constexpr std::uint16_t kCmdId = 0x0310;
-constexpr std::size_t kDataLen = 300;   // 用 size_t 避免与 size_t 运算时类型推导失败
+
+// ---- 内层协议（与客户端 CustomByteBlockVideoDecoder 严格一致）----
+// 0x0310 的 300 字节 data 字段内容：
+//   [2B 内层长度 BE][内层包] ...（剩余字节补 0）
+// 内层包：
+//   [2B 序号 BE][H.264 数据]
+constexpr std::size_t kTransportPacketBytes = 300;
+constexpr std::size_t kTransportLengthPrefix = 2;
+constexpr std::size_t kInnerSeqBytes = 2;
+constexpr std::size_t kMaxInnerBytes = kTransportPacketBytes - kTransportLengthPrefix;  // 298
+constexpr std::size_t kMaxPayloadBytes = kMaxInnerBytes - kInnerSeqBytes;               // 296
+
+// 发送节拍：与 ACE 编码端 center_crop_packet_send_rate_hz=40 一致。
+// 40Hz × 296B ≈ 94.7kbps 是这条通道的实际上限；按节拍发可以避免
+// 一帧内猛发把下位机/VT03 的接收缓冲打爆。
+constexpr double kSendRateHz = 40.0;
 
 void write_u16_le(std::uint8_t * out, std::uint16_t v)
 {
   out[0] = static_cast<std::uint8_t>(v & 0xFF);
   out[1] = static_cast<std::uint8_t>((v >> 8) & 0xFF);
+}
+
+void write_u16_be(std::uint8_t * out, std::uint16_t v)
+{
+  out[0] = static_cast<std::uint8_t>((v >> 8) & 0xFF);
+  out[1] = static_cast<std::uint8_t>(v & 0xFF);
 }
 
 std::string ffmpeg_err(int errnum)
@@ -50,10 +73,16 @@ struct VideoSender::Impl
   AVPacket * packet = nullptr;
   SwsContext * sws_ctx = nullptr;
 
-  std::vector<std::uint8_t> stream_buf;   // 编码输出的累积字节
-  std::size_t stream_offset = 0;          // 已切包消费到的位置
-  std::uint8_t seq = 0;                   // 0x0310 包序号
+  std::vector<std::uint8_t> stream_buf;   // 编码输出、尚未打包的字节
+  std::size_t stream_offset = 0;          // 已消费到的位置
+  std::deque<std::vector<std::uint8_t>> pending;  // 已封好、等待 40Hz 节拍放出的 0x0310 帧
+  std::uint16_t inner_seq = 0;            // 内层包序号（跨帧递增）
+  std::uint8_t outer_seq = 0;             // 0x0310 帧序号
   std::int64_t next_pts = 0;
+
+  std::chrono::steady_clock::time_point next_send_tick{};
+  bool has_next_send_tick = false;
+  std::chrono::steady_clock::time_point last_drop_log{};
 
   std::chrono::steady_clock::time_point last_send{};
   bool has_last_send = false;
@@ -80,7 +109,6 @@ VideoSender::VideoSender(const VideoSenderConfig & config)
     throw std::invalid_argument("VideoSender: crop_size must be positive");
   }
 
-  // ---- 查找 H.264 编码器 ----
   const AVCodec * codec = avcodec_find_encoder_by_name("libx264");
   if (codec == nullptr) {
     codec = avcodec_find_encoder(AV_CODEC_ID_H264);
@@ -106,16 +134,20 @@ VideoSender::VideoSender(const VideoSenderConfig & config)
   ctx->bit_rate = static_cast<std::int64_t>(config_.bitrate_kbps) * 1000LL;
   ctx->rc_min_rate = ctx->bit_rate;
   ctx->rc_max_rate = ctx->bit_rate;
-  ctx->rc_buffer_size = static_cast<std::int64_t>(config_.bitrate_kbps) * 300;  // 0.3s
+  ctx->rc_buffer_size = static_cast<std::int64_t>(config_.bitrate_kbps) * 500;  // 0.5s
   ctx->gop_size = std::max(1, config_.keyframe_interval);
-  ctx->max_b_frames = 0;      // zerolatency 必须无 B 帧
+  ctx->max_b_frames = 0;
   ctx->thread_count = 0;
   ctx->keyint_min = 1;
 
   av_opt_set(ctx->priv_data, "preset", config_.x264_preset.c_str(), 0);
   av_opt_set(ctx->priv_data, "tune", "zerolatency", 0);
   av_opt_set(ctx->priv_data, "profile", "baseline", 0);
-  av_opt_set(ctx->priv_data, "x264-params", "bframes=0:scenecut=0", 0);
+  // repeat-headers=1 + annexb=1：每个关键帧前重复 SPS/PPS，客户端中途加入也能解；
+  // aq-mode=1：按宏块复杂度分配码率，纹理区给更多比特（提升主观清晰度）
+  av_opt_set(ctx->priv_data, "x264-params",
+             "repeat-headers=1:annexb=1:bframes=0:scenecut=0:force-cfr=1:"
+             "aq-mode=1:aq-strength=1.2", 0);
 
   const int ret = avcodec_open2(ctx, codec, nullptr);
   if (ret < 0) {
@@ -135,16 +167,17 @@ VideoSender::VideoSender(const VideoSenderConfig & config)
   }
 
   impl_->sws_ctx = sws_getContext(
-    config_.crop_size, config_.crop_size, AV_PIX_FMT_BGR24,
+    config_.width, config_.height, AV_PIX_FMT_BGR24,
     config_.width, config_.height, AV_PIX_FMT_YUV420P,
-    SWS_FAST_BILINEAR, nullptr, nullptr, nullptr);
+    SWS_BILINEAR, nullptr, nullptr, nullptr);
   if (impl_->sws_ctx == nullptr) {
     throw std::runtime_error("VideoSender: sws_getContext failed");
   }
 
   tools::logger()->info(
-    "[VideoSender] 初始化完成 {}x{} @{:.0f}fps {}kbps preset={}",
-    config_.width, config_.height, config_.fps, config_.bitrate_kbps, config_.x264_preset);
+    "[VideoSender] 初始化完成 {}x{} @{:.0f}fps {}kbps preset={} sharpen={}",
+    config_.width, config_.height, config_.fps, config_.bitrate_kbps,
+    config_.x264_preset, config_.sharpen);
 }
 
 VideoSender::~VideoSender() = default;
@@ -155,9 +188,16 @@ std::vector<std::vector<std::uint8_t>> VideoSender::feed(
 {
   (void)timestamp_ns;
   std::vector<std::vector<std::uint8_t>> out;
+
+  // ---- 先把已封好、到点的包放出来 ----
+  // 节拍：每 1/40 秒放 1 个包（与 ACE 编码端一致）。
+  // 任意两帧之间都能按 40Hz 出包；如果中途一帧没来（相机掉帧），
+  // 下一帧会把欠下的节拍补发（最多 8 个，防止积压）。
+  drain_due(out, false);
+
   if (bgr_frame.empty()) return out;
 
-  // ---- 节流：按 fps 限制 ----
+  // ---- 节流 ----
   const auto now = std::chrono::steady_clock::now();
   const auto interval = std::chrono::duration_cast<std::chrono::steady_clock::duration>(
     std::chrono::duration<double>(1.0 / config_.fps));
@@ -167,25 +207,46 @@ std::vector<std::vector<std::uint8_t>> VideoSender::feed(
   impl_->last_send = now;
   impl_->has_last_send = true;
 
-  // ---- 中心裁剪到 crop_size × crop_size ----
-  cv::Mat cropped;
-  const int cs = config_.crop_size;
-  if (bgr_frame.cols < cs || bgr_frame.rows < cs) {
-    // 原图比裁剪尺寸小，直接缩放（异常情况）
-    cv::resize(bgr_frame, cropped, cv::Size(cs, cs));
+  // ---- 取景：默认整幅缩放（全视野），可选中心裁剪 ----
+  cv::Mat view;
+  if (config_.keep_aspect) {
+    // 等比缩放到 width×height 内，左右或上下用黑边补齐（letterbox）
+    view = cv::Mat(config_.height, config_.width, CV_8UC3, cv::Scalar(0, 0, 0));
+    const double scale = std::min(
+      static_cast<double>(config_.width) / bgr_frame.cols,
+      static_cast<double>(config_.height) / bgr_frame.rows);
+    const int nw = std::max(1, static_cast<int>(std::lround(bgr_frame.cols * scale)));
+    const int nh = std::max(1, static_cast<int>(std::lround(bgr_frame.rows * scale)));
+    cv::Mat resized;
+    cv::resize(bgr_frame, resized, cv::Size(nw, nh), 0, 0, cv::INTER_AREA);
+    resized.copyTo(view(cv::Rect((config_.width - nw) / 2, (config_.height - nh) / 2, nw, nh)));
   } else {
-    const int x = (bgr_frame.cols - cs) / 2;
-    const int y = (bgr_frame.rows - cs) / 2;
-    cropped = bgr_frame(cv::Rect(x, y, cs, cs));
+    const int cs = config_.crop_size;
+    cv::Mat cropped;
+    if (bgr_frame.cols < cs || bgr_frame.rows < cs) {
+      cv::resize(bgr_frame, cropped, cv::Size(cs, cs));
+    } else {
+      cropped = bgr_frame(cv::Rect((bgr_frame.cols - cs) / 2, (bgr_frame.rows - cs) / 2, cs, cs));
+    }
+    if (cropped.cols != config_.width || cropped.rows != config_.height) {
+      cv::resize(cropped, view, cv::Size(config_.width, config_.height), 0, 0, cv::INTER_AREA);
+    } else {
+      view = cropped.clone();
+    }
+  }
+
+  // ---- 锐化（USM）：提升主观清晰度，几乎不增加码率 ----
+  if (config_.sharpen > 0.0) {
+    cv::Mat blurred;
+    cv::GaussianBlur(view, blurred, cv::Size(0, 0), 1.2);
+    cv::addWeighted(view, 1.0 + config_.sharpen, blurred, -config_.sharpen, 0, view);
   }
 
   // ---- 转 YUV420P ----
-  if (av_frame_make_writable(impl_->frame) < 0) {
-    return out;
-  }
-  const uint8_t * src_data[1] = {cropped.data};
-  const int src_linesize[1] = {static_cast<int>(cropped.step)};
-  sws_scale(impl_->sws_ctx, src_data, src_linesize, 0, cs,
+  if (av_frame_make_writable(impl_->frame) < 0) return out;
+  const uint8_t * src_data[1] = {view.data};
+  const int src_linesize[1] = {static_cast<int>(view.step)};
+  sws_scale(impl_->sws_ctx, src_data, src_linesize, 0, config_.height,
             impl_->frame->data, impl_->frame->linesize);
   impl_->frame->pts = impl_->next_pts++;
 
@@ -202,27 +263,72 @@ std::vector<std::vector<std::uint8_t>> VideoSender::feed(
       tools::logger()->warn("[VideoSender] receive_packet failed: {}", ffmpeg_err(ret));
       break;
     }
-    impl_->stream_buf.insert(
-      impl_->stream_buf.end(),
-      impl_->packet->data,
-      impl_->packet->data + impl_->packet->size);
+    impl_->stream_buf.insert(impl_->stream_buf.end(),
+                             impl_->packet->data,
+                             impl_->packet->data + impl_->packet->size);
     av_packet_unref(impl_->packet);
   }
 
-  // ---- 切包：每包 300 字节 ----
-  while (impl_->stream_buf.size() - impl_->stream_offset >= kDataLen) {
-    out.push_back(make_frame(
-      impl_->stream_buf.data() + impl_->stream_offset, kDataLen));
-    impl_->stream_offset += kDataLen;
+  // ---- 打包：每 296 字节一个内层包 → 一个 300 字节 transport packet ----
+  // 注意：剩余不足 296 字节的尾巴必须在本帧立即封包（补 0 到 300），
+  //     不能跨帧拼接：客户端每个 0x0310 包独立解析，内层 length 为 0 即视为
+  //     填充截止；如果下帧数据接到本包填充后面，会永久丢失。
+  while (impl_->stream_offset < impl_->stream_buf.size()) {
+    const std::size_t remain = impl_->stream_buf.size() - impl_->stream_offset;
+    const std::size_t n = std::min(remain, kMaxPayloadBytes);
+    impl_->pending.push_back(
+      make_transport_packet(impl_->stream_buf.data() + impl_->stream_offset, n));
+    impl_->stream_offset += n;
   }
-  // 压缩剩余字节
-  if (impl_->stream_offset > 0) {
-    impl_->stream_buf.erase(
-      impl_->stream_buf.begin(),
-      impl_->stream_buf.begin() + static_cast<std::ptrdiff_t>(impl_->stream_offset));
-    impl_->stream_offset = 0;
-  }
+  impl_->stream_buf.clear();
+  impl_->stream_offset = 0;
+
+  // 封好的包按 40Hz 节拍放出（本帧刚封的包从下一个节拍开始发）
+  drain_due(out, false);
   return out;
+}
+
+void VideoSender::drain_due(std::vector<std::vector<std::uint8_t>> & out, bool force)
+{
+  const auto now = std::chrono::steady_clock::now();
+  const auto tick_interval = std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+    std::chrono::duration<double>(1.0 / kSendRateHz));
+
+  if (!impl_->has_next_send_tick) {
+    impl_->next_send_tick = now;
+    impl_->has_next_send_tick = true;
+  }
+
+  // 正常情况下每轮最多放 1 个包；掉帧后最多补 8 个，避免长时间积压
+  constexpr int kMaxBurst = 8;
+  for (int i = 0; i < kMaxBurst && !impl_->pending.empty(); ++i) {
+    if (!force && now < impl_->next_send_tick) break;
+    out.push_back(std::move(impl_->pending.front()));
+    impl_->pending.pop_front();
+    impl_->next_send_tick += tick_interval;
+  }
+
+  // 如果节拍落后太多（比如相机停了几秒），直接追上当前时间
+  if (impl_->pending.empty() && !force && impl_->next_send_tick < now - tick_interval) {
+    impl_->next_send_tick = now;
+  }
+
+  // 兜底：待发包超过 20 个（0.5 秒的量）说明出包跟不上，丢弃最老的，
+  // 保证延迟不会无限累加（丢的是最老的包，客户端最多短暂花屏一下）。
+  // 正常情况下 90kbps 编码 ≈ 40 包/秒，刚好跟 40Hz 节拍打平。
+  std::uint64_t dropped = 0;
+  while (impl_->pending.size() > 20U) {
+    impl_->pending.pop_front();
+    ++dropped;
+  }
+  if (dropped > 0) {
+    const auto now2 = std::chrono::steady_clock::now();
+    if (now2 - impl_->last_drop_log >= std::chrono::seconds(5)) {
+      impl_->last_drop_log = now2;
+      tools::logger()->warn("[VideoSender] 出包跟不上 40Hz 节拍，已丢弃 {} 个最老的包（码率过高或主循环太慢）",
+                            dropped);
+    }
+  }
 }
 
 std::vector<std::vector<std::uint8_t>> VideoSender::flush()
@@ -230,51 +336,57 @@ std::vector<std::vector<std::uint8_t>> VideoSender::flush()
   std::vector<std::vector<std::uint8_t>> out;
   if (!impl_ || !impl_->codec_ctx) return out;
 
-  avcodec_send_frame(impl_->codec_ctx, nullptr);  // 刷出剩余帧
+  avcodec_send_frame(impl_->codec_ctx, nullptr);
   while (true) {
     const int ret = avcodec_receive_packet(impl_->codec_ctx, impl_->packet);
     if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF) break;
     if (ret < 0) break;
-    impl_->stream_buf.insert(
-      impl_->stream_buf.end(),
-      impl_->packet->data,
-      impl_->packet->data + impl_->packet->size);
+    impl_->stream_buf.insert(impl_->stream_buf.end(),
+                             impl_->packet->data,
+                             impl_->packet->data + impl_->packet->size);
     av_packet_unref(impl_->packet);
   }
-  // 最后不足 300 字节的尾巴补 0 发出
   while (impl_->stream_offset < impl_->stream_buf.size()) {
     const std::size_t remain = impl_->stream_buf.size() - impl_->stream_offset;
-    if (remain == 0) break;
-    std::vector<std::uint8_t> payload(kDataLen, 0);
-    const std::size_t n = std::min(remain, kDataLen);
-    std::memcpy(payload.data(), impl_->stream_buf.data() + impl_->stream_offset, n);
+    const std::size_t n = std::min(remain, kMaxPayloadBytes);
+    impl_->pending.push_back(
+      make_transport_packet(impl_->stream_buf.data() + impl_->stream_offset, n));
     impl_->stream_offset += n;
-    out.push_back(make_frame(payload.data(), kDataLen));
   }
   impl_->stream_buf.clear();
   impl_->stream_offset = 0;
+
+  // flush 时忽略 40Hz 节拍，全部放出
+  drain_due(out, true);
   return out;
 }
 
-// make_frame 把 300 字节负载包成 309 字节的 0x0310 帧
-std::vector<std::uint8_t> VideoSender::make_frame(
+// make_transport_packet 封包（结构必须与客户端解包逻辑一致）
+std::vector<std::uint8_t> VideoSender::make_transport_packet(
   const std::uint8_t * payload, std::size_t payload_size)
 {
+  std::vector<std::uint8_t> tp(kTransportPacketBytes, 0);
+
+  const std::size_t n = std::min(payload_size, kMaxPayloadBytes);
+  const std::size_t inner_len = kInnerSeqBytes + n;
+
+  write_u16_be(tp.data(), static_cast<std::uint16_t>(inner_len));
+  write_u16_be(tp.data() + kTransportLengthPrefix, impl_->inner_seq++);
+  if (payload != nullptr && n > 0) {
+    std::memcpy(tp.data() + kTransportLengthPrefix + kInnerSeqBytes, payload, n);
+  }
+
+  // 封进 0x0310 帧
   std::vector<std::uint8_t> f(kVideoFrameBytes, 0);
   f[0] = kFrameSOF;
-  write_u16_le(f.data() + 1, static_cast<std::uint16_t>(kDataLen));
-  f[3] = impl_->seq++;                     // 包序号自增
-  f[4] = tools::get_crc8(f.data(), 4);     // CRC8 覆盖前 4 字节
-  write_u16_le(f.data() + 5, kCmdId);      // 0x0310
-  // 拷贝负载（不足 300 补 0，调用方保证 payload_size <= 300）
-  const std::size_t n = std::min(payload_size, kDataLen);
-  if (payload != nullptr && n > 0) {
-    std::memcpy(f.data() + kVideoFrameHeaderBytes, payload, n);
-  }
-  // CRC16 覆盖前 307 字节
-  const std::uint16_t crc16 = tools::get_crc16(
-    f.data(), kVideoFrameHeaderBytes + kDataLen);
-  write_u16_le(f.data() + kVideoFrameHeaderBytes + kDataLen, crc16);
+  write_u16_le(f.data() + 1, static_cast<std::uint16_t>(kTransportPacketBytes));
+  f[3] = impl_->outer_seq++;
+  f[4] = tools::get_crc8(f.data(), 4);
+  write_u16_le(f.data() + 5, kCmdId);
+  std::memcpy(f.data() + kVideoFrameHeaderBytes, tp.data(), kTransportPacketBytes);
+  const std::uint16_t crc16 =
+    tools::get_crc16(f.data(), kVideoFrameHeaderBytes + kTransportPacketBytes);
+  write_u16_le(f.data() + kVideoFrameHeaderBytes + kTransportPacketBytes, crc16);
   return f;
 }
 

@@ -120,8 +120,10 @@ predict_time: 0.120     # s
 # 工业相机画面 → H.264 → 0x0310 → 下位机 → 图传 → 客户端 H 键切换
 video_send_enable: false      # 联调通过后改为 true
 video_width: 300              # 输出宽（协议带宽限制 300B/包）
-video_height: 300             # 输出高
-video_fps: 12.0               # 帧率
-video_bitrate_kbps: 80        # 码率
-video_crop_size: 300          # 从原图中心裁多少像素（原图 1280x1024）
-video_x264_preset: "veryfast" # Jetson CPU 有限，用 veryfast
+video_height: 240             # 输出高：300x240=5:4，与相机 1280x1024 一致，全视野且无黑边
+video_keep_aspect: true       # true=整幅画面缩放到 300x240（全视野、无黑边）；false=中心裁剪
+video_fps: 10.0               # 帧率（带宽固定时降帧率=每帧更多比特；10fps 操作手感与清晰度平衡）
+video_bitrate_kbps: 90        # 码率（40Hz×296B≈94.7kbps 是实际上限，留余量防丢包）
+video_crop_size: 300          # 仅 keep_aspect=false 时有效：中心裁多少像素（想贴 ACE 就设 1000）
+video_x264_preset: "slow"     # Jetson 8 核可承受 slow，编码效率明显高于 veryfast
+video_sharpen: 0.6            # USM 锐化强度（0=关闭；主观清晰度↑，几乎不增加码率）
