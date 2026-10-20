@@ -229,7 +229,9 @@ std::vector<std::vector<std::uint8_t>> VideoSender::feed(
       impl_->has_last_send = true;
       {
         std::lock_guard<std::mutex> lock(impl_->mtx);
-        impl_->pending_frame = bgr_frame.clone();  // clone：相机缓冲会被复用
+        // 不需要 clone：大恒/迈德威视/USB 相机后端都是每帧新建 cv::Mat，
+        // 且调用方在本轮之后不再写这块内存，浅拷贝（引用计数）即可，省一次 3.9MB memcpy。
+        impl_->pending_frame = bgr_frame;
       }
       impl_->cv.notify_one();
     }

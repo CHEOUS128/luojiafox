@@ -74,6 +74,7 @@ public:
 
   const VideoSenderConfig & config() const { return config_; }
 
+
 private:
   struct Impl;
   std::unique_ptr<Impl> impl_;

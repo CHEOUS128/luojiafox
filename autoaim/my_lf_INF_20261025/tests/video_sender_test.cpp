@@ -243,11 +243,14 @@ int main(int argc, char ** argv)
     return 1;
   }
 
-  // 采样：按时间跑（默认 6 秒），输入帧数随 fps 变化
+  // 采样：按时间跑（默认 6 秒）。输入源模拟真实相机（约 75fps），
+  // 由 VideoSender 内部按 video_fps 节流；不再人为 sleep 到 12fps——
+  // 那样每轮计时会和 100ms 节流窗口打架，把重复帧全丢掉，帧率统计失真。
   constexpr double kRunSeconds = 6.0;
   constexpr int kSrcW = 1280;
   constexpr int kSrcH = 1024;
-  const int kTotalFrames = std::max(1, static_cast<int>(std::lround(kRunSeconds * (cfg.fps + 2.0))));
+  constexpr double kSourceFps = 75.0;          // 模拟自瞄主循环频率
+  const auto loop_period = std::chrono::duration<double>(1.0 / kSourceFps);
 
   size_t total_packets = 0;
   size_t total_bytes = 0;
@@ -257,20 +260,22 @@ int main(int argc, char ** argv)
   // 各环节耗时统计（帮助判断瓶颈在相机、编码还是节流）
   double t_read = 0, t_compare = 0, t_feed = 0;
 
-  std::cout << "采集 " << kTotalFrames << " 帧（" << (camera ? "真实相机" : "合成 1280x1024")
+  std::cout << "采集 " << kRunSeconds << " 秒（" << (camera ? "真实相机" : "合成 1280x1024")
             << " → " << (cfg.keep_aspect ? "整幅缩放" : "中心裁剪") << " "
             << cfg.width << "x" << cfg.height << " @ " << cfg.fps << "fps "
             << cfg.bitrate_kbps << "kbps preset=" << cfg.x264_preset
             << " sharpen=" << cfg.sharpen << "）...\n";
 
-  cv::Mat last_frame;
   cv::Mat last_view;
+  cv::Mat last_input;
   const auto t_start = std::chrono::steady_clock::now();
+  const auto deadline_end = t_start + std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+    std::chrono::duration<double>(kRunSeconds));
 
-  // 输入源只需略快于设定 fps；实际编码节流在 VideoSender::feed 里
-  const auto sleep_ms = static_cast<int>(std::max(1.0, 1000.0 / (cfg.fps + 2.0)));
-
-  for (int i = 0; i < kTotalFrames; ++i) {
+  int total_input = 0;
+  int i = 0;
+  for (; std::chrono::steady_clock::now() < deadline_end; ++i) {
+    const auto iter_start = std::chrono::steady_clock::now();
     cv::Mat img;
     const auto t_iter = std::chrono::steady_clock::now();
     if (camera) {
@@ -284,7 +289,7 @@ int main(int argc, char ** argv)
     } else {
       img = makeTestFrame(i, kSrcW, kSrcH);
     }
-    last_frame = img.clone();
+    ++total_input;
 
     if (ov.compare) {
       const auto t_c = std::chrono::steady_clock::now();
@@ -295,6 +300,8 @@ int main(int argc, char ** argv)
     const auto ts_ns =
       std::chrono::duration_cast<std::chrono::nanoseconds>(
         std::chrono::steady_clock::now().time_since_epoch()).count();
+
+    last_input = img;   // 浅拷贝：只用来最后保存原始画面
 
     const auto t_f = std::chrono::steady_clock::now();
     const auto packets = sender.feed(img, ts_ns);
@@ -310,7 +317,11 @@ int main(int argc, char ** argv)
       h264_stream.insert(h264_stream.end(), payload.begin(), payload.end());
     }
 
-    std::this_thread::sleep_for(std::chrono::milliseconds(sleep_ms));
+    const auto iter_elapsed = std::chrono::steady_clock::now() - iter_start;
+    if (iter_elapsed < std::chrono::duration_cast<std::chrono::steady_clock::duration>(loop_period)) {
+      std::this_thread::sleep_for(
+        std::chrono::duration_cast<std::chrono::steady_clock::duration>(loop_period) - iter_elapsed);
+    }
   }
 
   // flush 剩余
@@ -331,8 +342,8 @@ int main(int argc, char ** argv)
   }
 
   // 保存最后一帧原始图（确认相机画面本身正常）
-  if (!last_frame.empty()) {
-    cv::imwrite(last_png, last_frame);
+  if (!last_input.empty()) {
+    cv::imwrite(last_png, last_input);
   }
   if (ov.compare && !last_view.empty()) {
     cv::imwrite(view_png, last_view);
@@ -346,7 +357,7 @@ int main(int argc, char ** argv)
 
   // ---- 汇总 ----
   std::cout << "\n=== 结果 ===\n";
-  std::cout << "输入帧数:         " << kTotalFrames << "\n";
+  std::cout << "输入帧数:         " << total_input << " (" << kRunSeconds << " 秒 @ " << kSourceFps << "fps)\n";
   std::cout << "有输出的帧:       " << frames_with_output << "\n";
   std::cout << "0x0310 包数:      " << total_packets << "\n";
   std::cout << "0x0310 总字节:    " << total_bytes << " (" << total_bytes / 1024.0 << " KB)\n";
@@ -355,9 +366,10 @@ int main(int argc, char ** argv)
   std::cout << "耗时:             " << elapsed_s << " 秒\n";
   std::cout << "实际帧率:         " << (frames_with_output / elapsed_s) << " fps\n";
   std::cout << "平均码率:         " << (h264_stream.size() * 8.0 / elapsed_s / 1000.0) << " kbps\n";
-  std::cout << "耗时分布(均值):   相机读 " << (t_read * 1000.0 / kTotalFrames) << " ms"
-            << " | feed(不阻塞) " << (t_feed * 1000.0 / kTotalFrames) << " ms";
-  if (ov.compare) std::cout << " | 对比图 " << (t_compare * 1000.0 / kTotalFrames) << " ms";
+  const double n_in = std::max(1, total_input);
+  std::cout << "耗时分布(均值):   相机读 " << (t_read * 1000.0 / n_in) << " ms"
+            << " | feed(不阻塞) " << (t_feed * 1000.0 / n_in) << " ms";
+  if (ov.compare) std::cout << " | 对比图 " << (t_compare * 1000.0 / n_in) << " ms";
   std::cout << "\n";
   std::cout << "注：编码在 VideoSender 独立线程里，feed 只入队最新帧，不应占用主循环时间。\n";
 
@@ -370,7 +382,7 @@ int main(int argc, char ** argv)
   std::cout << "\n输出文件:\n";
   std::cout << "  " << frames_path << "\n";
   std::cout << "  " << stream_path << "\n";
-  if (!last_frame.empty()) std::cout << "  " << last_png << "  (原始画面)\n";
+  if (!last_input.empty()) std::cout << "  " << last_png << "  (原始画面)\n";
   if (ov.compare && !last_view.empty()) std::cout << "  " << view_png << "  (取景+锐化后)\n";
   std::cout << "\n查看:\n";
   std::cout << "  ffplay " << stream_path << "\n";

@@ -125,5 +125,5 @@ video_keep_aspect: true       # true=整幅画面缩放到 300x240（全视野�
 video_fps: 10.0               # 帧率（带宽固定时降帧率=每帧更多比特；10fps 操作手感与清晰度平衡）
 video_bitrate_kbps: 90        # 码率（40Hz×296B≈94.7kbps 是实际上限，留余量防丢包）
 video_crop_size: 300          # 仅 keep_aspect=false 时有效：中心裁多少像素（想贴 ACE 就设 1000）
-video_x264_preset: "slow"     # Jetson 8 核可承受 slow，编码效率明显高于 veryfast
+video_x264_preset: "slow"     # 画质明显好于 veryfast；编码在独立线程，不阻塞主循环
 video_sharpen: 0.6            # USM 锐化强度（0=关闭；主观清晰度↑，几乎不增加码率）
