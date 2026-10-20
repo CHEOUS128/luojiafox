@@ -254,6 +254,9 @@ int main(int argc, char ** argv)
   int frames_with_output = 0;
   std::vector<uint8_t> h264_stream;
 
+  // 各环节耗时统计（帮助判断瓶颈在相机、编码还是节流）
+  double t_read = 0, t_compare = 0, t_feed = 0;
+
   std::cout << "采集 " << kTotalFrames << " 帧（" << (camera ? "真实相机" : "合成 1280x1024")
             << " → " << (cfg.keep_aspect ? "整幅缩放" : "中心裁剪") << " "
             << cfg.width << "x" << cfg.height << " @ " << cfg.fps << "fps "
@@ -269,6 +272,7 @@ int main(int argc, char ** argv)
 
   for (int i = 0; i < kTotalFrames; ++i) {
     cv::Mat img;
+    const auto t_iter = std::chrono::steady_clock::now();
     if (camera) {
       std::chrono::steady_clock::time_point ts;
       camera->read(img, ts);
@@ -276,20 +280,25 @@ int main(int argc, char ** argv)
         std::cerr << "⚠ 第 " << i << " 帧为空，跳过\n";
         continue;
       }
+      t_read += std::chrono::duration<double>(std::chrono::steady_clock::now() - t_iter).count();
     } else {
       img = makeTestFrame(i, kSrcW, kSrcH);
     }
     last_frame = img.clone();
 
     if (ov.compare) {
+      const auto t_c = std::chrono::steady_clock::now();
       last_view = makeView(img, cfg);
+      t_compare += std::chrono::duration<double>(std::chrono::steady_clock::now() - t_c).count();
     }
 
     const auto ts_ns =
       std::chrono::duration_cast<std::chrono::nanoseconds>(
         std::chrono::steady_clock::now().time_since_epoch()).count();
 
+    const auto t_f = std::chrono::steady_clock::now();
     const auto packets = sender.feed(img, ts_ns);
+    t_feed += std::chrono::duration<double>(std::chrono::steady_clock::now() - t_f).count();
     if (!packets.empty()) ++frames_with_output;
 
     for (const auto & pkt : packets) {
@@ -346,6 +355,11 @@ int main(int argc, char ** argv)
   std::cout << "耗时:             " << elapsed_s << " 秒\n";
   std::cout << "实际帧率:         " << (frames_with_output / elapsed_s) << " fps\n";
   std::cout << "平均码率:         " << (h264_stream.size() * 8.0 / elapsed_s / 1000.0) << " kbps\n";
+  std::cout << "耗时分布(均值):   相机读 " << (t_read * 1000.0 / kTotalFrames) << " ms"
+            << " | feed(不阻塞) " << (t_feed * 1000.0 / kTotalFrames) << " ms";
+  if (ov.compare) std::cout << " | 对比图 " << (t_compare * 1000.0 / kTotalFrames) << " ms";
+  std::cout << "\n";
+  std::cout << "注：编码在 VideoSender 独立线程里，feed 只入队最新帧，不应占用主循环时间。\n";
 
   // 帧数一致性检查
   std::cout << "\n=== 一致性检查 ===\n";

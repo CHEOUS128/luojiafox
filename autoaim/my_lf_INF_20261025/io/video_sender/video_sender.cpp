@@ -7,9 +7,13 @@
 #include <array>
 #include <chrono>
 #include <cmath>
+#include <condition_variable>
 #include <cstring>
 #include <deque>
+#include <mutex>
+#include <optional>
 #include <stdexcept>
+#include <thread>
 
 extern "C" {
 #include <libavcodec/avcodec.h>
@@ -73,15 +77,28 @@ struct VideoSender::Impl
   AVPacket * packet = nullptr;
   SwsContext * sws_ctx = nullptr;
 
+  // ---- 仅工作线程访问 ----
   std::vector<std::uint8_t> stream_buf;   // 编码输出、尚未打包的字节
   std::size_t stream_offset = 0;          // 已消费到的位置
+
+  // ---- 主线程与工作线程共享 ----
+  std::mutex mtx;
+  std::condition_variable cv;
+  std::optional<cv::Mat> pending_frame;   // 待编码帧（只保留最新一帧，慢于 fps 时自动丢旧帧）
+  bool encoding = false;                  // 工作线程是否正在编码（flush 需要等它结束）
   std::deque<std::vector<std::uint8_t>> pending;  // 已封好、等待 40Hz 节拍放出的 0x0310 帧
+  bool quit = false;
+  std::thread worker;
   std::uint16_t inner_seq = 0;            // 内层包序号（跨帧递增）
   std::uint8_t outer_seq = 0;             // 0x0310 帧序号
   std::int64_t next_pts = 0;
 
-  std::chrono::steady_clock::time_point next_send_tick{};
-  bool has_next_send_tick = false;
+  // 40Hz 出包节拍：令牌桶。每过一个节拍积 1 个令牌，最多攒 4 个（≈100ms 的突发）。
+  // 注意不能用"按调用补 8 个"的写法：主循环一帧调用一次，那样一帧就把包全发出去了，
+  // 实际速率会远超 40Hz（实测仿真 80 包/秒），码率统计和串口压力都会失真。
+  std::chrono::steady_clock::time_point last_tick{};
+  bool has_last_tick = false;
+  double tokens = 0.0;
   std::chrono::steady_clock::time_point last_drop_log{};
 
   std::chrono::steady_clock::time_point last_send{};
@@ -178,9 +195,22 @@ VideoSender::VideoSender(const VideoSenderConfig & config)
     "[VideoSender] 初始化完成 {}x{} @{:.0f}fps {}kbps preset={} sharpen={}",
     config_.width, config_.height, config_.fps, config_.bitrate_kbps,
     config_.x264_preset, config_.sharpen);
+
+  // 编码放到独立线程：preset=slow 在 Jetson 上一帧约 40~70ms，
+  // 放在自瞄主循环里会严重拖慢云台控制（实测 10fps 时主循环被拉到 149ms/轮）。
+  impl_->worker = std::thread(&VideoSender::worker_loop, this);
 }
 
-VideoSender::~VideoSender() = default;
+VideoSender::~VideoSender()
+{
+  if (!impl_) return;
+  {
+    std::lock_guard<std::mutex> lock(impl_->mtx);
+    impl_->quit = true;
+  }
+  impl_->cv.notify_all();
+  if (impl_->worker.joinable()) impl_->worker.join();
+}
 
 std::vector<std::vector<std::uint8_t>> VideoSender::feed(
   const cv::Mat & bgr_frame,
@@ -188,24 +218,50 @@ std::vector<std::vector<std::uint8_t>> VideoSender::feed(
 {
   (void)timestamp_ns;
   std::vector<std::vector<std::uint8_t>> out;
-
-  // ---- 先把已封好、到点的包放出来 ----
-  // 节拍：每 1/40 秒放 1 个包（与 ACE 编码端一致）。
-  // 任意两帧之间都能按 40Hz 出包；如果中途一帧没来（相机掉帧），
-  // 下一帧会把欠下的节拍补发（最多 8 个，防止积压）。
-  drain_due(out, false);
-
-  if (bgr_frame.empty()) return out;
-
-  // ---- 节流 ----
-  const auto now = std::chrono::steady_clock::now();
-  const auto interval = std::chrono::duration_cast<std::chrono::steady_clock::duration>(
-    std::chrono::duration<double>(1.0 / config_.fps));
-  if (impl_->has_last_send && (now - impl_->last_send) < interval) {
-    return out;
+  if (!bgr_frame.empty()) {
+    // 节流：按 fps 只接收新帧；同一时刻只保留最新一帧，编码跟不上就丢旧帧，
+    // 主线程不会阻塞在编码上（编码由工作线程完成）。
+    const auto now = std::chrono::steady_clock::now();
+    const auto interval = std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+      std::chrono::duration<double>(1.0 / config_.fps));
+    if (!impl_->has_last_send || (now - impl_->last_send) >= interval) {
+      impl_->last_send = now;
+      impl_->has_last_send = true;
+      {
+        std::lock_guard<std::mutex> lock(impl_->mtx);
+        impl_->pending_frame = bgr_frame.clone();  // clone：相机缓冲会被复用
+      }
+      impl_->cv.notify_one();
+    }
   }
-  impl_->last_send = now;
-  impl_->has_last_send = true;
+  drain_due(out, false);
+  return out;
+}
+
+void VideoSender::worker_loop()
+{
+  while (true) {
+    cv::Mat frame;
+    {
+      std::unique_lock<std::mutex> lock(impl_->mtx);
+      impl_->cv.wait(lock, [this] { return impl_->quit || impl_->pending_frame.has_value(); });
+      if (impl_->quit) return;
+      frame = std::move(*impl_->pending_frame);
+      impl_->pending_frame.reset();
+      impl_->encoding = true;
+    }
+    encode_and_pack(frame);
+    {
+      std::lock_guard<std::mutex> lock(impl_->mtx);
+      impl_->encoding = false;
+    }
+    impl_->cv.notify_all();
+  }
+}
+
+void VideoSender::encode_and_pack(const cv::Mat & bgr_frame)
+{
+  if (bgr_frame.empty()) return;
 
   // ---- 取景：默认整幅缩放（全视野），可选中心裁剪 ----
   cv::Mat view;
@@ -243,7 +299,7 @@ std::vector<std::vector<std::uint8_t>> VideoSender::feed(
   }
 
   // ---- 转 YUV420P ----
-  if (av_frame_make_writable(impl_->frame) < 0) return out;
+  if (av_frame_make_writable(impl_->frame) < 0) return;
   const uint8_t * src_data[1] = {view.data};
   const int src_linesize[1] = {static_cast<int>(view.step)};
   sws_scale(impl_->sws_ctx, src_data, src_linesize, 0, config_.height,
@@ -254,7 +310,7 @@ std::vector<std::vector<std::uint8_t>> VideoSender::feed(
   int ret = avcodec_send_frame(impl_->codec_ctx, impl_->frame);
   if (ret < 0) {
     tools::logger()->warn("[VideoSender] send_frame failed: {}", ffmpeg_err(ret));
-    return out;
+    return;
   }
   while (true) {
     ret = avcodec_receive_packet(impl_->codec_ctx, impl_->packet);
@@ -273,49 +329,47 @@ std::vector<std::vector<std::uint8_t>> VideoSender::feed(
   // 注意：剩余不足 296 字节的尾巴必须在本帧立即封包（补 0 到 300），
   //     不能跨帧拼接：客户端每个 0x0310 包独立解析，内层 length 为 0 即视为
   //     填充截止；如果下帧数据接到本包填充后面，会永久丢失。
+  std::deque<std::vector<std::uint8_t>> local;
   while (impl_->stream_offset < impl_->stream_buf.size()) {
     const std::size_t remain = impl_->stream_buf.size() - impl_->stream_offset;
     const std::size_t n = std::min(remain, kMaxPayloadBytes);
-    impl_->pending.push_back(
-      make_transport_packet(impl_->stream_buf.data() + impl_->stream_offset, n));
+    local.push_back(make_transport_packet(impl_->stream_buf.data() + impl_->stream_offset, n));
     impl_->stream_offset += n;
   }
   impl_->stream_buf.clear();
   impl_->stream_offset = 0;
 
-  // 封好的包按 40Hz 节拍放出（本帧刚封的包从下一个节拍开始发）
-  drain_due(out, false);
-  return out;
+  if (!local.empty()) {
+    std::lock_guard<std::mutex> lock(impl_->mtx);
+    for (auto & p : local) impl_->pending.push_back(std::move(p));
+  }
 }
 
 void VideoSender::drain_due(std::vector<std::vector<std::uint8_t>> & out, bool force)
 {
   const auto now = std::chrono::steady_clock::now();
-  const auto tick_interval = std::chrono::duration_cast<std::chrono::steady_clock::duration>(
-    std::chrono::duration<double>(1.0 / kSendRateHz));
+  std::lock_guard<std::mutex> lock(impl_->mtx);
 
-  if (!impl_->has_next_send_tick) {
-    impl_->next_send_tick = now;
-    impl_->has_next_send_tick = true;
+  // 令牌桶：按真实流逝时间积令牌（上限 4 个），保证长期平均严格 = 40 包/秒
+  constexpr double kTokenBurst = 4.0;
+  if (!impl_->has_last_tick) {
+    impl_->last_tick = now;
+    impl_->has_last_tick = true;
   }
+  const double elapsed_s = std::chrono::duration<double>(now - impl_->last_tick).count();
+  impl_->last_tick = now;
+  impl_->tokens = std::min(kTokenBurst, impl_->tokens + elapsed_s * kSendRateHz);
 
-  // 正常情况下每轮最多放 1 个包；掉帧后最多补 8 个，避免长时间积压
-  constexpr int kMaxBurst = 8;
-  for (int i = 0; i < kMaxBurst && !impl_->pending.empty(); ++i) {
-    if (!force && now < impl_->next_send_tick) break;
+  // force=true（flush）时忽略令牌，全部放出
+  while (!impl_->pending.empty() && (force || impl_->tokens >= 1.0)) {
     out.push_back(std::move(impl_->pending.front()));
     impl_->pending.pop_front();
-    impl_->next_send_tick += tick_interval;
-  }
-
-  // 如果节拍落后太多（比如相机停了几秒），直接追上当前时间
-  if (impl_->pending.empty() && !force && impl_->next_send_tick < now - tick_interval) {
-    impl_->next_send_tick = now;
+    if (!force) impl_->tokens -= 1.0;
   }
 
   // 兜底：待发包超过 20 个（0.5 秒的量）说明出包跟不上，丢弃最老的，
   // 保证延迟不会无限累加（丢的是最老的包，客户端最多短暂花屏一下）。
-  // 正常情况下 90kbps 编码 ≈ 40 包/秒，刚好跟 40Hz 节拍打平。
+  // 正常情况下 90kbps 编码 ≈ 40 包/秒，刚好跟 40Hz 令牌桶打平。
   std::uint64_t dropped = 0;
   while (impl_->pending.size() > 20U) {
     impl_->pending.pop_front();
@@ -334,29 +388,15 @@ void VideoSender::drain_due(std::vector<std::vector<std::uint8_t>> & out, bool f
 std::vector<std::vector<std::uint8_t>> VideoSender::flush()
 {
   std::vector<std::vector<std::uint8_t>> out;
-  if (!impl_ || !impl_->codec_ctx) return out;
+  if (!impl_) return out;
 
-  avcodec_send_frame(impl_->codec_ctx, nullptr);
-  while (true) {
-    const int ret = avcodec_receive_packet(impl_->codec_ctx, impl_->packet);
-    if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF) break;
-    if (ret < 0) break;
-    impl_->stream_buf.insert(impl_->stream_buf.end(),
-                             impl_->packet->data,
-                             impl_->packet->data + impl_->packet->size);
-    av_packet_unref(impl_->packet);
+  // 先让工作线程把已入队的帧编码完（最多等 200ms），再无条件放出全部包
+  {
+    std::unique_lock<std::mutex> lock(impl_->mtx);
+    impl_->cv.wait_for(lock, std::chrono::milliseconds(300),
+                       [this] { return !impl_->pending_frame.has_value() && !impl_->encoding; });
   }
-  while (impl_->stream_offset < impl_->stream_buf.size()) {
-    const std::size_t remain = impl_->stream_buf.size() - impl_->stream_offset;
-    const std::size_t n = std::min(remain, kMaxPayloadBytes);
-    impl_->pending.push_back(
-      make_transport_packet(impl_->stream_buf.data() + impl_->stream_offset, n));
-    impl_->stream_offset += n;
-  }
-  impl_->stream_buf.clear();
-  impl_->stream_offset = 0;
 
-  // flush 时忽略 40Hz 节拍，全部放出
   drain_due(out, true);
   return out;
 }

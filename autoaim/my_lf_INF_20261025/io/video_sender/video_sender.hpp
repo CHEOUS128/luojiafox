@@ -1,8 +1,8 @@
 // video_sender.hpp —— 自瞄工业相机画面 → 0x0310 视频帧
 //
-// 作用：把自瞄主循环读到的 BGR 图像，缩放到 300×300（默认保比例、全视野）、
-//       H.264 编码、切成 300 字节定长包，再包成官方 0x0310 图传帧（309 字节），
-//       通过 USB CDC 串口发给下位机。
+// 作用：把自瞄主循环读到的 BGR 图像，缩放到 300×240（默认全视野、无黑边）、
+//       在独立线程里 H.264 编码、切成 300 字节定长包，再包成官方 0x0310 图传帧
+//       （309 字节），按 40Hz 节拍通过 USB CDC 串口发给下位机。
 //
 // 协议依据：《RoboMaster 2026 高校系列赛通信协议 V2.0.0》表 1-41
 //
@@ -41,7 +41,7 @@ struct VideoSenderConfig
   double fps = 10.0;            // 帧率（12→10，同带宽下每帧比特数 +20%）
   int bitrate_kbps = 90;        // 码率（通道上限 40Hz×296B≈94.7kbps，留一点余量防丢包）
   int keyframe_interval = 20;   // 关键帧间隔（帧）
-  std::string x264_preset = "slow";  // Jetson 8 核，slow 每帧约 3-5ms，扛得住（veryfast 画质明显差）
+  std::string x264_preset = "slow";  // 画质明显好于 veryfast；实测每帧约 66ms，已放到独立线程编码
   int crop_size = 300;          // keep_aspect=false 时从原图中心裁多少像素
   double sharpen = 0.6;         // USM 锐化强度（0=关闭；提升主观清晰度，几乎不加码率）
 };
@@ -63,8 +63,8 @@ public:
   VideoSender & operator=(const VideoSender &) = delete;
 
   // 输入 BGR 图像（原图任意尺寸；keep_aspect=true 时整幅缩放，否则中心裁剪后缩放）
-  // 返回本轮「到点」的 0x0310 帧：封好的包按 40Hz 节拍均匀放出，
-  // 所以每次调用不一定是"一帧的包"，也可能为空。定时器（flush）会忽略节拍全部放出。
+  // feed() 只把最新帧交给编码线程（不阻塞），并返回本轮「到点」的 0x0310 帧。
+  // 返回可能为空（40Hz 令牌未到）；flush() 会忽略节拍把剩余包全部放出。
   std::vector<std::vector<uint8_t>> feed(
     const cv::Mat & bgr_frame,
     std::int64_t timestamp_ns);
@@ -85,9 +85,13 @@ private:
   std::vector<std::uint8_t> make_transport_packet(
     const std::uint8_t * payload, std::size_t payload_size);
 
-  // drain_due 按 40Hz 节拍（与 ACE 编码端一致）把排队中的包放出来。
-  // force=true 时（flush）忽略节拍全部放出。
+  // drain_due 按 40Hz 令牌桶（与 ACE 编码端一致）把排队中的包放出来。
+  // force=true 时（flush）忽略节拍全部放出。线程安全（内部加锁）。
   void drain_due(std::vector<std::vector<std::uint8_t>> & out, bool force);
+
+  // 工作线程：等待最新帧 → 取景/锐化/编码/封包
+  void worker_loop();
+  void encode_and_pack(const cv::Mat & bgr_frame);
 };
 
 }  // namespace io
