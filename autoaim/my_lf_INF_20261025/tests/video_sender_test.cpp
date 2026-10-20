@@ -20,6 +20,7 @@
 #include <iostream>
 #include <opencv2/opencv.hpp>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "io/video_sender/video_sender.hpp"
