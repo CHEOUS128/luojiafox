@@ -263,9 +263,10 @@ static int8_t CDC_Control_FS(uint8_t cmd, uint8_t* pbuf, uint16_t length)
 static int8_t CDC_Receive_FS(uint8_t* Buf, uint32_t *Len)
 {
   /* USER CODE BEGIN 6 */
-  memcpy(Usart_Receive,Buf,40);
-  usbd_cdc_receive_handle();
-  
+  /* Pass the real received length: the link now carries both 32-byte control
+   * frames (0xFF) and 309-byte video frames (0xA5). */
+  usbd_cdc_receive_handle(Buf, (uint16_t)(*Len));
+
   USBD_CDC_SetRxBuffer(&hUsbDeviceFS, Buf);
   USBD_CDC_ReceivePacket(&hUsbDeviceFS);
   return (USBD_OK);

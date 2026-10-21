@@ -60,7 +60,7 @@ InputData *get_selfaim_data(void);
 
 
 extern uint8_t Usart_Receive[40]; //用于接收单个字节的数据
-extern void usbd_cdc_receive_handle(void);
+extern void usbd_cdc_receive_handle(uint8_t *data, uint16_t length);
 
 
 

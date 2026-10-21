@@ -731,6 +731,16 @@
               <FilePath>..\application\Self_aim.h</FilePath>
             </File>
             <File>
+              <FileName>video_forward.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\application\video_forward.c</FilePath>
+            </File>
+            <File>
+              <FileName>video_forward.h</FileName>
+              <FileType>5</FileType>
+              <FilePath>..\application\video_forward.h</FilePath>
+            </File>
+            <File>
               <FileName>CAN_task.c</FileName>
               <FileType>1</FileType>
               <FilePath>..\application\CAN_task.c</FilePath>

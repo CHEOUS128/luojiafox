@@ -8,6 +8,7 @@
 #include "INS_task.h"
 #include "usbd_cdc_if.h"
 #include "CAN_receive.h"
+#include "video_forward.h"
 uint8_t buffer[sizeof(RECEIVE_DATA)];//用于存储完整的数据包
 uint8_t Usart_Receive[40]; //用于接收单个字节的数据
 uint16_t received = 0;//当前接收到的数据长度
@@ -23,45 +24,46 @@ gimbal_control_t *gimbal_data;
 
 void process_usb_data_packet(uint8_t* data, uint16_t length)
 {
+    /* 控制帧解析：0xFF 帧头，32 字节（一帧三阶指令）。
+     * 同一批 USB 数据里还可能含有 309 字节视频帧，视频帧由
+     * video_forward.c 单独解析，这里只处理 0xFF 控制帧。
+     * 旧实现在收满一帧后直接 return，会丢掉同批数据里后面的帧，
+     * 因此改为逐字节扫描、不提前返回。 */
     static uint8_t temp_buffer[sizeof(RECEIVE_DATA)];
     static uint16_t temp_received = 0;
-    
+
     for (uint16_t i = 0; i < length; i++) {
         uint8_t byte = data[i];
-        
-        // 使用状态机解析数据包
-        if (temp_received == 0) 
+
+        if (temp_received == 0)
         {
-            // 寻找帧头
             if (byte == FRAME_HEADER_FF) {
-                temp_buffer[temp_received++] = byte;        //就一个帧头，接完直接接数据
+                temp_buffer[temp_received++] = byte;
             }
-        } 
-        else if (temp_received >= sizeof(FrameHeader) && 
-                   temp_received < sizeof(RECEIVE_DATA)) {
-            // 接收数据部分
+        }
+        else if (temp_received < sizeof(RECEIVE_DATA))
+        {
             temp_buffer[temp_received++] = byte;
-            
-            // 检查是否接收完整数据包
+
             if (temp_received == sizeof(RECEIVE_DATA)) {
-                // 验证CRC
-                // if (verify_CRC16_check_sum(temp_buffer, sizeof(RECEIVE_DATA))) {
-                    memcpy(&inputdata, temp_buffer + sizeof(FrameHeader), sizeof(InputData));
-                    // 数据包处理完成
-                // }
-                temp_received = 0; // 重置状态
-                return ;
+                memcpy(&inputdata, temp_buffer + sizeof(FrameHeader), sizeof(InputData));
+                temp_received = 0;
             }
-        } else {
-            temp_received = 0; // 异常状态重置
+        }
+        else
+        {
+            temp_received = 0;
         }
     }
 }
 
-/*虚拟串口接收中断处理函数*/ 
-void usbd_cdc_receive_handle(void)
+void usbd_cdc_receive_handle(uint8_t *data, uint16_t length)
 {
-    process_usb_data_packet(Usart_Receive, 40);
+    if (data == 0 || length == 0) {
+        return;
+    }
+    VideoForward_Feed(data, length);
+    process_usb_data_packet(data, length);
 }
 
 
@@ -119,12 +121,17 @@ void USART1_SEND(void)
 }
 void Self_aim_task(void const *pvParameters)
 {
-    //使用micro usb通信，中断在usbd_cdc_if.c中
-	while(1)
-	{
-		USART1_SEND();
-		osDelay(5);
-	}
+    /* 使用 micro usb 通信，接收中断在 usbd_cdc_if.c 中。
+     * 本任务 200Hz 循环：
+     *   - USART1_SEND        : 每 5ms 向上位机回发云台状态
+     *   - VideoForward_Task  : 把已收到的 0x0310 视频帧转发给 VT03 */
+    VideoForward_Init();
+    while(1)
+    {
+        USART1_SEND();
+        VideoForward_Task();
+        osDelay(5);
+    }
 }
 InputData *get_selfaim_data(void)
 {

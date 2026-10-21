@@ -4,7 +4,10 @@
 >
 > **26 赛季全向轮步兵**的主控固件（STM32）。
 >
-> **版本：10.14 版本规则发布前（2026-10-14）** —— 这是与 `autoaim/my_lf_INF_20261013` **通信协议匹配的最新版本**。
+> **版本：10.14 + 图传接收侧改造（2026-10-20）** —— 控制协议与 `autoaim/my_lf_INF_20261013` 匹配；
+> 新增 0x0310 视频帧接收与转发（配合 `autoaim/my_lf_INF_20261025` 图传）。
+>
+> 📄 图传改造交接：[`图传接收侧改造说明.md`](图传接收侧改造说明.md)
 
 ---
 
@@ -25,6 +28,22 @@ lower-machine/
 | `gimbal_project` | 云台控制、发射机构、视觉通信、IMU 解算 |
 
 ---
+
+## 图传接收侧（2026-10-20 新增）
+
+`gimbal_project` 新增 0x0310 视频帧接收与转发：
+
+```
+USB CDC（Jetson）→ 按帧头分流（0xFF 控制帧 / 0xA5 视频帧）
+    → 校验（长度 / cmd_id / CRC8 / CRC16）
+    → 队列 → 原样转发到 VT03 图传发送端
+```
+
+改动文件：新增 `application/video_forward.c/.h`；修改 `Src/usbd_cdc_if.c`、
+`application/Self_aim.c/.h`、`MDK-ARM/standard_robot.uvprojx`。
+
+**需要确认**：VT03 接在哪个 UART（默认 `&huart6`，PG14 发）。
+详见 [`图传接收侧改造说明.md`](图传接收侧改造说明.md)。
 
 ## 平台
 
