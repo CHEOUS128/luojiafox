@@ -55,6 +55,7 @@ echo "  版本目录 : $ROOT"
 echo "  配置文件 : $CONFIG"
 echo "  服务名   : $SERVICE"
 echo "  图传     : 由 false 改为 true（永久）"
+echo "  三阶协议 : three_order_enable 强制改为 true"
 echo ""
 echo "⚠️  电控新固件刷入前，视频帧会影响旧主控的云台控制。"
 echo "    这段时间不要用车做云台测试；需要用车请先跑回滚脚本。"
@@ -62,11 +63,23 @@ echo ""
 read -p "确认现在切换？(输入 yes 继续) " ans
 [[ "$ans" == "yes" ]] || { echo "已取消。"; exit 1; }
 
-# ---------- 1. 备份并打开图传 ----------
+# ---------- 1. 备份并打开完整功能 ----------
 cp "$CONFIG" "$BACKUP"
 echo "✅ 配置已备份 → $BACKUP"
-sed -i 's/^video_send_enable: false/video_send_enable: true/' "$CONFIG"
-grep -n "^video_send_enable" "$CONFIG"
+
+# 完整功能必须同时满足：
+#   video_send_enable  = true  图传开启
+#   three_order_enable = true  三阶协议（下位机 RECEIVE_DATA=32 字节）
+sed -i 's/^video_send_enable: .*/video_send_enable: true      # 图传开启/' "$CONFIG"
+sed -i 's/^three_order_enable: .*/three_order_enable: true    # 三阶协议：下位机按 32 字节解析/' "$CONFIG"
+
+echo "--- 关键配置确认 ---"
+grep -n "^video_send_enable\|^three_order_enable" "$CONFIG"
+
+if ! grep -q "^video_send_enable: true" "$CONFIG" || ! grep -q "^three_order_enable: true" "$CONFIG"; then
+  echo "❌ 配置修改失败，请手动检查 $CONFIG"
+  exit 1
+fi
 
 # ---------- 2. 创建新服务 ----------
 cat > "/etc/systemd/system/$SERVICE.service" <<EOF

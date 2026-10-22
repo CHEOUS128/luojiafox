@@ -54,7 +54,6 @@ unpack_data_t referee_unpack_obj;
 int Char_sizeof=0;
 char Dr_Char_1[]={" \nyaw\npit\n"};
 char Dr_Char_2[30]={0};
-static uint8_t Clien_character[60];
 /**
   * @brief          referee task
   * @param[in]      pvParameters: NULL

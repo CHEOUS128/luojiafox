@@ -24,8 +24,10 @@
 /* Optional: reset state and counters. */
 void VideoForward_Init(void);
 
-/* Feed raw USB CDC bytes. Any length is acceptable (streaming). */
-void VideoForward_Feed(const uint8_t *data, uint16_t len);
+/* Bytes are split by the single state machine in Self_aim.c.
+ * Call this with ONE complete 309-byte frame; it validates and queues it.
+ * Returns 1 if the frame was valid and queued. */
+uint8_t VideoForward_PushFrame(const uint8_t *frame);
 
 /* Call from the main loop (or a task). Sends queued frames to VT03. */
 void VideoForward_Task(void);

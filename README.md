@@ -34,6 +34,9 @@ luojiafox/
 
 详见 [`luojiamaster/完整复现指南.md`](luojiamaster/完整复现指南.md)。
 
+**本地模拟比赛环境（路由器 + 三台电脑怎么接线、IP 怎么设）**：
+见 [`luojiamaster/局域网联调手册.md`](luojiamaster/局域网联调手册.md)。
+
 ---
 
 ### 2. autoaim —— 自瞄算法

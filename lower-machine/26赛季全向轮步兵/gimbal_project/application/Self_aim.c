@@ -22,52 +22,67 @@ gimbal_control_t *gimbal_data;
 // uint32_t usb_rx_length = 0;
 
 
+/* ================== 单一状态机：一段字节只解析一次 ==================
+ * 帧类型由帧头决定，同一字节只会进入一个解析器，不会互相污染：
+ *   0xA5 -> 视频帧，收满 309 字节 -> 校验 CRC -> 入队转发 VT03
+ *   0xFF -> 控制帧，收满 32 字节 -> 校验帧尾 0x0D -> 写入 inputdata
+ *
+ * 旧实现让两个独立解析器同时扫描同一份数据，视频载荷里随机的 0xFF
+ * 会被控制解析器当成帧头，实测 18.6% 的控制帧是垃圾（云台疯转根因之一）。
+ * ================================================================= */
+#define CONTROL_FRAME_BYTES   ((uint16_t)sizeof(RECEIVE_DATA))
+#define VIDEO_FRAME_BYTES     309u
+#define VIDEO_SOF             0xA5u
+#define CONTROL_TAIL          0x0D
+
 void process_usb_data_packet(uint8_t* data, uint16_t length)
 {
-    /* 控制帧解析：0xFF 帧头，32 字节（一帧三阶指令）。
-     * 同一批 USB 数据里还可能含有 309 字节视频帧，视频帧由
-     * video_forward.c 单独解析，这里只处理 0xFF 控制帧。
-     * 旧实现在收满一帧后直接 return，会丢掉同批数据里后面的帧，
-     * 因此改为逐字节扫描、不提前返回。 */
-    static uint8_t temp_buffer[sizeof(RECEIVE_DATA)];
-    static uint16_t temp_received = 0;
+    static uint8_t  buf[VIDEO_FRAME_BYTES];   /* 最大帧 309，两路共用 */
+    static uint16_t idx = 0;
+    static uint8_t  kind = 0;                 /* 0=找帧头 1=视频 2=控制 */
+
+    if (data == 0) return;
 
     for (uint16_t i = 0; i < length; i++) {
-        uint8_t byte = data[i];
+        uint8_t b = data[i];
 
-        if (temp_received == 0)
-        {
-            if (byte == FRAME_HEADER_FF) {
-                temp_buffer[temp_received++] = byte;
+        if (kind == 0) {
+            if (b == VIDEO_SOF) {
+                buf[0] = b; idx = 1u; kind = 1u;
+            } else if (b == FRAME_HEADER_FF) {
+                buf[0] = b; idx = 1u; kind = 2u;
             }
+            continue;
         }
-        else if (temp_received < sizeof(RECEIVE_DATA))
-        {
-            temp_buffer[temp_received++] = byte;
 
-            if (temp_received == sizeof(RECEIVE_DATA)) {
-                memcpy(&inputdata, temp_buffer + sizeof(FrameHeader), sizeof(InputData));
-                temp_received = 0;
-            }
+        if (idx < VIDEO_FRAME_BYTES) {
+            buf[idx++] = b;
+        } else {
+            idx = VIDEO_FRAME_BYTES;          /* 防御：不应发生 */
         }
-        else
-        {
-            temp_received = 0;
+
+        if (kind == 1u) {
+            if (idx >= VIDEO_FRAME_BYTES) {
+                kind = 0; idx = 0;
+                (void)VideoForward_PushFrame(buf);
+            }
+        } else {
+            if (idx >= CONTROL_FRAME_BYTES) {
+                kind = 0; idx = 0;
+                /* 帧尾校验：挡掉错位帧，宁可不更新也不要用垃圾角度 */
+                if (buf[CONTROL_FRAME_BYTES - 1u] == CONTROL_TAIL) {
+                    memcpy(&inputdata, buf + sizeof(FrameHeader), sizeof(InputData));
+                }
+            }
         }
     }
 }
 
+/* USB CDC 回调入口：所有字节交给单一状态机分流 */
 void usbd_cdc_receive_handle(uint8_t *data, uint16_t length)
 {
-    if (data == 0 || length == 0) {
-        return;
-    }
-    VideoForward_Feed(data, length);
     process_usb_data_packet(data, length);
 }
-
-
-
 
 void data_transition(void)
 {

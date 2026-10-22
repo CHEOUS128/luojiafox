@@ -168,28 +168,6 @@ static void gimbal_set_mode(gimbal_control_t *set_mode);
   */
  static void gimbal_control_loop(gimbal_control_t *control_loop);
  
- /**
-  * @brief          云台角度PID初始化, 因为角度范围在(-pi,pi)，不能用PID.c的PID
-  * @param[out]     pid:云台PID指针
-  * @param[in]      maxout: pid最大输出
-  * @param[in]      intergral_limit: pid最大积分输出
-  * @param[in]      kp: pid kp
-  * @param[in]      ki: pid ki
-  * @param[in]      kd: pid kd
-  * @retval         none
-  */
- static void gimbal_PID_init(gimbal_PID_t *pid, fp32 maxout, fp32 intergral_limit, fp32 kp, fp32 ki, fp32 kd);
- 
- /**
-  * @brief          云台角度PID计算, 因为角度范围在(-pi,pi)，不能用PID.c的PID
-  * @param[out]     pid:云台PID指针
-  * @param[in]      get: 角度反馈
-  * @param[in]      set: 角度设定
-  * @param[in]      error_delta: 角速度
-  * @retval         pid 输出
-  */
- static fp32 gimbal_PID_calc(gimbal_PID_t *pid, fp32 get, fp32 set, fp32 error_delta);
- 
  //开/关电机状态位
  uint8_t start;
  uint8_t close;
@@ -318,7 +296,7 @@ static void gimbal_init(gimbal_control_t *init)
 
   //初始化模式设置
   init->gimbal_pitch_motor.gimbal_motor_mode = init->gimbal_yaw_motor.last_gimbal_motor_mode = GIMBAL_MOTOR_OFF;
-  chassis_data.chassis_mode = 0;
+  chassis_data.chassis_mode = CHASSIS_MODE_OFF;
   chassis_data.shoot_mode = 0;
 
   //初始化目标角度角速度
@@ -541,55 +519,6 @@ static void gimbal_control_loop(gimbal_control_t *control_loop)
 }
 
 
-/**
- * @brief          "gimbal_control" valiable initialization, include pid initialization, remote control data point initialization, gimbal motors
- *                 data point initialization, and gyro sensor angle point initialization.
- * @param[out]     gimbal_init: "gimbal_control" valiable point
- * @retval         none
- */
-/**
- * @brief          初始化"gimbal_control"变量，包括pid初始化， 遥控器指针初始化，云台电机指针初始化，陀螺仪角度指针初始化
- * @param[out]     gimbal_init:"gimbal_control"变量指针.
- * @retval         none
- */
-static void gimbal_PID_init(gimbal_PID_t *pid, fp32 maxout, fp32 max_iout, fp32 kp, fp32 ki, fp32 kd)
-{
-  if (pid == NULL)
-  {
-    return;
-  }
-  pid->kp = kp;
-  pid->ki = ki;
-  pid->kd = kd;
-
-  pid->err = 0.0f;
-  pid->get = 0.0f;
-
-  pid->max_iout = max_iout;
-  pid->max_out = maxout;
-}
-
-static fp32 gimbal_PID_calc(gimbal_PID_t *pid, fp32 get, fp32 set, fp32 error_delta)
-{
-  fp32 err;
-  if (pid == NULL)
-  {
-    return 0.0f;
-  }
-  pid->get = get;
-  pid->set = set;
-
-  err = set - get;
-  pid->err = rad_format(err);
-  pid->Pout = pid->kp * pid->err;
-  pid->Iout += pid->ki * pid->err;
-  pid->Dout = pid->kd * error_delta;
-  abs_limit(pid->Iout, pid->max_iout);
-  pid->out = pid->Pout + pid->Iout + pid->Dout;
-  abs_limit(pid->out, pid->max_out);
-  return pid->out;
-}
-
 void chassis_rc_to_control_vector(gimbal_control_t *gimbal_control_set, chassis_data_t *chassis_data)
 {
   /* --------------进入函数前提条件------------------ */
@@ -608,7 +537,6 @@ void chassis_rc_to_control_vector(gimbal_control_t *gimbal_control_set, chassis_
   /* --------------遥控器 键鼠数据处理------------------ */
   int16_t vx_channel, vy_channel;
   fp32 vx_set_channel, vy_set_channel;
-  fp32 angleset;
   static int16_t yaw_channel = 0;
   const static fp32 chassis_x_order_filter[1] = {CHASSIS_ACCEL_X_NUM};
   const static fp32 chassis_y_order_filter[1] = {CHASSIS_ACCEL_Y_NUM};
@@ -754,8 +682,8 @@ void chassis_rc_to_control_vector(gimbal_control_t *gimbal_control_set, chassis_
     else
     {chassis_data->yaw_angle_set = gimbal_control_set->gimbal_yaw_motor.self_aim_yaw_angle;
      chassis_data->yaw_vel = Self_aim_data->yaw_vel;   // 装进包裹
-       chassis_data->yaw_acc = Self_aim_data->yaw_acc;//新增}
-
+       chassis_data->yaw_acc = Self_aim_data->yaw_acc;//新增
+  }
   }
   chassis_data->last_chassis_mode = chassis_data->chassis_mode;
   vTaskDelay(8);

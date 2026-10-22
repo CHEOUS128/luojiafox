@@ -85,7 +85,7 @@ send_canid: 0xff
 can_interface: "can0"
 
 #####-----gimbal参数-----#####
-three_order_enable: false   # 三阶指令(电控改好协议后设true)
+three_order_enable: true    # 必须 true：下位机按 32 字节三阶帧解析（RECEIVE_DATA=32）
 
 com_port: "/dev/ttyACM0"
 slew_enable: true
@@ -118,7 +118,7 @@ predict_time: 0.120     # s
 
 #####-----视频发送（第二视角）-----#####
 # 工业相机画面 → H.264 → 0x0310 → 下位机 → 图传 → 客户端 H 键切换
-video_send_enable: false      # 联调通过后改为 true
+video_send_enable: true       # 完整功能：图传开启
 video_width: 300              # 输出宽（协议带宽限制 300B/包）
 video_height: 240             # 输出高：300x240=5:4，与相机 1280x1024 一致，全视野且无黑边
 video_keep_aspect: true       # true=整幅画面缩放到 300x240（全视野、无黑边）；false=中心裁剪

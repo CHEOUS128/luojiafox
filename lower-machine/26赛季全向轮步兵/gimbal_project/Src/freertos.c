@@ -196,15 +196,10 @@ __weak void test_task(void const * argument)
 void ins_task(void const * argument)
 {
   /* USER CODE BEGIN rc_task */
-  float s[3] = {0};
   /* Infinite loop */
   for(;;)
   {
 	INS_Task();
-	  
-	s[0] = INS.Pitch;
-	s[1] = INS.Roll;
-	s[2] = INS.Yaw;
 	  
     osDelay(1);
   }

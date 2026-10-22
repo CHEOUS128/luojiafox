@@ -20,7 +20,7 @@ echo "=== 回滚到 20261013（关闭图传）==="
 systemctl stop autoaim-20261025 2>/dev/null || true
 systemctl disable autoaim-20261025 2>/dev/null || true
 
-# 2. 关掉配置里的图传
+# 2. 关闭图传，并把协议退回旧版（20261013 的服务用不到，但保持一致更安全）
 if grep -q '^video_send_enable: true' "$CONFIG"; then
   sed -i 's/^video_send_enable: true/video_send_enable: false/' "$CONFIG"
   echo "✅ 图传已关闭"

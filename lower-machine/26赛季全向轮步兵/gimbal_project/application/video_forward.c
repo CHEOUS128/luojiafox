@@ -127,19 +127,9 @@ static uint16_t video_crc16(const uint8_t *data, uint32_t len)
   return crc;
 }
 
-/* ========================== stream parser ================================ */
+/* ========================== frame queue ================================== */
 
-typedef enum
-{
-  VIDEO_STATE_WAIT_HEAD = 0,
-  VIDEO_STATE_COLLECT   = 1
-} video_state_t;
-
-static video_state_t s_state = VIDEO_STATE_WAIT_HEAD;
-static uint16_t      s_index = 0u;
-static uint8_t       s_frame[VIDEO_FRAME_BYTES];
-
-/* Single producer (CDC callback) / single consumer (VideoForward_Task). */
+/* Single producer (Self_aim parser, USB callback) / single consumer (Task). */
 static uint8_t          s_queue[VIDEO_QUEUE_DEPTH][VIDEO_FRAME_BYTES];
 static volatile uint8_t s_head = 0u;
 static volatile uint8_t s_tail = 0u;
@@ -150,8 +140,6 @@ static volatile uint32_t s_overflow  = 0u;
 
 void VideoForward_Init(void)
 {
-  s_state = VIDEO_STATE_WAIT_HEAD;
-  s_index = 0u;
   s_head = 0u;
   s_tail = 0u;
   s_forwarded = 0u;
@@ -176,57 +164,29 @@ static uint8_t video_frame_is_valid(const uint8_t *frame)
   return 1u;
 }
 
-void VideoForward_Feed(const uint8_t *data, uint16_t len)
+uint8_t VideoForward_PushFrame(const uint8_t *frame)
 {
-  uint16_t i;
+  uint8_t next;
 
-  if (data == 0) return;
+  if (frame == 0) return 0u;
 
-  for (i = 0u; i < len; ++i)
+  if (!video_frame_is_valid(frame))
   {
-    uint8_t byte = data[i];
-
-    if (s_state == VIDEO_STATE_WAIT_HEAD)
-    {
-      if (byte == VIDEO_SOF)
-      {
-        s_frame[0] = byte;
-        s_index = 1u;
-        s_state = VIDEO_STATE_COLLECT;
-      }
-      continue;
-    }
-
-    /* Collect exactly 309 bytes. Payload may contain 0xA5 / 0xFF bytes, so the
-     * header is only searched again after a complete frame was consumed. */
-    s_frame[s_index++] = byte;
-
-    if (s_index >= VIDEO_FRAME_BYTES)
-    {
-      s_state = VIDEO_STATE_WAIT_HEAD;
-      s_index = 0u;
-
-      if (!video_frame_is_valid(s_frame))
-      {
-        s_crc_error++;
-        continue;
-      }
-
-      {
-        uint8_t next = (uint8_t)((s_head + 1u) % VIDEO_QUEUE_DEPTH);
-
-        if (next == s_tail)
-        {
-          /* Queue full: drop the oldest frame so latency cannot grow. */
-          s_tail = (uint8_t)((s_tail + 1u) % VIDEO_QUEUE_DEPTH);
-          s_overflow++;
-        }
-
-        memcpy(s_queue[s_head], s_frame, VIDEO_FRAME_BYTES);
-        s_head = next;
-      }
-    }
+    s_crc_error++;
+    return 0u;
   }
+
+  next = (uint8_t)((s_head + 1u) % VIDEO_QUEUE_DEPTH);
+  if (next == s_tail)
+  {
+    /* Queue full: drop the oldest frame so latency cannot grow. */
+    s_tail = (uint8_t)((s_tail + 1u) % VIDEO_QUEUE_DEPTH);
+    s_overflow++;
+  }
+
+  memcpy(s_queue[s_head], frame, VIDEO_FRAME_BYTES);
+  s_head = next;
+  return 1u;
 }
 
 void VideoForward_Task(void)

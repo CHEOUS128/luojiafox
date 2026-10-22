@@ -2,7 +2,7 @@
 
 
 //pitch speed close-loop PID params, max out and max iout
-//pitch ËÙ¶È»· PID²ÎÊıÒÔ¼° PID×î´óÊä³ö£¬»ı·ÖÊä³ö
+//pitch é€Ÿåº¦ç¯ PIDå‚æ•°ä»¥åŠ PIDæœ€å¤§è¾“å‡ºï¼Œç§¯åˆ†è¾“å‡º
 extern float PITCH_SPEED_PID_KP;
 extern float PITCH_SPEED_PID_KI;
 extern float PITCH_SPEED_PID_KD;
@@ -10,7 +10,7 @@ extern float PITCH_SPEED_PID_MAX_OUT;
 extern float PITCH_SPEED_PID_MAX_IOUT;
 
 //pitch encode angle close-loop PID params, max out and max iout
-//pitch ½Ç¶È»· ½Ç¶ÈÓÉ±àÂëÆ÷ PID²ÎÊıÒÔ¼° PID×î´óÊä³ö£¬»ı·ÖÊä³ö
+//pitch è§’åº¦ç¯ è§’åº¦ç”±ç¼–ç å™¨ PIDå‚æ•°ä»¥åŠ PIDæœ€å¤§è¾“å‡ºï¼Œç§¯åˆ†è¾“å‡º
 extern float PITCH_ENCODE_RELATIVE_PID_KP;
 extern float PITCH_ENCODE_RELATIVE_PID_KI;
 extern float PITCH_ENCODE_RELATIVE_PID_KD;
@@ -19,7 +19,7 @@ extern float PITCH_ENCODE_RELATIVE_PID_MAX_OUT;
 extern float PITCH_ENCODE_RELATIVE_PID_MAX_IOUT;
 
 //yaw speed close-loop PID params, max out and max iout
-//yaw ËÙ¶È»· PID²ÎÊıÒÔ¼° PID×î´óÊä³ö£¬»ı·ÖÊä³ö
+//yaw é€Ÿåº¦ç¯ PIDå‚æ•°ä»¥åŠ PIDæœ€å¤§è¾“å‡ºï¼Œç§¯åˆ†è¾“å‡º
 extern float YAW_SPEED_PID_KP;
 extern float YAW_SPEED_PID_KI;
 extern float YAW_SPEED_PID_KD;
@@ -27,7 +27,7 @@ extern float YAW_SPEED_PID_MAX_OUT;
 extern float YAW_SPEED_PID_MAX_IOUT;
 
 //yaw encode angle close-loop PID params, max out and max iout
-//yaw ½Ç¶È»· ½Ç¶ÈÓÉ±àÂëÆ÷ PID²ÎÊıÒÔ¼° PID×î´óÊä³ö£¬»ı·ÖÊä³ö
+//yaw è§’åº¦ç¯ è§’åº¦ç”±ç¼–ç å™¨ PIDå‚æ•°ä»¥åŠ PIDæœ€å¤§è¾“å‡ºï¼Œç§¯åˆ†è¾“å‡º
 extern float YAW_ENCODE_RELATIVE_PID_KP;
 extern float YAW_ENCODE_RELATIVE_PID_KI;
 extern float YAW_ENCODE_RELATIVE_PID_KD;
