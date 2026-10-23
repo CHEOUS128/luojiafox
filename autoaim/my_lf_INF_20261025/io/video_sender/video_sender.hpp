@@ -44,6 +44,8 @@ struct VideoSenderConfig
   std::string x264_preset = "slow";  // 画质明显好于 veryfast；实测每帧约 66ms，已放到独立线程编码
   int crop_size = 300;          // keep_aspect=false 时从原图中心裁多少像素
   double sharpen = 0.6;         // USM 锐化强度（0=关闭；提升主观清晰度，几乎不加码率）
+  double send_rate_hz = 40.0;   // 出包节拍（包/秒）。协议上限 50Hz；
+                                // 排查链路时调到 2Hz，每秒只发 2 包，便于计数对比
 };
 
 // 0x0310 帧常量

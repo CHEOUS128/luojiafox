@@ -59,6 +59,7 @@ int main(int argc, char * argv[])
             if (cfg_yaml["video_x264_preset"]) vs_cfg.x264_preset = cfg_yaml["video_x264_preset"].as<std::string>();
             if (cfg_yaml["video_keep_aspect"]) vs_cfg.keep_aspect = cfg_yaml["video_keep_aspect"].as<bool>();
             if (cfg_yaml["video_sharpen"])     vs_cfg.sharpen = cfg_yaml["video_sharpen"].as<double>();
+            if (cfg_yaml["video_send_rate_hz"]) vs_cfg.send_rate_hz = cfg_yaml["video_send_rate_hz"].as<double>();
             video_sender.emplace(vs_cfg);
             tools::logger()->info("[VideoSender] 已启用（{}x{} @{:.0f}fps {}kbps preset={} keep_aspect={} sharpen={}）",
                                   vs_cfg.width, vs_cfg.height, vs_cfg.fps, vs_cfg.bitrate_kbps,

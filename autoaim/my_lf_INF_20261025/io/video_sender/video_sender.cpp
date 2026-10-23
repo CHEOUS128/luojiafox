@@ -41,10 +41,11 @@ constexpr std::size_t kInnerSeqBytes = 2;
 constexpr std::size_t kMaxInnerBytes = kTransportPacketBytes - kTransportLengthPrefix;  // 298
 constexpr std::size_t kMaxPayloadBytes = kMaxInnerBytes - kInnerSeqBytes;               // 296
 
-// 发送节拍：与 ACE 编码端 center_crop_packet_send_rate_hz=40 一致。
-// 40Hz × 296B ≈ 94.7kbps 是这条通道的实际上限；按节拍发可以避免
-// 一帧内猛发把下位机/VT03 的接收缓冲打爆。
-constexpr double kSendRateHz = 40.0;
+// 发送节拍默认值：与 ACE 编码端 center_crop_packet_send_rate_hz=40 一致。
+// 40Hz × 296B ≈ 94.7kbps 是这条通道的实际上限。
+// 可通过 configs/standard3.yaml 的 video_send_rate_hz 覆盖，
+// 低速率（如 2Hz）用于定位链路问题：每秒只发 2 个包，好数、好对比。
+constexpr double kDefaultSendRateHz = 40.0;
 
 void write_u16_le(std::uint8_t * out, std::uint16_t v)
 {
@@ -360,7 +361,7 @@ void VideoSender::drain_due(std::vector<std::vector<std::uint8_t>> & out, bool f
   }
   const double elapsed_s = std::chrono::duration<double>(now - impl_->last_tick).count();
   impl_->last_tick = now;
-  impl_->tokens = std::min(kTokenBurst, impl_->tokens + elapsed_s * kSendRateHz);
+  impl_->tokens = std::min(kTokenBurst, impl_->tokens + elapsed_s * config_.send_rate_hz);
 
   // force=true（flush）时忽略令牌，全部放出
   while (!impl_->pending.empty() && (force || impl_->tokens >= 1.0)) {

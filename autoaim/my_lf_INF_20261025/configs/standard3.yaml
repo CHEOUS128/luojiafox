@@ -127,3 +127,5 @@ video_bitrate_kbps: 90        # 码率（40Hz×296B≈94.7kbps 是实际上限�
 video_crop_size: 300          # 仅 keep_aspect=false 时有效：中心裁多少像素（想贴 ACE 就设 1000）
 video_x264_preset: "slow"     # 画质明显好于 veryfast；编码在独立线程，不阻塞主循环
 video_sharpen: 0.6            # USM 锐化强度（0=关闭；主观清晰度↑，几乎不增加码率）
+video_send_rate_hz: 40.0      # 出包节拍（包/秒），协议上限 50。
+                              # 排查链路时改成 2.0：每秒只发 2 个包，便于数清到达率
