@@ -498,6 +498,13 @@ def cmd_send(args):
     print("发的内容:")
     for s in styles:
         print("  %-6s %s" % (s, STYLE_DESC[s]))
+    if len(styles) > 1:
+        ss = args.start_seq & 1
+        print("  交替顺序: %s（每发一包 seq+1，所以%s数序号 = %s）" % (
+            " → ".join(styles),
+            "偶" if ss == 0 else "奇",
+            styles[0] if ss == 0 else styles[-1]))
+        print("  ⚠️ 事后用 probe/dump 看：如果只剩一种样式的序号，就说明另一种被这一路丢了。")
     print("")
     print("接线要求: PC 的 TX → VT03 的 RX，PC 的 GND → VT03 的 GND")
     print("          STM32 的 PG14 必须先断开（否则两个发送端顶在一起）")
@@ -1119,6 +1126,8 @@ def cmd_probe(args):
     if args.host in ("127.0.0.1", "localhost"):
         print("⚠️  127.0.0.1 = 本机。只有本机跑着模拟裁判系统时，这里才有数据；")
         print("    比赛/实车联调要看的是 192.168.12.1（选手端）。两边的包不是同一份。")
+        print("    另外：本机跑 probe 时，装在这台机器上的 RoboGo 也被顶掉了；")
+        print("    如果这里根本不是 CH 那台比赛电脑，这组数据只能证明『这台电脑这一路』。")
     print("⚠️  同一个机器人 ID 只能有一个 MQTT 客户端。跑这个之前**先关掉 RoboGo**，")
     print("    否则要么你也收不到，要么把 RoboGo 顶下线。")
     print("")
@@ -1221,15 +1230,36 @@ def cmd_probe(args):
     elif sizes.get(309):
         print("  ⚠️ 收到 309 字节的包 → VT03 原样透传了 0x0310 帧，客户端会因为超过 300 字节丢掉。")
         print("     → 让 STM32 只发 300 字节 data（去掉 A5 外壳）。")
+        print("     → 更好的办法是直接问发送端是谁：看下面『同一时间窗内客户端自己的证据』；")
+        print("       或在 RoboGo 状态栏看『未连接设备』里有没有『图传』（= 裁判系统认为 VT03 不在线）。")
     else:
-        print("  ✅ 有数据到 MQTT：VT03/VT13/选手端这一路在转发这 300 字节内容。")
+        print("  ✅ 有数据到 MQTT：VT03/VT13/选手端这一路在转发 300 字节内容。")
+        print("     ⚠️ 注意：probe 会顶掉同 ID 的客户端，这一轮客户端根本没在收；")
+        print("        所以本结果**不能**用来判断客户端有没有问题（这是旧文案常犯的错）。")
         if all_pkts and any(p["magic"] == "RM26" for p in all_pkts):
-            print("     但内层是 RM26 标记 = rm0310.py send 灌进去的测试包，不是相机视频。")
-            print("     它只证明『VT03 会原样转发 300 字节』；真视频链路要另测（send 关掉、只跑相机）。")
+            print("     内层是 RM26 标记 = rm0310.py send 灌进去的测试包，不是相机视频。")
+            print("     它证明『这条无线链路会把 300B 内容送到 MQTT』；真视频要另测（send 关掉、只跑相机）。")
         elif all_pkts and any(str(p["magic"]).startswith("H264") for p in all_pkts):
             print("     内层确实是 H.264 → 真视频已经到 MQTT 了。这时才轮到看客户端解码/显示。")
-        print("     另外：probe 会顶掉同 ID 的客户端，所以这一轮里客户端是收不到的；")
-        print("     要判断客户端，看下面『同一时间窗内客户端自己的证据』或关掉 probe 后看 network_capture.bin。")
+
+        # alt 实验专属判读：两种样式只有一种通过时，序号会呈"隔一条缺一条"
+        # （只对 RM26 灌包生效；真视频的序号是连续递增的，不走这段）
+        seqs = [p["seq"] for p in all_pkts]
+        is_test_packet = any(p["magic"] == "RM26" for p in all_pkts)
+        if is_test_packet and len(seqs) >= 4 and len({s & 1 for s in seqs}) == 1:
+            word = "奇" if (seqs[0] & 1) else "偶"
+            print("     另外：序号全是%s数、隔一条缺一条 = send --style alt 里两种样式只有一种被转发。" % word)
+            print("       canon = 300B 裸数据；frame = 309B 整帧（A5 开头，= STM32 实际发的形态）。")
+            print("       默认 --start-seq 0 时：偶数序号=canon，奇数序号=frame。")
+            print("       → 收到全是%s数，就说明 %s 这一半能过、另一半被丢。" % (
+                word, "frame(309B 整帧，剥壳后 300B)" if (seqs[0] & 1) else "canon(300B 裸包)"))
+            print("       想坐实就分开跑（各 30 秒，中间不停 probe）：")
+            print("         python rm0310.py send COMx --style frame --hz 1 --seconds 30")
+            print("         python rm0310.py send COMx --style canon --hz 1 --seconds 30")
+            print("       frame 能过 = 我们 STM32 现在发 309B 整帧的做法是对的，别再改。")
+        if n > 0 and arrivals and el - (arrivals[-1] - start) > 5:
+            print("     数据在 %.0fs 后停止增长：是灌包先结束（probe 比 send 跑得久），不是链路断了。" %
+                  (arrivals[-1] - start))
 
     _report_robo_side(start, time.time())
     sock.close()
