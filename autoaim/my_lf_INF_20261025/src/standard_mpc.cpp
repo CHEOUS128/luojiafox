@@ -1,6 +1,9 @@
 #include <fmt/core.h>
+#include <atomic>
 #include <chrono>
+#include <memory>
 #include <optional>
+#include <thread>
 #include <nlohmann/json.hpp>
 #include <opencv2/opencv.hpp>
 
@@ -79,19 +82,61 @@ int main(int argc, char * argv[])
     constexpr double fps_update_interval = 1.0;
     constexpr int kVideoPacketsPerCycle = 16;  // 每主循环最多发的视频包数（兜底）
 
+    // ---- [诊断 2026-10-23] 主循环看门狗 ----
+    // 日志是按 system_clock 打的，而帧率是按 steady_clock 算的，两者一旦对不上
+    // （例如机器从休眠恢复），日志会出现“好几秒一跳”甚至“时间倒着走”的假象。
+    // 这里每秒记录一次主循环的单调时钟心跳，并在卡住时明确说出卡在哪个环节。
+    // 它只读 atomic，自身开销可以忽略；排查完可以整段删掉。
+    struct LoopWatchdog
+    {
+      std::atomic<std::chrono::steady_clock::time_point> beat{std::chrono::steady_clock::now()};
+      std::atomic<int> stage{0};  // 1=等相机图 2=等云台数据 3=自瞄检测/跟踪
+      std::atomic<long long> count{0};
+      std::atomic<bool> stop{false};
+    };
+    auto wd = std::make_shared<LoopWatchdog>();
+    std::thread watchdog([wd] {
+      auto last_beat = wd->beat.load();
+      int stuck_seconds = 0;
+      while (!wd->stop.load()) {
+        for (int i = 0; i < 10 && !wd->stop.load(); ++i)
+          std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        if (wd->stop.load()) break;
+        const auto beat = wd->beat.load();
+        if (beat != last_beat) {
+          last_beat = beat;
+          stuck_seconds = 0;
+          continue;
+        }
+        ++stuck_seconds;
+        if (stuck_seconds < 3) continue;
+        const int stage = wd->stage.load();
+        const char * where = "未知位置";
+        if (stage == 1) where = "等相机出图（camera.read）";
+        else if (stage == 2) where = "等云台数据（gimbal.q：下位机串口没数据/在重连）";
+        else if (stage == 3) where = "自瞄检测/跟踪（yolo.detect / tracker.track）";
+        tools::logger()->warn(
+          "[看门狗] 主循环已连续 {} 秒没有走完一轮，当前卡在：{}。已完成 {} 轮。"
+          "（视频发送发不出帧就是这个原因，不是图传的问题）",
+          stuck_seconds, where, wd->count.load());
+      }
+    });
+
     // -------------------- 主循环 --------------------
     while (!exiter.exit()) {
         auto frame_start = std::chrono::steady_clock::now();
-
+        wd->stage = 1;
         camera.read(img, frame_start);  // 读取图像和时间戳
         if (img.empty()) break;
 
         // -------------------- 云台状态 --------------------
+        wd->stage = 2;
         Eigen::Quaterniond gimbal_q = gimbal.q(frame_start);
         solver.set_R_gimbal2world(gimbal_q);
         auto gs = gimbal.state();
 
         // -------------------- 自瞄核心 --------------------
+        wd->stage = 3;
         auto armors = yolo.detect(img, 0);
         auto targets = tracker.track(armors, frame_start);
 
@@ -136,6 +181,9 @@ int main(int argc, char * argv[])
 
         // -------------------- 帧率计算 --------------------
         auto frame_end = std::chrono::steady_clock::now();
+        wd->stage = 0;
+        wd->beat = frame_end;
+        ++wd->count;
         frame_count++;
         double elapsed_time = tools::delta_time(frame_end, last_frame_time);
 
@@ -214,5 +262,7 @@ int main(int argc, char * argv[])
     //     if (cv::waitKey(1) == 'q') break;
     }
 
+    wd->stop = true;
+    if (watchdog.joinable()) watchdog.join();
     return 0;
 }

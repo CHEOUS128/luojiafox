@@ -6,9 +6,12 @@
 #include <mutex>
 #include <iostream>
 #include <cstring> 
+#include <cstdlib>
 
 #include "include/GxIAPILegacy.h"
 #include "include/DxImageProc.h"
+
+#include "tools/logger.hpp"  // [诊断 2026-10-23] 相机出图速率日志
 
 constexpr double MS_TO_US = 1000.0;
 constexpr size_t THREAD_SAFE_QUEUE_MAX_SIZE = 1;
@@ -17,6 +20,12 @@ namespace io
 {
 
 static DaHeng* g_daheng_instance = nullptr;
+
+// [诊断 2026-10-23] 回调出图速率统计（判断"相机是不是真的在出图"）
+static std::chrono::steady_clock::time_point g_cb_last_log = std::chrono::steady_clock::now();
+static int g_cb_frame_count = 0;
+static int g_cb_drop_count = 0;  // 被回调过滤掉的帧（status 不对 / RAW 转 RGB 失败）
+static long g_last_probe = -1;   // 上一帧的采样和（判断画面有没有在变）
 
 static const char* gx_status_to_string(GX_STATUS status)
 {
@@ -34,8 +43,10 @@ void GX_STDC OnFrameCallback(GX_FRAME_CALLBACK_PARAM* pFrame)
 
 void DaHeng::onFrameCallback(GX_FRAME_CALLBACK_PARAM* pFrame)
 {
-    if (!pFrame || pFrame->status != GX_FRAME_STATUS_SUCCESS)
+    if (!pFrame || pFrame->status != GX_FRAME_STATUS_SUCCESS) {
+        ++g_cb_drop_count;
         return;
+    }
 
     CameraData data;
     cv::Mat bgr(pFrame->nHeight, pFrame->nWidth, CV_8UC3);
@@ -83,12 +94,37 @@ void DaHeng::onFrameCallback(GX_FRAME_CALLBACK_PARAM* pFrame)
         if (DxRaw8toRGB24Ex((void*)pFrame->pImgBuf, (void*)bgr.data,
                             pFrame->nWidth, pFrame->nHeight,
                             convert_type, color_filter, false, order) != DX_OK)
+        {
+            ++g_cb_drop_count;
             return;
+        }
 
         if (!lut_content_.empty()) {
             cv::Mat cv_lut(1, 256, CV_8U, lut_content_.data());
             cv::LUT(bgr, cv_lut, bgr);
         }
+    }
+
+    // [诊断 2026-10-23] 每 5 秒打一次相机实际出图速率。
+    // 注意：队列深度只有 1，主循环读得慢时这里会大量丢帧 —— 那正是我们要看的信息。
+    // 帧内容变化用几个采样点的灰度和表示：如果速率正常但 diff=0，
+    // 说明相机在重复送同一张图像（缓存/回绕），而不是主循环卡住。
+    ++g_cb_frame_count;
+    int diff = -1;
+    const auto now = std::chrono::steady_clock::now();
+    const double since_last = std::chrono::duration<double>(now - g_cb_last_log).count();
+    if (since_last >= 5.0) {
+        const long probe = static_cast<long>(bgr.data[0]) +
+                           static_cast<long>(bgr.data[bgr.total() / 2]) +
+                           static_cast<long>(bgr.data[bgr.total() - 1]);
+        if (g_last_probe >= 0) diff = std::abs(static_cast<int>(probe - g_last_probe));
+        g_last_probe = probe;
+        tools::logger()->info(
+            "[DaHeng] 相机出图 {:.1f} 帧/秒（回调过滤 {} 次，画面变化 {}）",
+            g_cb_frame_count / since_last, g_cb_drop_count, diff);
+        g_cb_frame_count = 0;
+        g_cb_drop_count = 0;
+        g_cb_last_log = now;
     }
 
     data.img = std::move(bgr);
@@ -173,6 +209,18 @@ DaHeng::DaHeng(double exposure_ms, double gain, const std::string& vid_pid)
     GXSendCommand(handle_, GX_COMMAND_ACQUISITION_START);
     capturing_ = true;
     last_fps_time_ = std::chrono::steady_clock::now();
+
+    // [诊断 2026-10-23] 回读相机真正生效的参数。
+    // 之前主循环只有 0.0~1.0 fps，先确认"相机到底在按多少帧率出图"：
+    // 曝光时间被相机拒绝/钳位、或者采集帧率上限不是 208fps，都会在这里露出来。
+    double rb_exp = -1.0, rb_gain = -1.0, rb_rate = -1.0;
+    GXGetFloat(handle_, GX_FLOAT_EXPOSURE_TIME, &rb_exp);
+    GXGetFloat(handle_, GX_FLOAT_GAIN, &rb_gain);
+    GXGetFloat(handle_, GX_FLOAT_CURRENT_ACQUISITION_FRAME_RATE, &rb_rate);
+    tools::logger()->info(
+        "[DaHeng] 参数回读：曝光 {:.0f}us（设定 {:.0f}us） 增益 {:.1f}（设定 {:.1f}） "
+        "相机采集帧率上限 {:.1f}fps  gamma=1.6 contrast=15",
+        rb_exp, exposure_us_, rb_gain, gain_, rb_rate);
 }
 
 DaHeng::~DaHeng()
