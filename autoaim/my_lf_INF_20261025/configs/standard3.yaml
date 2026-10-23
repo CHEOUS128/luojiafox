@@ -118,14 +118,24 @@ predict_time: 0.120     # s
 
 #####-----视频发送（第二视角）-----#####
 # 工业相机画面 → H.264 → 0x0310 → 下位机 → 图传 → 客户端 H 键切换
+#
+# 2026-10-23 改版：链路实测通过率只有 0.16%~0.64%，一个「要好几个包才能拼完」的大帧
+# 几乎不可能完整到达。现在改成 **一帧 = 一个包**：每帧独立编码（全 I 帧），
+# 整帧硬性限制在 296 字节以内，超了就整帧丢掉（绝不拆包）。
+# 这样任何一个包单独到达，客户端都能解出一张完整的图 → 先保证"能看到画面"。
+#
+# 想回到原来的全视野 300x240：把最后三行换成 300/240/1.0/10.0/90.0/10/0.6，
+# 并把 video_single_packet 改成 false。
 video_send_enable: true       # 完整功能：图传开启
-video_width: 300              # 输出宽（协议带宽限制 300B/包）
-video_height: 240             # 输出高：300x240=5:4，与相机 1280x1024 一致，全视野且无黑边
-video_keep_aspect: true       # true=整幅画面缩放到 300x240（全视野、无黑边）；false=中心裁剪
-video_fps: 10.0               # 帧率（带宽固定时降帧率=每帧更多比特；10fps 操作手感与清晰度平衡）
-video_bitrate_kbps: 90        # 码率（40Hz×296B≈94.7kbps 是实际上限，留余量防丢包）
-video_crop_size: 300          # 仅 keep_aspect=false 时有效：中心裁多少像素（想贴 ACE 就设 1000）
-video_x264_preset: "slow"     # 画质明显好于 veryfast；编码在独立线程，不阻塞主循环
-video_sharpen: 0.6            # USM 锐化强度（0=关闭；主观清晰度↑，几乎不增加码率）
-video_send_rate_hz: 40.0      # 出包节拍（包/秒），协议上限 50。
-                              # 排查链路时改成 2.0：每秒只发 2 个包，便于数清到达率
+video_width: 160              # 单包模式：160x160 是「塞得进 296B」和「看得清」的平衡点
+video_height: 160             # 64 的倍数最省码率（H.264 宏块 16x16；160=10 个宏块）
+video_keep_aspect: false      # false=从原图中心裁 crop_size×crop_size 再缩到上面的大小
+video_fps: 5.0                # 只发 5 帧/秒：链路丢得厉害，少发一点提高每帧到达率。
+                              # 嫌 5fps 卡可以改 10.0 + bitrate 20（实测 160x160 每帧约 234B 也塞得下）
+video_bitrate_kbps: 10        # 每帧上限的参考值；写 0 = 自动按 max_frame_bytes×帧率×0.85 算
+video_crop_size: 320          # 从 1280x1024 中心裁 320x320（约 1/4 边长）
+video_x264_preset: "slow"     # 编码在独立线程，不阻塞主循环；160x160 一帧只要几 ms
+video_sharpen: 0.0            # 单包模式下不要锐化：锐化会加高频细节、把帧撑大
+video_send_rate_hz: 40.0      # 出包节拍（包/秒），协议上限 50。5fps 时实际只用 5 包/秒
+video_single_packet: true     # ★一帧一个包：超 296 字节的帧直接丢，不拆包
+video_max_frame_bytes: 296    # 一帧 H.264 的硬上限 = 300 - 2B长度 - 2B序号

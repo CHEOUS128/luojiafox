@@ -60,10 +60,13 @@ int main(int argc, char * argv[])
             if (cfg_yaml["video_keep_aspect"]) vs_cfg.keep_aspect = cfg_yaml["video_keep_aspect"].as<bool>();
             if (cfg_yaml["video_sharpen"])     vs_cfg.sharpen = cfg_yaml["video_sharpen"].as<double>();
             if (cfg_yaml["video_send_rate_hz"]) vs_cfg.send_rate_hz = cfg_yaml["video_send_rate_hz"].as<double>();
+            if (cfg_yaml["video_single_packet"]) vs_cfg.single_packet = cfg_yaml["video_single_packet"].as<bool>();
+            if (cfg_yaml["video_max_frame_bytes"]) vs_cfg.max_frame_bytes = cfg_yaml["video_max_frame_bytes"].as<int>();
             video_sender.emplace(vs_cfg);
-            tools::logger()->info("[VideoSender] 已启用（{}x{} @{:.0f}fps {}kbps preset={} keep_aspect={} sharpen={}）",
+            tools::logger()->info("[VideoSender] 已启用（{}x{} @{:.0f}fps {}kbps preset={} keep_aspect={} sharpen={} 单包={}）",
                                   vs_cfg.width, vs_cfg.height, vs_cfg.fps, vs_cfg.bitrate_kbps,
-                                  vs_cfg.x264_preset, vs_cfg.keep_aspect, vs_cfg.sharpen);
+                                  vs_cfg.x264_preset, vs_cfg.keep_aspect, vs_cfg.sharpen,
+                                  vs_cfg.single_packet ? "是" : "否");
         } else {
             tools::logger()->info("[VideoSender] 未启用（配置 video_send_enable: false）");
         }

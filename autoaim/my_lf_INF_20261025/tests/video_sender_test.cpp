@@ -207,6 +207,8 @@ int main(int argc, char ** argv)
       if (yaml["video_x264_preset"])    cfg.x264_preset = yaml["video_x264_preset"].as<std::string>();
       if (yaml["video_keep_aspect"])    cfg.keep_aspect = yaml["video_keep_aspect"].as<bool>();
       if (yaml["video_sharpen"])        cfg.sharpen = yaml["video_sharpen"].as<double>();
+      if (yaml["video_single_packet"])  cfg.single_packet = yaml["video_single_packet"].as<bool>();
+      if (yaml["video_max_frame_bytes"]) cfg.max_frame_bytes = yaml["video_max_frame_bytes"].as<int>();
     } catch (const std::exception & e) {
       std::cerr << "⚠ 读取配置失败（使用默认参数）: " << e.what() << "\n";
     }

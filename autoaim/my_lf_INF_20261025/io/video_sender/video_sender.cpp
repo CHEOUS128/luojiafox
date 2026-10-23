@@ -81,6 +81,13 @@ struct VideoSender::Impl
   // ---- 仅工作线程访问 ----
   std::vector<std::uint8_t> stream_buf;   // 编码输出、尚未打包的字节
   std::size_t stream_offset = 0;          // 已消费到的位置
+  std::size_t frame_cap = kMaxPayloadBytes;  // 单包模式下一帧的硬上限（字节）
+  std::uint64_t stat_frames = 0;          // 单包模式统计：成功出包的帧数
+  std::uint64_t stat_oversize = 0;        // 单包模式统计：超限被丢的帧数
+  std::uint64_t stat_encode_fail = 0;     // 单包模式统计：编码器报错的次数
+  std::size_t stat_last_bytes = 0;        // 最近一帧的字节数
+  std::chrono::steady_clock::time_point stat_last_log{};
+  bool has_stat_last_log = false;
 
   // ---- 主线程与工作线程共享 ----
   std::mutex mtx;
@@ -149,11 +156,31 @@ VideoSender::VideoSender(const VideoSenderConfig & config)
   ctx->pix_fmt = AV_PIX_FMT_YUV420P;
   ctx->time_base = av_inv_q(fps_q);
   ctx->framerate = fps_q;
-  ctx->bit_rate = static_cast<std::int64_t>(config_.bitrate_kbps) * 1000LL;
-  ctx->rc_min_rate = ctx->bit_rate;
-  ctx->rc_max_rate = ctx->bit_rate;
-  ctx->rc_buffer_size = static_cast<std::int64_t>(config_.bitrate_kbps) * 500;  // 0.5s
-  ctx->gop_size = std::max(1, config_.keyframe_interval);
+
+  // 码率：单包模式下按「每帧不超过 max_frame_bytes」反推目标码率。
+  // 这个值只是给 x264 的目标，真正的硬约束在 encode_and_pack() 里的逐帧超限丢弃。
+  std::int64_t bitrate = static_cast<std::int64_t>(config_.bitrate_kbps) * 1000LL;
+  std::size_t frame_cap = kMaxPayloadBytes;
+  if (config_.single_packet) {
+    frame_cap = static_cast<std::size_t>(std::clamp(config_.max_frame_bytes, 32, 296));
+    const std::int64_t cap_bps = static_cast<std::int64_t>(
+      static_cast<double>(frame_cap) * 8.0 * config_.fps * 0.85);
+    if (config_.bitrate_kbps <= 0) {
+      bitrate = cap_bps;  // 配置写 0（或负数）= 自动
+    } else {
+      bitrate = std::min(bitrate, cap_bps);
+    }
+    bitrate = std::max<std::int64_t>(bitrate, 1000);
+  }
+  ctx->bit_rate = bitrate;
+  ctx->rc_min_rate = bitrate;
+  ctx->rc_max_rate = bitrate;
+  // 单包模式必须用很小的 VBV：默认 buf 太大时，x264 会在前几帧花光码率预算，
+  // 之后每帧都往 cap 上顶，超限丢弃的帧会变多。
+  ctx->rc_buffer_size = config_.single_packet
+                          ? std::max<std::int64_t>(bitrate / 2, 1000)
+                          : static_cast<std::int64_t>(config_.bitrate_kbps) * 500;  // 0.5s
+  ctx->gop_size = config_.single_packet ? 1 : std::max(1, config_.keyframe_interval);
   ctx->max_b_frames = 0;
   ctx->thread_count = 0;
   ctx->keyint_min = 1;
@@ -163,9 +190,11 @@ VideoSender::VideoSender(const VideoSenderConfig & config)
   av_opt_set(ctx->priv_data, "profile", "baseline", 0);
   // repeat-headers=1 + annexb=1：每个关键帧前重复 SPS/PPS，客户端中途加入也能解；
   // aq-mode=1：按宏块复杂度分配码率，纹理区给更多比特（提升主观清晰度）
-  av_opt_set(ctx->priv_data, "x264-params",
-             "repeat-headers=1:annexb=1:bframes=0:scenecut=0:force-cfr=1:"
-             "aq-mode=1:aq-strength=1.2", 0);
+  // 单包模式额外 keyint=1/min-keyint=1：每一帧都是 IDR，任意一个包单独到了都能解出图。
+  std::string x264_params =
+    "repeat-headers=1:annexb=1:bframes=0:scenecut=0:force-cfr=1:aq-mode=1:aq-strength=1.2";
+  if (config_.single_packet) x264_params += ":keyint=1:min-keyint=1";
+  av_opt_set(ctx->priv_data, "x264-params", x264_params.c_str(), 0);
 
   const int ret = avcodec_open2(ctx, codec, nullptr);
   if (ret < 0) {
@@ -177,6 +206,7 @@ VideoSender::VideoSender(const VideoSenderConfig & config)
   if (!impl_->frame || !impl_->packet) {
     throw std::runtime_error("VideoSender: alloc frame/packet failed");
   }
+  impl_->frame_cap = frame_cap;
   impl_->frame->format = ctx->pix_fmt;
   impl_->frame->width = ctx->width;
   impl_->frame->height = ctx->height;
@@ -194,8 +224,14 @@ VideoSender::VideoSender(const VideoSenderConfig & config)
 
   tools::logger()->info(
     "[VideoSender] 初始化完成 {}x{} @{:.0f}fps {}kbps preset={} sharpen={}",
-    config_.width, config_.height, config_.fps, config_.bitrate_kbps,
+    config_.width, config_.height, config_.fps, bitrate / 1000,
     config_.x264_preset, config_.sharpen);
+  if (config_.single_packet) {
+    tools::logger()->info(
+      "[VideoSender] 单包模式：每帧独立编码（全 I 帧），整帧必须 ≤ {} 字节，"
+      "超限整帧丢弃（绝不拆包）。编码失败或超限时会打日志。",
+      frame_cap);
+  }
 
   // 编码放到独立线程：preset=slow 在 Jetson 上一帧约 40~70ms，
   // 放在自瞄主循环里会严重拖慢云台控制（实测 10fps 时主循环被拉到 149ms/轮）。
@@ -313,6 +349,7 @@ void VideoSender::encode_and_pack(const cv::Mat & bgr_frame)
   int ret = avcodec_send_frame(impl_->codec_ctx, impl_->frame);
   if (ret < 0) {
     tools::logger()->warn("[VideoSender] send_frame failed: {}", ffmpeg_err(ret));
+    ++impl_->stat_encode_fail;
     return;
   }
   while (true) {
@@ -320,6 +357,7 @@ void VideoSender::encode_and_pack(const cv::Mat & bgr_frame)
     if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF) break;
     if (ret < 0) {
       tools::logger()->warn("[VideoSender] receive_packet failed: {}", ffmpeg_err(ret));
+      ++impl_->stat_encode_fail;
       break;
     }
     impl_->stream_buf.insert(impl_->stream_buf.end(),
@@ -328,7 +366,37 @@ void VideoSender::encode_and_pack(const cv::Mat & bgr_frame)
     av_packet_unref(impl_->packet);
   }
 
-  // ---- 打包：每 296 字节一个内层包 → 一个 300 字节 transport packet ----
+  // ---- 单包模式：一帧 == 一个 0x0310 包；塞不下就整帧丢掉，绝不拆包 ----
+  // 链路通过率只有千分之几，多包的大帧永远拼不完整；而全 I 帧编码让每个包
+  // 自带 SPS/PPS + IDR，任何一个包单独到达都能解出一张完整的图。
+  if (config_.single_packet) {
+    const std::size_t sz = impl_->stream_buf.size();
+    impl_->stat_last_bytes = sz;
+    if (sz > 0 && sz <= impl_->frame_cap) {
+      auto tp = make_transport_packet(impl_->stream_buf.data(), sz);
+      ++impl_->stat_frames;
+      std::lock_guard<std::mutex> lock(impl_->mtx);
+      impl_->pending.push_back(std::move(tp));
+    } else if (sz > impl_->frame_cap) {
+      ++impl_->stat_oversize;
+    }
+    impl_->stream_buf.clear();
+    impl_->stream_offset = 0;
+
+    // 每 5 秒打一次统计：没有这行日志就没法判断"一帧一包"有没有生效
+    const auto now = std::chrono::steady_clock::now();
+    if (!impl_->has_stat_last_log || now - impl_->stat_last_log >= std::chrono::seconds(5)) {
+      impl_->stat_last_log = now;
+      impl_->has_stat_last_log = true;
+      tools::logger()->info(
+        "[VideoSender] 1包/帧 统计：成帧 {} 超限丢弃 {} 编码错误 {}  最近帧 {} 字节（上限 {}）",
+        impl_->stat_frames, impl_->stat_oversize, impl_->stat_encode_fail,
+        impl_->stat_last_bytes, impl_->frame_cap);
+    }
+    return;
+  }
+
+  // ---- 多包模式（旧逻辑）：每 296 字节一个内层包 → 一个 300 字节 transport packet ----
   // 注意：剩余不足 296 字节的尾巴必须在本帧立即封包（补 0 到 300），
   //     不能跨帧拼接：客户端每个 0x0310 包独立解析，内层 length 为 0 即视为
   //     填充截止；如果下帧数据接到本包填充后面，会永久丢失。
