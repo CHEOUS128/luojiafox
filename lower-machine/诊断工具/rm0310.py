@@ -82,6 +82,7 @@ rm0310.py —— 0x0310 第二视角链路「分段隔离」诊断工具（纯�
 from __future__ import print_function
 
 import argparse
+import datetime
 import json
 import os
 import socket
@@ -103,6 +104,14 @@ INNER_CANON_LEN = 298           # [2B seq][296B 内容]；协议上不能超过 
 
 RC_SOF = b"\xa9\x53"            # VT03 每 14ms 输出的 21 字节遥控帧（说明书 p.15）
 RC_FRAME_BYTES = 21
+
+# RoboGo 的日志目录（客户端会在 <exe 所在目录>/logs/<会话>/ 下写 robogo.log）。
+# 探针跑完会去这里找"同一时间段客户端是不是也在场、它自己收到了多少包"，
+# 用来区分"包没到客户端"和"到了但客户端解不出来"。
+ROBO_CLIENT_LOG_DIRS = [
+    r"C:\Users\CH\Desktop\robot记录\luojiafox\luojiamaster\源码\build\release\logs",
+    r"C:\Users\CH\Desktop\robot记录\luojiafox\luojiamaster\程序\logs",
+]
 
 # ------------------------------ CRC 表 ------------------------------------
 CRC8_TAB = bytes.fromhex(
@@ -956,6 +965,111 @@ def cmd_gen(args):
 # --------------------------------------------------------------------------
 # 子命令：probe（直接连 MQTT，看 CustomByteBlock）
 # --------------------------------------------------------------------------
+def _find_robo_sessions(start_ts, end_ts):
+    """找 RoboGo 在 [start_ts, end_ts] 期间写过的会话目录（按 robogo.log 的 mtime 判断）。"""
+    roots = list(ROBO_CLIENT_LOG_DIRS)
+    env = os.environ.get("ROBOGO_LOG_DIRS")
+    if env:
+        roots = [p for p in env.split(os.pathsep) if p] + roots
+    found = []
+    for root in roots:
+        if not os.path.isdir(root):
+            continue
+        try:
+            names = os.listdir(root)
+        except OSError:
+            continue
+        for name in names:
+            sdir = os.path.join(root, name)
+            log = os.path.join(sdir, "robogo.log")
+            if not os.path.isfile(log):
+                continue
+            try:
+                mtime = os.path.getmtime(log)
+            except OSError:
+                continue
+            if start_ts - 120 <= mtime <= end_ts + 120:
+                found.append(sdir)
+    return found
+
+
+def _report_robo_side(start_ts, end_ts):
+    """探针结束后，看同一时间窗内客户端自己收到了什么。
+
+    这一步能把两种"没画面"分开：
+      * 客户端压根没连上 MQTT / 没收到 CustomByteBlock → 不是客户端解包的问题
+      * 客户端收到了，但长度/内层格式不对 → 才是格式或解码的问题
+    """
+    sessions = _find_robo_sessions(start_ts, end_ts)
+    print("")
+    print("=== 同一时间窗内客户端自己的证据 ===")
+    if not sessions:
+        print("  没找到这段时间的 RoboGo 会话（可能客户端没开，或日志不在默认目录）。")
+        print("  客户端如果没开，这一轮探针只能证明『官方端 MQTT 上有包』，不能证明客户端侧。")
+        return
+    for sdir in sessions:
+        print("  [会话] %s" % sdir)
+        log = os.path.join(sdir, "robogo.log")
+        n_ok = n_timeout = n_error = 0
+        first_hs = last_hs = None
+        try:
+            with open(log, "r", encoding="utf-8", errors="replace") as fh:
+                for line in fh:
+                    if "MQTT底层网络协议握手成功" in line:
+                        n_ok += 1
+                        stamp = line[:19]
+                        if first_hs is None:
+                            first_hs = stamp
+                        last_hs = stamp
+                    if "MQTT操作超时" in line:
+                        n_timeout += 1
+                    if "MQTT运行异常" in line:
+                        n_error += 1
+        except OSError as e:
+            print("    读不了 robogo.log: %s" % e)
+            continue
+        print("    MQTT 握手成功 %d 次（%s ~ %s），操作超时 %d 次，运行异常 %d 次" % (
+            n_ok, first_hs or "-", last_hs or "-", n_timeout, n_error))
+        cap = os.path.join(sdir, "network_capture.bin")
+        n_rx = None
+        if os.path.isfile(cap):
+            try:
+                n_rx = _count_cbb_rx(cap)
+                print("    客户端 network_capture.bin 里 CustomByteBlock(rx) = %d 条" % n_rx)
+            except OSError as e:
+                print("    读不了 network_capture.bin: %s" % e)
+        if n_ok == 0:
+            print("    → 这个会话里客户端一次都没连上 MQTT（握手没成功），")
+            print("      所以它收不到任何 CustomByteBlock，跟解包/解码无关。")
+        elif n_rx == 0:
+            print("    → 客户端连上了 MQTT、别的主题一直在收，但 CustomByteBlock 一条都没有。")
+            print("      说明那段时间 0x0310 数据没有到达选手端 → 不是客户端解码的问题。")
+        elif n_rx:
+            print("    → 客户端确实收到了 CustomByteBlock，可以据此判断格式/解码。")
+
+
+def _count_cbb_rx(cap_path):
+    """只数 network_capture.bin 里 CustomByteBlock 的 rx 记录，不做完整解析。"""
+    n = 0
+    with open(cap_path, "rb") as fh:
+        head = fh.read(16)
+        if head[:8] != b"RBNCAP1\n":
+            return 0
+        while True:
+            hdr = fh.read(12)
+            if len(hdr) < 12 or hdr[:4] != b"REC2":
+                break
+            body_size = struct.unpack_from("<I", hdr, 4)[0]
+            body = fh.read(body_size)
+            if len(body) < body_size:
+                break
+            _t, _tr, direction, chlen, peerlen, _plen = struct.unpack_from("<QBBHHI", body, 0)
+            channel = body[18:18 + chlen].decode("utf-8", "replace")
+            if channel == "CustomByteBlock" and direction == 1:
+                n += 1
+    return n
+
+
 def _mqtt_enc_len(n):
     out = bytearray()
     while True:
@@ -1002,6 +1116,9 @@ def cmd_probe(args):
     cid = str(args.robot).encode()
     print("=== MQTT 探针 ===")
     print("目标 %s:%d  clientID=%s  主题=%s" % (args.host, args.port, cid.decode(), args.topic))
+    if args.host in ("127.0.0.1", "localhost"):
+        print("⚠️  127.0.0.1 = 本机。只有本机跑着模拟裁判系统时，这里才有数据；")
+        print("    比赛/实车联调要看的是 192.168.12.1（选手端）。两边的包不是同一份。")
     print("⚠️  同一个机器人 ID 只能有一个 MQTT 客户端。跑这个之前**先关掉 RoboGo**，")
     print("    否则要么你也收不到，要么把 RoboGo 顶下线。")
     print("")
@@ -1037,6 +1154,7 @@ def cmd_probe(args):
     n = 0
     sizes = {}
     all_pkts = []
+    arrivals = []
     other_topics = {}
     next_report = start + 5.0
     while time.time() - start < args.seconds:
@@ -1061,6 +1179,7 @@ def cmd_probe(args):
                 sizes[len(inner)] = sizes.get(len(inner), 0) + 1
                 pkts, _ = parse_payload_300(inner, args.style)
                 all_pkts.extend(pkts)
+                arrivals.append(time.time())
                 n += 1
                 if n <= 5 or n % 20 == 0:
                     print("  [%d] %dB → 内层 %s" % (
@@ -1082,6 +1201,16 @@ def cmd_probe(args):
         print("  内层序号: 包=%d 唯一=%d 丢=%d 重复=%d" % (
             st["count"], st["unique"], st["lost"], max(0, st["count"] - st["unique"])))
         print("  缺口: %s" % (st["lost_list"] or "无"))
+    if len(arrivals) >= 2:
+        span = arrivals[-1] - arrivals[0]
+        gaps = [b - a for a, b in zip(arrivals, arrivals[1:])]
+        gaps_sorted = sorted(gaps)
+        print("  到达时间: 首=%.1fs 末=%.1fs 跨度=%.1fs" % (
+            arrivals[0] - start, arrivals[-1] - start, span))
+        print("  到达间隔: 中位 %.2fs  最大 %.2fs  最小 %.3fs" % (
+            gaps_sorted[len(gaps_sorted) // 2], max(gaps), min(gaps)))
+        print("  （对照：send 用 --hz 1 每秒发 1 包，如果这里中位≈1s 说明基本没丢；")
+        print("    中位明显大于 1s 说明一路在丢包）")
     print("")
     if n == 0:
         print("  ❌ 0 条 CustomByteBlock")
@@ -1094,6 +1223,8 @@ def cmd_probe(args):
         print("     → 让 STM32 只发 300 字节 data（去掉 A5 外壳）。")
     else:
         print("  ✅ 有数据到 MQTT → VT03/VT13/选手端这一路是通的，问题在客户端侧或格式。")
+
+    _report_robo_side(start, time.time())
     sock.close()
     return 0
 
