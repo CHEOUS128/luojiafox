@@ -30,7 +30,7 @@ call :unpack readerwriterqueue "readerwriterqueue-131af2c.tar.gz"
 if errorlevel 1 goto :failed
 call :unpack stb               "stb-31c1ad3.tar.gz"
 if errorlevel 1 goto :failed
-call :unpack_boost             "boost-1.91.0-1-cmake.tar.xz"
+call :unpack_boost             boost             "boost-1.91.0-1-cmake.tar.xz"
 if errorlevel 1 goto :failed
 
 echo.
