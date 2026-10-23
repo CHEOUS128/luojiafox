@@ -23,8 +23,14 @@ logs/
 *.log
 
 # ===== 大体积资源（GitHub 单文件上限 100MB）=====
-# 依赖压缩包（boost 103.5MB）
-luojiamaster/源码/3rdparty_downloads/_archives/
+# 依赖压缩包：boost 单文件 103.5MB，超过 GitHub 100MB 硬上限，只能排除。
+# 其余 8 个小包（≤7.2MB）随仓库上传，unpack_deps.bat 在一台新电脑上仍可用。
+luojiamaster/源码/3rdparty_downloads/_archives/boost-*
+# 其余 8 个依赖的已解压源码（约 76MB）随仓库上传，新电脑 clone 后可直接编译。
+# boost 已解压源码（39MB / 3.8 万个文件）不放进 git：
+#   它是第三方上游代码，且这里放不下它自己的压缩包（103.5MB 超 GitHub 上限），
+#   缺了它 cmake --preset release 会自动按 CMakeLists.txt 的 URL 下载，见完整复现指南文末。
+luojiamaster/源码/3rdparty_downloads/boost/
 # 自瞄：演示视频与模型文件
 autoaim/**/assets/
 autoaim/**/*.mp4
@@ -44,6 +50,13 @@ __pycache__/
 *.tmp
 *.bak
 *~
+
+# ===== 第三方源码里被上面通用规则误伤的文件（必须保留）=====
+# directxtk12 自带一个 build/ 目录，里面是 CMake 辅助脚本，不是编译产物
+!luojiamaster/源码/3rdparty_downloads/directxtk12/build/
+!luojiamaster/源码/3rdparty_downloads/directxtk12/build/**
+# protobuf 的 *.map 是 Linux 链接脚本（文本），不是 Keil 的 map 文件
+!luojiamaster/源码/3rdparty_downloads/protobuf/src/*.map
 
 # ===== 注意：不要排除 *.lib =====
 # luojiamaster/源码/3rdparty/ffmpeg/lib/windows_x86_64/ 下的

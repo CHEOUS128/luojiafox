@@ -1,0 +1,369 @@
+:last-update-label!:
+
+= History
+
+== 10.3.0
+* Added get_qos2_publish_handled_pids(), restore_qos2_publish_handled_pids(), restore_packets(), and get_stored_packets() to client for convenient. #449
+  * get_endpoint() can be omitted now.
+* Refined reconnect examples. #449
+* Added websocket async_close timeout. #448
+* Added documentation regarding stream reuse restrictions for TLS-related streams. #447
+
+== 10.2.8
+* Added Share Name character check. #445
+
+== 10.2.7
+* Implemented cmake package version checking. #124, #444,
+* Fixed broker tool not delivering all retained messages when wildcard subscription matches multiple topics. #442, #443
+
+== 10.2.6
+* Removed unintentional copy requiment from some of async functions parameter. #439, #440
+* Fixed Heap-use-after-free during broker shutdown. #437
+* Rifined documents. #435
+* Added TLS Websocket verify none port to broker for browser. #434
+* Added Cerfiticate file's digitalSignature to keyUsage. #432
+* Fixed wss connection from Web Browser handshake failed problem. #431
+* Changed trial broker on `async-mqtt.redboltz.net` ws and wss port. #430
+  * ws was 10080 but Chrome block it by default. Updated to 80.
+  * wss was 10443 but Chrome doesn't block it by default. But for consistency, updated to 443.
+  * system_test still uses 10080 and 10443 to avoid conflict.
+
+== 10.2.5
+* Fixed missing server_keep_alive timer operation for CONNACK packet sending. #429
+
+== 10.2.4
+* Fixed invalid sendable packet checking whne ASYNC_MQTT_SEPARATE_COMPILATION is defined. #428
+
+== 10.2.3
+* Added missing pingresp timer cancel request hanndling on asio_bind sending. #426
+
+== 10.2.2
+* Fixed pingresp timer management. #423
+
+== 10.2.1
+* Fixed receive_maximum invalid handling issue. #422
+
+== 10.2.0
+* Fixed offline publish/pubrel packet_id management. #419
+* Added packet_id limit functionality for testing. #418
+* Recovered missing compile-time Role-Packet checking functionality. #417
+* Added broker's Client Certificate subjectAltName. #416
+* Fixed invalid remaining length parsing problem on disconnect and auth packet. #415
+* Supported Boost.1.88.0 defaulted process v2. #414
+* Fixed PacketIdBytes treatment in MQTT v5 publish response packets. #412
+* Refined documents. #410
+* Refined CI. #409
+* Fixed warnings on release build. #409
+* Adjusted and unified broker's `read_buf_size` option's default value. #408
+* Updated docker build. #408
+
+== 10.1.0
+* Added C++20 coroutine version of broker (experimental). #406
+* Fixed connection status updating timing. #402
+* Refined CI. #401
+* Refined log level. #399, #402
+* Refined documentr. Added coding rule to navigation bar.  #396
+* Refined broker. #395, #398, #405
+* Changed the broker auth JSON file comment syntax. #394
+** Now supports C/C++-style line and block comments.
+** The `#` line comment syntax is no longer supported.
+** For migrating, simply replace `#` with `//`.
+** *This is a breaking change for the tool (not the library), so the major version remains unchanged.*
+* Fixed broker websocket connection. #393, #397
+** It doesn't affect the library part.
+* Refined documents. #389, #390
+
+== 10.0.0
+=== breaking changes #388
+* Re-organized include files.
+** See https://redboltz.github.io/async_mqtt/doc/10.0.0/async_mqtt/header.html
+* Removed non bulk read to meet Sans-I/O interface.
+* Supported I/O independent (aka Sans-I/O) library.
+* underlying_handshake functionality is updated from free function to member function.
+** Simply replace `async_underlying_handshake(your_ep.next_layer(), ...)` with `your_ep.async_underlying_handshake(...)`.
+
+=== other updates
+* Added invalid combination checking of sharename and nl(no local). #372
+* Fixed receive maximum processing. #371
+* Fixed invalid Message Expiry Interval applying. #369
+* Fixed invalid template parameter comparison. #368
+* Added custom logger example. #367
+* Refined documents. #364, #365
+* Made colored log selectable (by default true(colored)). #363
+* Fixed misuse of bound allocator. #362
+* Fixed TLS example. #361
+
+== 9.0.2
+* Added ASYNC_MQTT_BUILD_EXAMPLES_SEPARATE option to enable library separate build example. #359
+* Fixed TLS timeout logic. #357
+* Fixed broker auth file for docker. #356
+
+== 9.0.1
+* Fixed TLS plug out timeout logic. #355
+* Refined client_cli tool. #354
+* Refined bench tool. #352
+* Refined docker container. #350
+* Moved setup_log.hpp to `util/` (appropriate location). #349
+* Refined documents. #348, #349, #351
+
+== 9.0.0
+=== breaking changes
+* endpoint, basic_endpoint, and client become value based design. #346
+** static member function `create()` is removed.
+** constructor becomes public.
+** move constructor is supported.
+** you can replace `endpoint<...>::create(...)`  with `endpoint<...>{...}` for value or `std::make_shared<endpoint<...>>(...)` for shared_ptr.
+* Updated timeout duration setting function parameter type as `std::chorono::milliseconds`. #342, #345
+** User can pass any duration types like `std::chrono::milliseconds`, `std::chrono::seconds`, etc.
+** The Mminimum resolution is milliseconds.
+
+=== other updates
+* Moved all implementations of basic_endpoint member functions to impl. #343
+* Deleted unused and undefined `is_error()` function. #341
+* Deleted `client` move operations. #339
+* Fixed cmake warnings due to CMP0167. #338
+* Removed invalid `#`. #336, #337
+* Refined documents. #335, #340, #347
+* Added separate compilation mode customization points. #331
+* Added destructor comment for basic_endpoint and client. #330
+* Refined unit_test. #328, #329
+* Updated cli library. #327
+* Added all RTT output mode to bench. #326
+* Fixed private constructor chosen problem on publish packet. #325
+* Refined tests. #322, #333, #334
+
+== 8.0.1
+* Fixed required boost version. #322
+** Boost 1.84.0 or later is required.
+*** If you don't build tests, Boost 1.82.0 or later is required.
+* Fixed bench tool infinity acqire packet_id problem on QoS1, 2. #320
+* Added `ASYNC_MQTT_BUILD_LIB` cmake option. #319
+* Restored missing Dockerfile.ubuntu. #318
+
+== 8.0.0
+=== breaking changes
+* `client` becomes `shared_ptr` similar as `endpoint`. #315
+** To create `client` instance, `client<...>::create(args)` similar as `endpoint`.
+** This is required to keep client's lifetime during async operation is working.
+** `client` and `endpoint` are consistent interface now.
+
+=== other updates
+* Move endpoint definition (using) to endpoint_fwd.hpp #311, #312
+* install `*.ipp` files along with other header files #309
+* Refined documents. #308
+
+== 7.0.0
+=== breaking changes
+* client::async_recv() CompletionHandler signature is updated to `void(error_code, packet_variant)`. #281.
+** `packet_variant` has one of `std::monostate`, `[v3_1_1|v5]::publish_packet`, `[v3_1_1|v5]::disconnect_packet`, or `v5::auth_packet`.
+* Renamed the typename from `pubres_t`  to `pubres_type` for consistency. #280
+* Re-designed error_code handling respect to Boost.Asio way. #266, #270, 271, #272, #273, #299
+** All async functions has the Completion Handler signature as `void(async_mqtt::error_code, ...)`, except `void()`.
+*** It works well with other Boost.Asio based libraries, and Boost.Asio itself.
+
+=== other updates
+* Added footprint example. #304
+* Added async_auth() to client. #303
+* Added reconnect code to examples. #302
+* Fixed dangling reference on underlying_handshake. #301
+* Added bulk read functionality. #300
+* Refined CI. #295
+* Fixed async_acquire_unique_packet_id_wait_until() cancel support. #292
+* Refined packet reading. Fixed Header and the first byte of Remaining Length are read all at once. #291
+* Fixed set_pingreq_send_interval_ms() value 0 treatment. #290
+* Fixed non exist topic alias treatment. #289
+* Fixed connack packet sending condition on error. #288
+* Fixed async_recv after cancel behave invalidly bug. #287
+* Fixed cancel treatment. #286
+* Added using recycling allocator option for the broker. #283
+* Added separate compilation mode support. #282
+** To enable separate compilation mode, define ASYNC_MQTT_SEPARATE_COMPILATION
+* Added bind_cancellation_slot test #268
+* Supported PINGREQ overriding by ServerKeepAlive. #271
+* Refined tests. #269, #274, #275, #287, #288, #289, #290, #296, #297
+* Refined documents. #276, #292, #305, #306, #307
+* Refined tools (bench) #278
+* Added endpoint getter to client. #279
+
+== 6.0.0
+=== breaking changes
+* Added `async_` prefix to all async functions to support default completion token. #238, #242
+** Some of async/sync function overload had been conflicted. e.g) acquire_unique_packet_id().
+* Unified naming rule of types to `*_type`. #232
+* Refined type of PacketIdentifier. Now `packet_id_type` is the type. #231
+* Moved include/async_mqtt/broker/*.hpp to tool/include/broker/*.hpp #224
+** Those are for broker allication that is used for system testing.
+* Re-organized directory strucure respect to boost libraries. #211, #229, #230, #234
+** It affects the users only if include the specific header file directly.
+* Re-desined strand handling. #206
+** template parameter Strand is removed. Users can pass strand wrapped executor for multi threading.
+** associated properties of the completion handler are correctly propagated.
+* Removed buffer from packet interface except the infterface for adcanced user. #195, #262
+** For example, create PUBLISH packet using "topic1", and get the filed as string by `topic()`.
+*** No `allocate_buffer("topic1")` is required.
+* Organized predefined headers. #194
+** For mqtt, include `async_mqtt/all.hpp`. In addition,
+** For mqtts, include `async_mqtt/predefined_layer/mqtts.hpp`
+** For ws, include `async_mqtt/predefined_layer/ws.hpp`
+** For wss, include `async_mqtt/predefined_layer/wss.hpp`
+
+=== other updates
+* Removed all boost::asio::bind_executor() from the library code. #247, #250, #256, #257
+* client supported flexible parameters. #241, #244
+** You can pass not only packet instence but also the parameters of packet's constructor directly to the packet sending member functions.
+* Supported default completion token. #238, #240
+* Refined CI. #228
+* Refined header dependency checking. #225
+* Removed the inclusion of the Boost.Beast detail directory. #223
+* Used bound allocator to allocate buffer for packet on receive. #222, #243
+* Added convenient handshaking function for underlying layers. #216, #255
+** TCP, TLS, Websocket, Websocket on TLS are handshaked by one function call.
+* Refined documents. #220, #222, #232, #233, #234, #235, #243, #252, #253, #258, #262
+* Refined examples. #214, #220, #250, #258, #259, #260, #261
+
+== 5.1.2
+* Refined custom underlying layer support. #190, #191, #193
+
+== 5.1.1
+* Added client's infinity timer cancelling without data arrival support. #185
+* Modified client::get_executor() return value.#184
+
+== 5.1.0
+* Added tests. #180
+* Added high level MQTT client APIs support. #178
+
+== 5.0.0
+
+=== breaking changes
+* Removed core sub directory and move file to upper directory. #158
+* Added null strand support. #153, #160, #161
+** Note: If you are't using `basic_endpoint` directly, using only `endpoint`, no actions are required.
+
+==== broker
+* Renamed from "groups" to "group" for auth.json. #171
+
+=== other updates
+* Added bulk packet writing functionality. #169, #170
+* Fixed unused variable in release build. #167
+* Refined web socket async_read using Boost.Asio's free function. #165
+* Refined documents. #162, 173, #174, #175, #176
+* Removed redundant locks from internal queue. #157
+* Added tests. #154, #156
+* Refined CI. #155, #166
+
+==== broker
+* Added auth.json on the fly updating support using SIGUSR1 except win32. #172
+* Optimized io_context running on one thread case. #163
+* Supported tcp_no_delay option. #164
+
+== 4.1.0
+* Re-designed unique_scope_guard. #146, #148, #149
+* Fixed moved from object access. #144
+* Removed code repeat. #140
+* Added acquire_unique_packet_id_wait_until(). #138, #139, #141, #142, #151
+* Relaxed epsp_wrap constructor for broker. #137
+* Supported no matching subscribers reason code for broker. #133
+* Added all.hpp generator. #131
+* Refined client_cli. #130
+* Added print payload option. #129
+* Added keep_alive settiong to bench. #125
+* Fixed num_of_const_buffer_sequence. #120, #121
+* Refined tests. #120, #122, #123, #127, #128, #132, #134, #136, #145
+* Refined packet comparison. #119
+* Replaced return type with auto. #110
+* Added UTF-8 checking. #107
+* Replaced callback with CompletionToken on broker. #106
+* Refined C++20 couroutune example. #105
+* Used any_io_executor as the base of predefined mqtt protocol. #104
+* Refined documentation. #103
+
+
+== 4.0.0
+
+=== breaking changes
+* Fixed multiple close problem. In order to do that endpoint become shared_ptr based design. #98, #100, #101, #102
+
+=== other updates
+* Refined documents. #97
+* Added TLS async_shutdown timeout. #99
+
+== 3.0.0
+
+=== breaking changes
+* Fixed inconsistent function names. #84, #89
+** get_stored() => get_stored_packets()
+** set_ping_resp_recv_timeout_ms() => set_pingresp_recv_timeout_ms()
+
+=== other updates
+* Improved buffer implementation to support various compilers. #87
+* Improved packet_id management. #85
+* Fixed packet_id length checking. #20
+
+== 2.0.0
+
+=== breaking changes
+
+==== endpoint
+* Made endpoint non movable. #79.
+** It is designed non copyable and non movable but the code was able to movable invalidly,
+   so this is a bug fix. However some of test, broker, and bench code had been used move constructor.
+   Hence I categolize the fix to breaking changes.
+
+==== broker
+* Added enable_shared_from_this to session_state. #67, #68
+
+=== other updates
+* Added to_buffer function for std::vector<buffer>. #77
+* Refined CI. #75
+* Fixed invalid sendable packet checking. #74
+* Added fixed CPU core map by ioc for broker. #69, #70
+* Fixed endpoint's internal queue operation. #66
+* Refined documents. #62
+* Refined examples. #61
+* Refined bench. #60, #63, #64, #65
+
+== 1.0.9
+* Removed debung print. #59
+
+== 1.0.8
+* Fixed invalid async_write queue operation. #57
+* Improved bench tool. #53, #54, #56
+
+== 1.0.7
+* Removed zlib dependency. #51
+* Refined topic alias. #48
+* Refined broker's CA certificate checking. #45, #46
+* Fixed recv() with filter compile error. #44
+
+== 1.0.6
+* Fixed docker launch bash scripts. #40
+* Refined docker images. #39
+
+== 1.0.5
+* Fixed missing PINGRESP timeout cancel. #37
+* Refined CI. #33
+
+== 1.0.4
+* Fixed deliver authorization for broker. #30
+* Refined client_cli. #29
+* Fixed creating packets from buffer process. #28
+
+== 1.0.3
+* Fixed receive packet error processing.  #28
+* Fixed multiple definition linker error. #25, #26
+
+== 1.0.2
+* Fixed installed cmake configuration. #23
+* Fixed offline client inheritance on broker. #22
+* Fixed PUBREL(v5) reason_code on broker. #21
+* Moved SHA256 from OpenSSL to picosha2. #19
+* Refined tests. #19, #20
+
+== 1.0.1
+* Fixed broker's PUBREL rc. #12
+* Removed redundant codes. #15
+* Added CLI MQTT client. #12
+* Added docker support. #11, #13, #14
+
+== 1.0.0
+* Initial release.

@@ -1,0 +1,57 @@
+= Resend message
+
+== Division of roles between MQTT and the underlying layer
+
+In the MQTT protocol, retransmission is only permitted immediately after reconnection when both the client and server sessions are maintained following a disconnection. MQTT assumes that the underlying layer, such as TCP, guarantees delivery and order.
+See https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html#_Toc3901233
+
+Therefore, retransmission during an active MQTT connection can lead to inconsistencies with the underlying layer, which the MQTT protocol prohibits. If retransmission is not possible at the lower layer due to congestion or other conditions, the lower layer will return an error code and disconnect. MQTT detects this disconnection and, if necessary, will reconnect and retransmit the messages. In other words, MQTT ensures message delivery across disconnections.
+See https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html#_Toc3901238
+
+== Points to note when resending message
+
+The communication constraints in MQTT can vary depending on the broker. For instance, the Maximum Packet Size  might differ between brokers. This information can be found in the `MaximumPacketSize` property of the `CONNACK` packet, which is the response to the `CONNECT` packet. Even if a client believes it is reconnecting to the same broker, it might actually be redirected to a different broker with different settings. Therefore, when reconnecting, it is crucial to carefully check the contents of the CONNACK packet to avoid protocol violations.
+In `async_mqtt`, if there are messages that cannot be retransmitted due to changes in broker conditions during reconnection, the messages will not be retransmitted, and an error will be notified to the user.
+
+When you detect a disconnection using `async_mqtt`, you can simply call `async_underlying_handshake()`, wait for the result, and then send a `CONNECT` packet. Check the received `CONNACK` packet. Resending messages are automatically done after receiving the `CONNACK` packet. To avoid rapid repeated reconnections, it is a good convention to wait several seconds before calling `async_underlying_handshake()`.
+
+Here are examples for reconnection:
+
+* C++20 coroutine based
+** link:../example/cl_cpp20coro_mqtt_sub.cpp[cl_cpp20coro_mqtt_sub.cpp]
+* C++17 callback based
+** link:../example/cl_cpp17_mqtt_sub.cpp[cl_cpp17_mqtt_sub.cpp]
+
+== Reconnection with TLS (mqtts, wss)
+
+When the underlying layer involves TLS (i.e., `mqtts` or `wss`), you **cannot** reuse the same `basic_endpoint`, `endpoint`  or `client` object for reconnection by simply calling `async_underlying_handshake()` again.
+
+This is because `boost::asio::ssl::stream` becomes invalid after `SSL_shutdown()` is performed during disconnection. The SSL internal state cannot be reset for a new handshake on the same object.
+See https://github.com/chriskohlhoff/asio/issues/804
+
+For non-TLS layers (TCP `mqtt`, WebSocket `ws`), the simple reconnection approach described above works as expected.
+
+=== Reconnection procedure for TLS layers
+
+The simplest approach is to create a new `basic_endpoint`, `endpoint` or `client` object. If you need to maintain the MQTT session state across the reconnection, you must migrate the session state from the old object to the new one before performing the handshake.
+
+In this example, `am_opt` is assumed to be `std::optional<basic_endpoint<...>>`, `std::optional<endpoint<...>>`, or `std::optional<client<...>>`, so that `emplace()` can be used to reconstruct the object in place.
+
+[source,cpp]
+----
+// 1. Retrieve session state from the old endpoint/client
+auto storedPackets = am_opt->get_endpoint().get_stored_packets();
+auto storedPids = am_opt->get_endpoint().get_qos2_publish_handled_pids();
+
+// 2. Create a new endpoint/client
+am_opt.emplace(exec, ctx);
+
+// 3. Restore session state to the new endpoint/client
+am_opt->get_endpoint().restore_packets(std::move(storedPackets));
+am_opt->get_endpoint().restore_qos2_publish_handled_pids(std::move(storedPids));
+
+// 4. Perform the underlying handshake and send CONNECT with clean_start=false
+co_await am_opt->async_underlying_handshake(host, port);
+----
+
+`get_stored_packets()` retrieves the halfway PUBLISH (QoS1, QoS2) and PUBREL packets that have not yet been acknowledged. `get_qos2_publish_handled_pids()` retrieves the packet IDs of QoS2 PUBLISH packets that have been processed but not yet released (PUBCOMP not yet sent). These must be restored to the new object using `restore_packets()` and `restore_qos2_publish_handled_pids()` respectively, before calling `async_underlying_handshake()` and sending the `CONNECT` packet.
