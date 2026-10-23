@@ -1222,7 +1222,14 @@ def cmd_probe(args):
         print("  ⚠️ 收到 309 字节的包 → VT03 原样透传了 0x0310 帧，客户端会因为超过 300 字节丢掉。")
         print("     → 让 STM32 只发 300 字节 data（去掉 A5 外壳）。")
     else:
-        print("  ✅ 有数据到 MQTT → VT03/VT13/选手端这一路是通的，问题在客户端侧或格式。")
+        print("  ✅ 有数据到 MQTT：VT03/VT13/选手端这一路在转发这 300 字节内容。")
+        if all_pkts and any(p["magic"] == "RM26" for p in all_pkts):
+            print("     但内层是 RM26 标记 = rm0310.py send 灌进去的测试包，不是相机视频。")
+            print("     它只证明『VT03 会原样转发 300 字节』；真视频链路要另测（send 关掉、只跑相机）。")
+        elif all_pkts and any(str(p["magic"]).startswith("H264") for p in all_pkts):
+            print("     内层确实是 H.264 → 真视频已经到 MQTT 了。这时才轮到看客户端解码/显示。")
+        print("     另外：probe 会顶掉同 ID 的客户端，所以这一轮里客户端是收不到的；")
+        print("     要判断客户端，看下面『同一时间窗内客户端自己的证据』或关掉 probe 后看 network_capture.bin。")
 
     _report_robo_side(start, time.time())
     sock.close()
