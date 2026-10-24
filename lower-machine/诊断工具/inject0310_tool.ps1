@@ -111,7 +111,7 @@ function Show-Ports {
   try {
     $key = Get-ItemProperty 'HKLM:\HARDWARE\DEVICEMAP\SERIALCOMM' -ErrorAction Stop
     foreach ($p in $key.PSObject.Properties) {
-      if ($p.Name -like 'Device*') {
+      if ($p.Name -notmatch '^PS') {
         Write-Host ("  {0,-8}  <- {1}" -f $p.Value, $p.Name)
         $found = $true
       }
