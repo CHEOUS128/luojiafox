@@ -138,10 +138,17 @@ Write-Host "  STM32 的 PG14 先拔掉（两个发送端不能顶在一起）"
 Write-Host "  VT03 用自己的 12V 供电"
 Write-Host ""
 
-$sp = New-Object System.IO.Ports.SerialPort $Port, $Baud, [System.IO.Ports.Parity]::None, 8, [System.IO.Ports.StopBits]::One
-$sp.Handshake = [System.IO.Ports.Handshake]::None
-$sp.DtrEnable = $true
-$sp.RtsEnable = $true
+# 逐个赋值（PS 5.1 下 New-Object 带枚举参数会把枚举当字符串，直接崩）
+$sp = New-Object System.IO.Ports.SerialPort
+$sp.PortName     = $Port
+$sp.BaudRate     = $Baud
+$sp.Parity       = "None"
+$sp.DataBits     = 8
+$sp.StopBits     = "One"
+$sp.Handshake    = "None"
+$sp.DtrEnable    = $true
+$sp.RtsEnable    = $true
+$sp.ReadTimeout  = 2000
 $sp.WriteTimeout = 2000
 try {
   $sp.Open()
@@ -157,6 +164,7 @@ $sent = 0
 $sw = [System.Diagnostics.Stopwatch]::StartNew()
 $nextReport = 2000
 try {
+  try { $sp.DiscardInBuffer() } catch {}
   while ($sw.Elapsed.TotalSeconds -lt $Seconds) {
     $f = New-Frame309 $seq $sent
     $sp.Write($f, 0, 309)
@@ -170,7 +178,8 @@ try {
     }
   }
 } finally {
-  try { $sp.Flush() } catch {}
+  # 等最后一帧真正从 TX 线上走完（309B @921600 约 3.4ms）
+  Start-Sleep -Milliseconds 300
   try { $sp.Close() } catch {}
   $sp.Dispose()
 }
