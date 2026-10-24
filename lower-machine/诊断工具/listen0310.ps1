@@ -7,7 +7,10 @@
   [switch]$Loop                      # 自检：CH340 自己的 TX 和 RX 短接，看能不能原样收回
 )
 $ErrorActionPreference = 'Stop'
-try { [Console]::OutputEncoding = [System.Text.Encoding]::GetEncoding(936) } catch {}
+try {
+  [Console]::OutputEncoding = [System.Text.Encoding]::GetEncoding(936)
+  $OutputEncoding = [System.Text.Encoding]::GetEncoding(936)
+} catch {}
 . (Join-Path $PSScriptRoot 'crc0310.ps1')
 
 function Show-HexDump([byte[]]$d, [int]$maxBytes = 320) {
