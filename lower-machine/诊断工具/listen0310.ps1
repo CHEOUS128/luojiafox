@@ -2,13 +2,36 @@
   [string]$Port = "",
   [int]$Baud = 921600,
   [double]$Seconds = 30.0,
-  [double]$Hz = 0.0,                 # 0 = 自动：真视频应为 5Hz 左右，灌包按 1Hz 算
   [switch]$NoCrc,                    # 不过滤 CRC（看原始帧率用）
   [switch]$Raw                       # 只统计字节/0xA5，不解析（怀疑波特率不对时用）
 )
 $ErrorActionPreference = 'Stop'
 try { [Console]::OutputEncoding = [System.Text.Encoding]::GetEncoding(936) } catch {}
 . (Join-Path $PSScriptRoot 'crc0310.ps1')
+
+function Show-HexDump([byte[]]$d, [int]$maxBytes = 320) {
+  $n = [Math]::Min($d.Length, $maxBytes)
+  for ($i = 0; $i -lt $n; $i += 16) {
+    $hex = ""
+    $asc = ""
+    for ($j = 0; $j -lt 16; $j++) {
+      $k = $i + $j
+      if ($k -lt $n) {
+        $hex += ("{0:X2} " -f $d[$k])
+        $c = [int]$d[$k]
+        if ($c -ge 32 -and $c -lt 127) { $asc += [char]$c } else { $asc += "." }
+      } else {
+        $hex += "   "
+        $asc += " "
+      }
+      if ($j -eq 7) { $hex += " " }
+    }
+    Write-Host ("  {0:X4}  {1} |{2}|" -f $i, $hex, $asc)
+  }
+  if ($d.Length -gt $maxBytes) {
+    Write-Host ("  ... 共 {0} 字节，上面只显示前 {1} 字节" -f $d.Length, $maxBytes)
+  }
+}
 
 if ($Port -eq "" -or $Port -eq "ports") {
   Show-Ports0310
@@ -30,22 +53,22 @@ try {
 Write-Host ("=== 监听 {0} @ {1} 8N1，{2} 秒（同时在听 PG14）===" -f $Port, $Baud, $Seconds)
 Write-Host "接线（只接两根，接错会短路）："
 Write-Host "  CH340 的 RX  ->  STM32 的 PG14（或 VT03 的 RX 焊盘）"
-Write-Host "  CH340 的 GND ->  板子 GND"
+Write-Host "  CH340 的 GND ->  板子 GND（必须是板子的地，不能只接 USB 的地）"
 Write-Host "  CH340 的 TX  ->  ★悬空不接★（STM32 正在驱动这根线）"
-Write-Host ""
-Write-Host "判读："
-Write-Host "  有 0xA5 + 309B + CRC 全过  -> STM32 发了，断点在 VT03 这一侧的接线/配置"
-Write-Host "  一个 0xA5 都没有           -> STM32 根本没往 PG14 发（USB 没收到 / 解析没收满 / 任务没跑）"
 Write-Host ""
 
 $buf      = New-Object byte[] 8192
 $acc      = New-Object System.Collections.Generic.List[byte]
+$all      = New-Object System.Collections.Generic.List[byte]
 $seqs     = New-Object System.Collections.Generic.List[int]
 $good     = 0
 $badCrc   = 0
 $badHead  = 0
 $headOkCrcBad = 0
 $total    = 0
+$readErr  = 0
+$lastErr  = ""
+$firstSeen = $false
 $firstSeq = -1
 $lastSeq  = -1
 $recent   = New-Object System.Collections.Generic.Queue[string]
@@ -61,9 +84,24 @@ try {
       $n = 0
     } catch {
       $n = 0
+      $readErr++
+      $lastErr = $_.Exception.Message
     }
     if ($n -gt 0) {
+      if (-not $firstSeen) {
+        $firstSeen = $true
+        Write-Host ("  [{0:N1}s] 收到第一笔数据 {1} 字节" -f $sw.Elapsed.TotalSeconds, $n)
+      }
       $total += $n
+      if ($all.Count -lt 8388608) {
+        if ($n -eq $buf.Length) {
+          $all.AddRange($buf)
+        } else {
+          $tmp = New-Object byte[] $n
+          [System.Array]::Copy($buf, $tmp, $n)
+          $all.AddRange($tmp)
+        }
+      }
       if ($Raw) {
         for ($i = 0; $i -lt $n; $i++) {
           if ($buf[$i] -eq 0xA5) { $badHead++ }
@@ -135,6 +173,32 @@ Write-Host ("  时长        {0:N1} 秒" -f $elapsed)
 Write-Host ("  收到字节    {0:N0}（{1:N2} KB/s）" -f $total, ($total / 1024.0 / [Math]::Max($elapsed, 0.001)))
 Write-Host ("  有效 0x0310 {0} 帧（{1:N2} 帧/秒）" -f $good, ($good / [Math]::Max($elapsed, 0.001)))
 Write-Host ("  CRC/帧头错  {0}     乱字节 {1}" -f $badCrc, $badHead)
+if ($readErr -gt 0) {
+  Write-Host ("  读取异常    {0} 次  最后一条：{1}" -f $readErr, $lastErr)
+}
+
+if ($total -gt 0 -and $all.Count -le 200000) {
+  $a5 = 0
+  foreach ($b in $all) { if ($b -eq 0xA5) { $a5++ } }
+  Write-Host ("  其中 0xA5   {0} 个" -f $a5)
+}
+
+if ($total -gt 0) {
+  $stamp = Get-Date -Format "yyyyMMdd_HHmmss"
+  $outPath = Join-Path $PSScriptRoot ("listen0310_{0}_{1}.bin" -f $Port, $stamp)
+  try {
+    [System.IO.File]::WriteAllBytes($outPath, $all.ToArray())
+    Write-Host ""
+    Write-Host "=== 收到的原始字节（前 320）==="
+    Show-HexDump $all.ToArray() 320
+    Write-Host ""
+    Write-Host ("  已存盘：{0}" -f $outPath)
+  } catch {
+    Write-Host ("  存盘失败：{0}" -f $_.Exception.Message)
+  }
+}
+
+Write-Host ""
 if ($good -gt 0) {
   $uniq = ($seqs | Sort-Object -Unique).Count
   Write-Host ("  外序号      {0} → {1}，不同值 {2} 个" -f $firstSeq, $lastSeq, $uniq)
@@ -142,19 +206,24 @@ if ($good -gt 0) {
   foreach ($s in $recent) { Write-Host ("    " + $s) }
   Write-Host ""
   Write-Host "  ✅ STM32 确实在往 PG14 发 309 字节 0x0310，问题不在 C 板发送端。"
-  Write-Host "     下一步查 VT03：TX 线是不是真接 PG14、VT03 串口波特率/协议配置、灯色。"
+  Write-Host "     下一步查 VT03：TX 线是不是真接 PG14、VT03 串口配置、灯色。"
 } elseif ($headOkCrcBad -gt 0) {
-  Write-Host ""
   Write-Host "  ⚠ 有帧头结构对的 309 字节块，但 CRC 全错。"
   Write-Host "     说明 PG14 上确实在吐 0x0310 形状的数据，但内容被改坏了："
-  Write-Host "       - 波特率有偏差（CH340 也能撑 921600，但要确认 STM32 这边真是 921600）"
+  Write-Host "       - 波特率有偏差（确认 STM32 这边真是 921600）"
   Write-Host "       - 两个发送端并联在 PG14（SBUS 遥控接收机 + 视频），互相打乱"
-  Write-Host "       - 线太长/没共地/接触不良"
+  Write-Host "       - 线太长 / 没共地 / 接触不良"
+} elseif ($total -gt 0) {
+  Write-Host "  ⚠ 收到了字节，但一整帧都没凑齐（60 秒正常应是 9 万字节量级）。"
+  Write-Host "     先看上面那份十六进制：以 A5 12 01 开头 -> 是视频帧，只是没发完/被截断；"
+  Write-Host "     全是 00 或 FF -> 线悬空/没共地，收到的只是噪声；"
+  Write-Host "     是规整重复的花纹 -> 波特率对不上。"
+  Write-Host "     同时去 Jetson 上看一眼「成帧」还在不在涨（见下面的命令）。"
 } else {
-  Write-Host ""
-  Write-Host "  ❌ 一个有效 0x0310 都没抓到。按下面顺序排查："
-  Write-Host "     1) 先确认接线：CH340 RX 接 PG14，GND 共地，STM32 在跑（灯闪）"
-  Write-Host "     2) 加 -Raw 重跑，看有没有任何字节/0xA5（区分『没发』和『波特率不对』）"
-  Write-Host "     3) 若 -Raw 也全 0 -> 换个串口口/换根线，或 STM32 真没发"
-  Write-Host "     4) 若 -Raw 有大量字节但没成帧 -> 波特率不是 921600，或 PG14 上有别的东西在发（SBUS）"
+  Write-Host "  ❌ 一个字节都没收到。按下面顺序排查："
+  Write-Host "     1) CH340 的 RX 是不是真接在 PG14（不是 VT03 的 TX），GND 是不是板子的 GND"
+  Write-Host "     2) 先确认 Jetson 还在出帧：在 Jetson 上跑"
+  Write-Host "        grep -a '1包/帧' ~/my_lf_INF_20261025/logs/autostart.log | tail -n 2"
+  Write-Host "        两次间隔看「成帧」有没有涨；不涨说明 STM32 根本没收到视频（Jetson 卡住/线松）"
+  Write-Host "     3) 换个 CH340 的口/换根线；万用表量 PG14 与 GND 之间是不是 3.3V 空闲电平"
 }
