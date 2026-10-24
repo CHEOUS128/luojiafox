@@ -10,20 +10,14 @@
 
 /* ========================== configuration ================================= */
 
-/* VT03 UART.
- *
- * The main controller currently uses:
- *   USART1  9600    referee system
- *   USART3  100000  DBUS remote
- *   USART6  921600  SBUS remote (DMA + USART6_IRQHandler in remote_control.c)
- *
- * If VT03 is wired to USART6 and the SBUS remote is no longer used, keep
- * VIDEO_VT03_HANDLE as &huart6. If VT03 is moved to another UART, change the
- * handle below. If SBUS remote is still in use, VT03 must be wired to a
- * different UART and that UART must be initialised at 921600.
+/* 2026-10-24 改动：整板图传接口丝印是 "UART1"，所以视频从 USART6 改到 USART1。
+ * 配套改动：Src/usart.c 里 MX_USART1_UART_Init 的波特率 9600 -> 921600。
+ * 如果图传口其实是 USART3，改这两处：
+ *   video_forward.c: extern huart3 / #define VIDEO_VT03_HANDLE (&huart3)
+ *   usart.c        : MX_USART3_UART_Init 改 921600 且 Parity = UART_PARITY_NONE
  */
-extern UART_HandleTypeDef huart6;
-#define VIDEO_VT03_HANDLE      (&huart6)
+extern UART_HandleTypeDef huart1;
+#define VIDEO_VT03_HANDLE      (&huart1)
 
 /* Timeout for one 309-byte frame. 309 bytes at 921600 baud is about 3.4 ms. */
 #define VIDEO_UART_TIMEOUT_MS  20u
