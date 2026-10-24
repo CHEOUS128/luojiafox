@@ -36,6 +36,29 @@ uint8_t VideoForward_PushFrame(const uint8_t *frame);
 /* Call from the main loop (or a task). Sends queued frames to VT03. */
 void VideoForward_Task(void);
 
+/* Watch-window mirror.
+ *
+ * Keil cannot evaluate a function call while the target is running, so
+ * "cannot evaluate" is what you get from VideoForward_GetXxx() in Watch.
+ * These counters are copied into the struct below once per
+ * VideoForward_Task() call (every 5 ms). In the debugger just add
+ * `VideoForward_Debug` to the Watch window and expand it - no function call
+ * involved, works while the program is running. */
+typedef struct
+{
+  uint32_t usb_bytes;   /* bytes the USB CDC callback received           */
+  uint32_t frames;      /* complete 309-byte frames assembled            */
+  uint32_t forwarded;   /* frames HAL_UART_Transmit accepted             */
+  uint32_t crc_error;   /* frames rejected by CRC8/CRC16                 */
+  uint32_t overflow;    /* frames dropped because the queue was full     */
+  uint32_t tx_error;    /* frames given up after VIDEO_TX_RETRY retries  */
+  uint32_t tx_retry;    /* extra transmit attempts actually used         */
+  uint32_t tx_stuck;    /* times gState had to be re-armed by hand       */
+  uint32_t task_calls;  /* VideoForward_Task() invocations               */
+} VideoForwardDebug_t;
+
+extern volatile VideoForwardDebug_t VideoForward_Debug;
+
 /* Diagnostics. */
 uint32_t VideoForward_GetForwarded(void);   /* frames handed to USART6 OK   */
 uint32_t VideoForward_GetCrcError(void);    /* bad CRC8/CRC16, not queued   */

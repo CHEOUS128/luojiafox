@@ -145,6 +145,23 @@ static volatile uint32_t s_tx_retry  = 0u;   /* extra transmit attempts */
 static volatile uint32_t s_tx_stuck  = 0u;   /* gState forcibly reset   */
 static volatile uint32_t s_usb_bytes = 0u;   /* bytes CDC handed us     */
 static volatile uint32_t s_frames    = 0u;   /* complete 309B assembled */
+static volatile uint32_t s_task_calls = 0u;  /* Task() invocations      */
+
+/* Readable from the debugger's Watch window without calling a function. */
+volatile VideoForwardDebug_t VideoForward_Debug;
+
+static void video_refresh_debug(void)
+{
+  VideoForward_Debug.usb_bytes = s_usb_bytes;
+  VideoForward_Debug.frames    = s_frames;
+  VideoForward_Debug.forwarded = s_forwarded;
+  VideoForward_Debug.crc_error = s_crc_error;
+  VideoForward_Debug.overflow  = s_overflow;
+  VideoForward_Debug.tx_error  = s_tx_error;
+  VideoForward_Debug.tx_retry  = s_tx_retry;
+  VideoForward_Debug.tx_stuck  = s_tx_stuck;
+  VideoForward_Debug.task_calls = s_task_calls;
+}
 
 void VideoForward_Init(void)
 {
@@ -158,11 +175,14 @@ void VideoForward_Init(void)
   s_tx_stuck = 0u;
   s_usb_bytes = 0u;
   s_frames = 0u;
+  s_task_calls = 0u;
+  video_refresh_debug();
 }
 
 void VideoForward_NoteUsbBytes(uint16_t len)
 {
   s_usb_bytes += len;
+  video_refresh_debug();
 }
 
 static uint8_t video_frame_is_valid(const uint8_t *frame)
@@ -211,6 +231,8 @@ uint8_t VideoForward_PushFrame(const uint8_t *frame)
 
 void VideoForward_Task(void)
 {
+  s_task_calls++;
+
   while (s_tail != s_head)
   {
     const uint8_t *frame = s_queue[s_tail];
@@ -248,6 +270,8 @@ void VideoForward_Task(void)
 
     s_tail = (uint8_t)((s_tail + 1u) % VIDEO_QUEUE_DEPTH);
   }
+
+  video_refresh_debug();
 }
 
 uint32_t VideoForward_GetForwarded(void) { return s_forwarded; }
