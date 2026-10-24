@@ -24,6 +24,10 @@
 /* Optional: reset state and counters. */
 void VideoForward_Init(void);
 
+/* Diagnostics hook: call once per USB CDC callback with the byte count the
+ * host actually delivered. It only accumulates a counter, nothing else. */
+void VideoForward_NoteUsbBytes(uint16_t len);
+
 /* Bytes are split by the single state machine in Self_aim.c.
  * Call this with ONE complete 309-byte frame; it validates and queues it.
  * Returns 1 if the frame was valid and queued. */
@@ -33,8 +37,13 @@ uint8_t VideoForward_PushFrame(const uint8_t *frame);
 void VideoForward_Task(void);
 
 /* Diagnostics. */
-uint32_t VideoForward_GetForwarded(void);
-uint32_t VideoForward_GetCrcError(void);
-uint32_t VideoForward_GetOverflow(void);
+uint32_t VideoForward_GetForwarded(void);   /* frames handed to USART6 OK   */
+uint32_t VideoForward_GetCrcError(void);    /* bad CRC8/CRC16, not queued   */
+uint32_t VideoForward_GetOverflow(void);    /* queue full, oldest dropped   */
+uint32_t VideoForward_GetTxError(void);     /* given up after retries       */
+uint32_t VideoForward_GetTxRetry(void);     /* extra attempts that were used*/
+uint32_t VideoForward_GetTxStuck(void);     /* gState was stuck, force reset*/
+uint32_t VideoForward_GetUsbBytes(void);    /* bytes received from the host */
+uint32_t VideoForward_GetFrames(void);      /* 309-byte frames assembled    */
 
 #endif /* __VIDEO_FORWARD_H */

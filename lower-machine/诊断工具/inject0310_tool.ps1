@@ -146,17 +146,22 @@ $sp.Parity       = "None"
 $sp.DataBits     = 8
 $sp.StopBits     = "One"
 $sp.Handshake    = "None"
-$sp.DtrEnable    = $true
-$sp.RtsEnable    = $true
 $sp.ReadTimeout  = 2000
 $sp.WriteTimeout = 2000
+
+Write-Host ("正在打开 {0} ...（如果这一步卡住超过 10 秒，说明串口被占用或驱动有问题）" -f $Port)
 try {
   $sp.Open()
 } catch {
   Write-Host ("打不开 {0}：{1}" -f $Port, $_.Exception.Message)
-  Write-Host "  被占用 -> 关掉占用它的程序；串口号不对 -> 直接双击 bat 看列表。"
+  Write-Host "  被占用 -> 关掉占用它的程序（RoboGo、串口助手、Keil 都要关）；串口号不对 -> 直接双击 bat 看列表。"
   return
 }
+Write-Host ("已打开 {0} @ {1}" -f $Port, $Baud)
+
+# DTR/RTS 必须在 Open 之后设：有些 CH340 驱动在 Open 前设会卡住
+try { $sp.DtrEnable = $true } catch {}
+try { $sp.RtsEnable = $true } catch {}
 
 $periodMs = [int][Math]::Max(1, [Math]::Round(1000.0 / [Math]::Max($Hz, 0.1)))
 $seq = $StartSeq -band 0xFFFF
@@ -167,7 +172,12 @@ try {
   try { $sp.DiscardInBuffer() } catch {}
   while ($sw.Elapsed.TotalSeconds -lt $Seconds) {
     $f = New-Frame309 $seq $sent
-    $sp.Write($f, 0, 309)
+    try {
+      $sp.Write($f, 0, 309)
+    } catch {
+      Write-Host ("  写串口失败（第 {0} 包）：{1}" -f $sent, $_.Exception.Message)
+      break
+    }
     $sent++
     $seq = ($seq + 1) -band 0xFFFF
     Start-Sleep -Milliseconds $periodMs

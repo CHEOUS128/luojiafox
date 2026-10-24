@@ -81,6 +81,7 @@ void process_usb_data_packet(uint8_t* data, uint16_t length)
 /* USB CDC 回调入口：所有字节交给单一状态机分流 */
 void usbd_cdc_receive_handle(uint8_t *data, uint16_t length)
 {
+    VideoForward_NoteUsbBytes(length);
     process_usb_data_packet(data, length);
 }
 

@@ -122,6 +122,9 @@ $lastHeadPos = -1
 $spans    = New-Object System.Collections.Generic.List[int]
 $total    = 0
 $readErr  = 0
+$consecErr = 0
+$portLost = $false
+$lostAt   = 0.0
 $lastErr  = ""
 $firstSeen = $false
 $firstSeq = -1
@@ -133,14 +136,28 @@ $nextReport = 2000
 try {
   while ($sw.Elapsed.TotalSeconds -lt $Seconds) {
     $n = 0
+    if ($portLost) { Start-Sleep -Milliseconds 100; continue }
     try {
       $n = $sp.Read($buf, 0, $buf.Length)
+      $consecErr = 0
     } catch [System.TimeoutException] {
       $n = 0
+      $consecErr = 0
     } catch {
       $n = 0
       $readErr++
+      $consecErr++
       $lastErr = $_.Exception.Message
+      # 串口被拔掉/关掉时 Read 会每毫秒抛一次，以前会刷 100 万行「读取异常」。
+      # 连错 200 次（约 0.2 秒）就认定端口没了，停止采样并给出结论。
+      if ($consecErr -ge 200) {
+        $portLost = $true
+        $lostAt = $sw.Elapsed.TotalSeconds
+        Write-Host ""
+        Write-Host ("  [{0:N1}s] 串口断了：{1}" -f $lostAt, $lastErr)
+        Write-Host "  这通常是 CH340 从 USB 口被拔掉（或接触不良掉线）。已经停止采样。"
+        break
+      }
     }
     if ($n -gt 0) {
       if (-not $firstSeen) {
@@ -253,6 +270,18 @@ $elapsed = $sw.Elapsed.TotalSeconds
 Write-Host ""
 Write-Host "=== 结果 ==="
 Write-Host ("  时长        {0:N1} 秒" -f $elapsed)
+if ($portLost) {
+  Write-Host ("  ⚠ 串口在 {0:N1} 秒时掉了（{1}），后面这段时间等于没在听。" -f $lostAt, $lastErr)
+  if ($lostAt -lt 2.0) {
+    Write-Host "    一开始就掉 = CH340 根本没插稳：换 USB 口、换根 USB 线，再跑一次。"
+  }
+}
+if ($portLost) {
+  Write-Host "  ⇒ 这次的结果不能用。先解决 CH340 掉线，重新跑。"
+} elseif ($total -eq 0) {
+  Write-Host "  ❌ 一个字节都没收到。先确认 Jetson 还在出帧（第 2 条给的两行 grep），"
+  Write-Host "     再确认 CH340 的 RX 真的接在板子的 TXD（3pin 的 2 号脚）上。"
+}
 Write-Host ("  收到字节    {0:N0}（{1:N2} KB/s）" -f $total, ($total / 1024.0 / [Math]::Max($elapsed, 0.001)))
 Write-Host ("  好帧头      {0} 个（{1:N2} 帧/秒）" -f $headHits, ($headHits / [Math]::Max($elapsed, 0.001)))
 Write-Host ("  完整帧      {0} 帧      残帧 {1}     乱字节 {2}" -f $good, $badCrc, $badHead)

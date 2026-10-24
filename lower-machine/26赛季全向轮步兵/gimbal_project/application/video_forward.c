@@ -25,6 +25,12 @@ extern UART_HandleTypeDef huart6;
 /* Timeout for one 309-byte frame. 309 bytes at 921600 baud is about 3.4 ms. */
 #define VIDEO_UART_TIMEOUT_MS  20u
 
+/* How many times one frame is re-sent after HAL_BUSY / HAL_TIMEOUT before it
+ * is given up on. Two extra tries cost at most 40 ms and hide a transient
+ * BUSY (another writer briefly holding gState). It is NOT a cure for a
+ * permanently stuck handle - that is what the gState recovery below is for. */
+#define VIDEO_TX_RETRY         2u
+
 /* Queue depth. 8 frames is roughly 200 ms of buffering at 40 frames/s. */
 #define VIDEO_QUEUE_DEPTH      8u
 
@@ -134,6 +140,11 @@ static volatile uint8_t s_tail = 0u;
 static volatile uint32_t s_forwarded = 0u;
 static volatile uint32_t s_crc_error = 0u;
 static volatile uint32_t s_overflow  = 0u;
+static volatile uint32_t s_tx_error  = 0u;   /* frames given up on      */
+static volatile uint32_t s_tx_retry  = 0u;   /* extra transmit attempts */
+static volatile uint32_t s_tx_stuck  = 0u;   /* gState forcibly reset   */
+static volatile uint32_t s_usb_bytes = 0u;   /* bytes CDC handed us     */
+static volatile uint32_t s_frames    = 0u;   /* complete 309B assembled */
 
 void VideoForward_Init(void)
 {
@@ -142,6 +153,16 @@ void VideoForward_Init(void)
   s_forwarded = 0u;
   s_crc_error = 0u;
   s_overflow = 0u;
+  s_tx_error = 0u;
+  s_tx_retry = 0u;
+  s_tx_stuck = 0u;
+  s_usb_bytes = 0u;
+  s_frames = 0u;
+}
+
+void VideoForward_NoteUsbBytes(uint16_t len)
+{
+  s_usb_bytes += len;
 }
 
 static uint8_t video_frame_is_valid(const uint8_t *frame)
@@ -167,6 +188,8 @@ uint8_t VideoForward_PushFrame(const uint8_t *frame)
 
   if (frame == 0) return 0u;
 
+  s_frames++;
+
   if (!video_frame_is_valid(frame))
   {
     s_crc_error++;
@@ -191,13 +214,37 @@ void VideoForward_Task(void)
   while (s_tail != s_head)
   {
     const uint8_t *frame = s_queue[s_tail];
+    uint8_t  tries;
+    uint8_t  ok = 0u;
 
-    if (HAL_UART_Transmit(VIDEO_VT03_HANDLE, (uint8_t *)frame,
-                          (uint16_t)VIDEO_FRAME_BYTES,
-                          (uint32_t)VIDEO_UART_TIMEOUT_MS) == HAL_OK)
+    for (tries = 0u; tries <= VIDEO_TX_RETRY; tries++)
     {
-      s_forwarded++;
+      if (HAL_UART_Transmit(VIDEO_VT03_HANDLE, (uint8_t *)frame,
+                            (uint16_t)VIDEO_FRAME_BYTES,
+                            (uint32_t)VIDEO_UART_TIMEOUT_MS) == HAL_OK)
+      {
+        ok = 1u;
+        break;
+      }
+
+      /* The HAL abandons the rest of the frame on both HAL_BUSY (another
+       * writer still owns gState) and HAL_TIMEOUT, and leaves the wire in
+       * the middle of a frame. If gState is not READY after that, no call
+       * will ever succeed again until the handle is re-armed by hand. */
+      if (VIDEO_VT03_HANDLE->gState != HAL_UART_STATE_READY)
+      {
+        __HAL_UART_CLEAR_OREFLAG(VIDEO_VT03_HANDLE);
+        VIDEO_VT03_HANDLE->gState  = HAL_UART_STATE_READY;
+        VIDEO_VT03_HANDLE->RxState = HAL_UART_STATE_READY;
+        __HAL_UNLOCK(VIDEO_VT03_HANDLE);
+        s_tx_stuck++;
+      }
+
+      if (tries < VIDEO_TX_RETRY) s_tx_retry++;
     }
+
+    if (ok) s_forwarded++;
+    else    s_tx_error++;
 
     s_tail = (uint8_t)((s_tail + 1u) % VIDEO_QUEUE_DEPTH);
   }
@@ -206,3 +253,8 @@ void VideoForward_Task(void)
 uint32_t VideoForward_GetForwarded(void) { return s_forwarded; }
 uint32_t VideoForward_GetCrcError(void)  { return s_crc_error; }
 uint32_t VideoForward_GetOverflow(void)  { return s_overflow; }
+uint32_t VideoForward_GetTxError(void)   { return s_tx_error; }
+uint32_t VideoForward_GetTxRetry(void)   { return s_tx_retry; }
+uint32_t VideoForward_GetTxStuck(void)   { return s_tx_stuck; }
+uint32_t VideoForward_GetUsbBytes(void)  { return s_usb_bytes; }
+uint32_t VideoForward_GetFrames(void)    { return s_frames; }

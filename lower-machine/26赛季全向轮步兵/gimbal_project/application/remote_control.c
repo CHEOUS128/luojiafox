@@ -171,7 +171,7 @@ void USART6_IRQHandler(void)
 
             //设定缓冲区1
             // hdma_usart6_rx.Instance->CR |= DMA_SxCR_CT;
-            DMA1_Stream1->CR |= DMA_SxCR_CT;
+            hdma_usart6_rx.Instance->CR |= DMA_SxCR_CT;   /* was DMA1_Stream1 (USART3 RX) - fixed 10-24 */
             
             //使能DMA
             __HAL_DMA_ENABLE(&hdma_usart6_rx);
@@ -207,7 +207,7 @@ void USART6_IRQHandler(void)
             hdma_usart6_rx.Instance->NDTR = SBUS_RX_BUF_NUM;
 
             //设定缓冲区0
-            DMA1_Stream1->CR &= ~(DMA_SxCR_CT);
+            hdma_usart6_rx.Instance->CR &= ~(DMA_SxCR_CT);/* was DMA1_Stream1 (USART3 RX) - fixed 10-24 */
             
             //使能DMA
             __HAL_DMA_ENABLE(&hdma_usart6_rx);
