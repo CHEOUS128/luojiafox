@@ -3,7 +3,8 @@
   [int]$Baud = 921600,
   [double]$Seconds = 30.0,
   [switch]$NoCrc,                    # 不过滤 CRC（看原始帧率用）
-  [switch]$Raw                       # 只统计字节/0xA5，不解析（怀疑波特率不对时用）
+  [switch]$Raw,                      # 只统计字节/0xA5，不解析（怀疑波特率不对时用）
+  [switch]$Loop                      # 自检：CH340 自己的 TX 和 RX 短接，看能不能原样收回
 )
 $ErrorActionPreference = 'Stop'
 try { [Console]::OutputEncoding = [System.Text.Encoding]::GetEncoding(936) } catch {}
@@ -36,6 +37,7 @@ function Show-HexDump([byte[]]$d, [int]$maxBytes = 320) {
 if ($Port -eq "" -or $Port -eq "ports") {
   Show-Ports0310
   Write-Host ""
+  Write-Host "  Loop :  listen0310.bat COM7 -Loop       (CH340 自己 TX-RX 短接自检)"
   Write-Host "  Next:  listen0310.bat COM3"
   Write-Host "  Longer: listen0310.bat COM3 -Seconds 60"
   return
@@ -50,11 +52,56 @@ try {
   return
 }
 
-Write-Host ("=== 监听 {0} @ {1} 8N1，{2} 秒（同时在听 PG14）===" -f $Port, $Baud, $Seconds)
+if ($Loop) {
+  # 自检：每 200ms 发一行，看 RX 能不能原样收回。用来确认 CH340 的 TX/RX 哪根是哪根。
+  Write-Host ("=== 回环自检 {0} @ {1} ===" -f $Port, $Baud)
+  Write-Host "接线：把 CH340 自己的 TX 和 RX 直接短接（不接板子）。"
+  Write-Host ""
+  $sp.ReadTimeout = 300
+  $ok = 0
+  $bad = 0
+  try {
+    for ($i = 1; $i -le 10; $i++) {
+      $msg = "LOOP{0:D2}" -f $i
+      $bytes = [System.Text.Encoding]::ASCII.GetBytes($msg)
+      $sp.Write($bytes, 0, $bytes.Length)
+      Start-Sleep -Milliseconds 120
+      $rx = ""
+      try {
+        $n = $sp.ReadByte()
+        if ($n -ge 0) {
+          $got = New-Object System.Collections.Generic.List[byte]
+          $got.Add([byte]$n)
+          while ($sp.BytesToRead -gt 0) { $got.Add([byte]$sp.ReadByte()) }
+          $rx = -join ($got | ForEach-Object { [char]$_ })
+        }
+      } catch {}
+      if ($rx -eq $msg) { $ok++ } elseif ($rx -ne "") { $bad++ }
+      Write-Host ("  发 {0,-8} 收 {1}" -f $msg, $(if ($rx -eq "") { "（没收到）" } else { $rx }))
+      Start-Sleep -Milliseconds 200
+    }
+  } finally {
+    try { $sp.Close() } catch {}
+    $sp.Dispose()
+  }
+  Write-Host ""
+  if ($ok -ge 8) {
+    Write-Host ("  ✅ 10 次里有 {0} 次原样收回 —— 这根线是 RX，CH340 工作正常。" -f $ok)
+    Write-Host "     接下来把它接到板子的 TX（图传口的数据线）上再听。"
+  } else {
+    Write-Host ("  ❌ 只收回 {0} 次。TX/RX 没短接好，或者这根接的是 TX。" -f $ok)
+    Write-Host "     把这根线换到另一个脚再跑一次本命令。"
+  }
+  return
+}
+
+Write-Host ("=== 监听 {0} @ {1} 8N1，{2} 秒 ===" -f $Port, $Baud, $Seconds)
 Write-Host "接线（只接两根，接错会短路）："
-Write-Host "  CH340 的 RX  ->  STM32 的 PG14（或 VT03 的 RX 焊盘）"
+Write-Host "  CH340 的 RX  ->  板子的 TX（图传口里那根数据线）"
 Write-Host "  CH340 的 GND ->  板子 GND（必须是板子的地，不能只接 USB 的地）"
-Write-Host "  CH340 的 TX  ->  ★悬空不接★（STM32 正在驱动这根线）"
+Write-Host "  CH340 的 TX  ->  ★悬空不接★（板子正在驱动这根线）"
+Write-Host ""
+Write-Host "  不确定哪根是 RX？先跑：listen0310.bat COM7 -Loop（TX、RX 短接自检）"
 Write-Host ""
 
 $buf      = New-Object byte[] 8192
@@ -205,13 +252,13 @@ if ($good -gt 0) {
   Write-Host "  最近 5 帧："
   foreach ($s in $recent) { Write-Host ("    " + $s) }
   Write-Host ""
-  Write-Host "  ✅ STM32 确实在往 PG14 发 309 字节 0x0310，问题不在 C 板发送端。"
-  Write-Host "     下一步查 VT03：TX 线是不是真接 PG14、VT03 串口配置、灯色。"
+  Write-Host "  ✅ 收到完整的 309 字节 0x0310 帧 —— 板子确实在往这根线上发视频。"
+  Write-Host "     下一步：把这根线接到 VT03 的 RX 焊盘，客户端就能看到画面。"
 } elseif ($headOkCrcBad -gt 0) {
   Write-Host "  ⚠ 有帧头结构对的 309 字节块，但 CRC 全错。"
-  Write-Host "     说明 PG14 上确实在吐 0x0310 形状的数据，但内容被改坏了："
-  Write-Host "       - 波特率有偏差（确认 STM32 这边真是 921600）"
-  Write-Host "       - 两个发送端并联在 PG14（SBUS 遥控接收机 + 视频），互相打乱"
+  Write-Host "     说明这根线上确实在吐 0x0310 形状的数据，但内容被改坏了："
+  Write-Host "       - 波特率有偏差（确认固件这边真是 921600）"
+  Write-Host "       - 两个发送端并联在同一根线上（SBUS 遥控接收机 + 视频），互相打乱"
   Write-Host "       - 线太长 / 没共地 / 接触不良"
 } elseif ($total -gt 0) {
   Write-Host "  ⚠ 收到了字节，但一整帧都没凑齐（60 秒正常应是 9 万字节量级）。"
@@ -221,9 +268,11 @@ if ($good -gt 0) {
   Write-Host "     同时去 Jetson 上看一眼「成帧」还在不在涨（见下面的命令）。"
 } else {
   Write-Host "  ❌ 一个字节都没收到。按下面顺序排查："
-  Write-Host "     1) CH340 的 RX 是不是真接在 PG14（不是 VT03 的 TX），GND 是不是板子的 GND"
+  Write-Host "     0) 先自检这根线是不是 RX：把 CH340 自己的 TX、RX 短接，跑"
+  Write-Host "        listen0310.bat COM7 -Loop      （收得回来 = 这根是 RX，工具没问题）"
+  Write-Host "     1) 这根线是不是接在板子正在发的那根 TX 上，GND 是不是板子的 GND"
   Write-Host "     2) 先确认 Jetson 还在出帧：在 Jetson 上跑"
   Write-Host "        grep -a '1包/帧' ~/my_lf_INF_20261025/logs/autostart.log | tail -n 2"
   Write-Host "        两次间隔看「成帧」有没有涨；不涨说明 STM32 根本没收到视频（Jetson 卡住/线松）"
-  Write-Host "     3) 换个 CH340 的口/换根线；万用表量 PG14 与 GND 之间是不是 3.3V 空闲电平"
+  Write-Host "     3) 换个 CH340 的口/换根线；万用表量数据线对 GND 是不是 3.3V 空闲电平"
 }
