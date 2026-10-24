@@ -10,14 +10,11 @@
 
 /* ========================== configuration ================================= */
 
-/* 2026-10-24 改动：整板图传接口丝印是 "UART1"，所以视频从 USART6 改到 USART1。
- * 配套改动：Src/usart.c 里 MX_USART1_UART_Init 的波特率 9600 -> 921600。
- * 如果图传口其实是 USART3，改这两处：
- *   video_forward.c: extern huart3 / #define VIDEO_VT03_HANDLE (&huart3)
- *   usart.c        : MX_USART3_UART_Init 改 921600 且 Parity = UART_PARITY_NONE
+/* VT03 UART = USART6 (PG14)，对应板上 3pin 的图传口（电控确认 2026-10-24）。
+ * 注意：板上丝印 "UART1" 的是 4pin 口，不是图传口，别改到这里来。
  */
-extern UART_HandleTypeDef huart1;
-#define VIDEO_VT03_HANDLE      (&huart1)
+extern UART_HandleTypeDef huart6;
+#define VIDEO_VT03_HANDLE      (&huart6)
 
 /* Timeout for one 309-byte frame. 309 bytes at 921600 baud is about 3.4 ms. */
 #define VIDEO_UART_TIMEOUT_MS  20u
