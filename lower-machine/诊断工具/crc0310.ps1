@@ -71,11 +71,26 @@ function Get-Crc16([byte[]]$d) {
 function Show-Ports0310 {
   Write-Host "=== 本机串口 ==="
   $found = $false
+  # 先拿设备友好名（区分 CH340 和 STM32 的 USB-CDC）
+  $friendly = @{}
+  try {
+    Get-CimInstance Win32_PnPEntity -ErrorAction Stop |
+      Where-Object { $_.Name -match '\(COM\d+\)' } |
+      ForEach-Object {
+        $m = [regex]::Match($_.Name, '\(COM(\d+)\)')
+        if ($m.Success) { $friendly["COM" + $m.Groups[1].Value] = $_.Name }
+      }
+  } catch {}
   try {
     $key = Get-ItemProperty 'HKLM:\HARDWARE\DEVICEMAP\SERIALCOMM' -ErrorAction Stop
     foreach ($p in $key.PSObject.Properties) {
       if ($p.Name -notmatch '^PS') {
-        Write-Host ("  {0,-8}  <- {1}" -f $p.Value, $p.Name)
+        $nm = $friendly[[string]$p.Value]
+        if ($nm) {
+          Write-Host ("  {0,-8}  {1}" -f $p.Value, $nm)
+        } else {
+          Write-Host ("  {0,-8}  <- {1}" -f $p.Value, $p.Name)
+        }
         $found = $true
       }
     }
