@@ -115,6 +115,11 @@ $good     = 0
 $badCrc   = 0
 $badHead  = 0
 $headOkCrcBad = 0
+$headHits = 0
+$innerOk  = 0
+$accBase  = 0
+$lastHeadPos = -1
+$spans    = New-Object System.Collections.Generic.List[int]
 $total    = 0
 $readErr  = 0
 $lastErr  = ""
@@ -158,27 +163,46 @@ try {
         }
       } else {
         for ($i = 0; $i -lt $n; $i++) { $acc.Add($buf[$i]) }
+        $accBase += [Math]::Max(0, $acc.Count - $n)
         $scan = 0
-        while (($acc.Count - $scan) -ge 309) {
+        while (($acc.Count - $scan) -ge 9) {
           if ($acc[$scan] -ne 0xA5) {
             $scan++
             $badHead++
             continue
           }
-          # 结构不对就丢 1 个字节重新找；结构对但 CRC 不对就跳 309
-          # （VT03 重传时可能就是同一个字节流原样再来一遍，跳 1 格会把它拆烂）
+          # 只靠帧头 7 字节和 CRC8 定位。不要求后面 309 字节全都到齐 ——
+          # 线上的帧可能被截断（USB 丢 64 字节、CH340 丢字节），
+          # 以前「结构对但 CRC 不对就跳 309」会把残帧后面的好帧一起吃掉。
           $headOk = $true
           if ($acc[$scan + 1] -ne 0x2C -or $acc[$scan + 2] -ne 0x01) { $headOk = $false }
           if ($acc[$scan + 5] -ne 0x10 -or $acc[$scan + 6] -ne 0x03) { $headOk = $false }
+          if ($headOk -and -not $NoCrc) {
+            $h4 = New-Object byte[] 4
+            for ($k = 0; $k -lt 4; $k++) { $h4[$k] = $acc[$scan + $k] }
+            if ($acc[$scan + 4] -ne [byte](Get-Crc8 $h4)) { $headOk = $false }
+          }
           if (-not $headOk) {
             $scan++
             $badHead++
             continue
           }
+
+          # 帧头 OK。到这里才用「结构对但 CRC 不对」这个分支。
+          # 上一轮因为「帧还没收全」break 时，这个帧头会再被扫到一次，
+          # 用绝对位置去重，避免重复计数。
+          $absPos = $accBase + $scan
+          if ($absPos -ne $lastHeadPos) {
+            $headHits++
+            if ($lastHeadPos -ge 0) { $spans.Add($absPos - $lastHeadPos) | Out-Null }
+            $lastHeadPos = $absPos
+          }
+
+          if (($acc.Count - $scan) -lt 309) { break }   # 尾巴还没收全，留到下一轮
+
           $frame = $acc.GetRange($scan, 309).ToArray()
           $ok = $true
           if (-not $NoCrc) {
-            if ($frame[4] -ne [byte](Get-Crc8 ([byte[]]$frame[0..3]))) { $ok = $false }
             $crcRecv = [int]$frame[307] -bor ([int]$frame[308] -shl 8)
             if ($ok -and $crcRecv -ne (Get-Crc16 ([byte[]]$frame[0..306]))) { $ok = $false }
           }
@@ -191,24 +215,33 @@ try {
             if ($recent.Count -ge 5) { [void]$recent.Dequeue() }
             $innerLen = ([int]$frame[7] -shl 8) -bor [int]$frame[8]
             $innerSeq = ([int]$frame[9] -shl 8) -bor [int]$frame[10]
+            if ($innerLen -ge 2 -and $innerLen -le 298) { $innerOk++ }
             $recent.Enqueue(("seq={0,-3} 内层长度={1,-3} 内层序号={2}" -f $sq, $innerLen, $innerSeq))
             $scan += 309
           } else {
             $badCrc++
             $headOkCrcBad++
-            $scan += 309
+            # 关键：不跳 309，只跳 1 个字节重新找下一个帧头。
+            # 残帧长度不确定，跳 309 一定会把下一个好帧的帧头吃掉。
+            $scan++
           }
         }
         if ($scan -gt 0) {
-          $acc.RemoveRange(0, [Math]::Min($scan, $acc.Count))
+          $drop = [Math]::Min($scan, $acc.Count)
+          $acc.RemoveRange(0, $drop)
+          $accBase += $drop
         }
-        if ($acc.Count -gt 8192) { $acc.RemoveRange(0, $acc.Count - 8192) }
+        if ($acc.Count -gt 8192) {
+          $drop = $acc.Count - 8192
+          $acc.RemoveRange(0, $drop)
+          $accBase += $drop
+        }
       }
     }
     if ($sw.ElapsedMilliseconds -ge $nextReport) {
       $nextReport += 2000
-      Write-Host ("  [{0,4:N0}s] 收到 {1,7:N0} 字节 | 有效帧 {2} 坏帧 {3} 乱字节 {4}" -f `
-        $sw.Elapsed.TotalSeconds, $total, $good, $badCrc, $badHead)
+      Write-Host ("  [{0,4:N0}s] 收到 {1,7:N0} 字节 | 帧头 {2} | 完整帧 {3} 残帧 {4} | 乱字节 {5}" -f `
+        $sw.Elapsed.TotalSeconds, $total, $headHits, $good, $badCrc, $badHead)
     }
   }
 } finally {
@@ -221,8 +254,23 @@ Write-Host ""
 Write-Host "=== 结果 ==="
 Write-Host ("  时长        {0:N1} 秒" -f $elapsed)
 Write-Host ("  收到字节    {0:N0}（{1:N2} KB/s）" -f $total, ($total / 1024.0 / [Math]::Max($elapsed, 0.001)))
-Write-Host ("  有效 0x0310 {0} 帧（{1:N2} 帧/秒）" -f $good, ($good / [Math]::Max($elapsed, 0.001)))
-Write-Host ("  CRC/帧头错  {0}     乱字节 {1}" -f $badCrc, $badHead)
+Write-Host ("  好帧头      {0} 个（{1:N2} 帧/秒）" -f $headHits, ($headHits / [Math]::Max($elapsed, 0.001)))
+Write-Host ("  完整帧      {0} 帧      残帧 {1}     乱字节 {2}" -f $good, $badCrc, $badHead)
+if ($good -gt 0) {
+  Write-Host ("  内层长度合法 {0}/{1}" -f $innerOk, $good)
+}
+if ($spans.Count -gt 0) {
+  $sorted = ($spans | Sort-Object)
+  $med = $sorted[[int]($sorted.Count / 2)]
+  $mn  = $sorted[0]
+  $mx  = $sorted[$sorted.Count - 1]
+  $full = 0; $trunc = 0; $over = 0
+  foreach ($s in $spans) {
+    if ($s -eq 309) { $full++ } elseif ($s -lt 309) { $trunc++ } else { $over++ }
+  }
+  Write-Host ("  帧间隔      中位 {0} 字节（最小 {1} 最大 {2}）  正好309={3} 偏短={4} 偏长={5}" -f `
+    $med, $mn, $mx, $full, $trunc, $over)
+}
 if ($readErr -gt 0) {
   Write-Host ("  读取异常    {0} 次  最后一条：{1}" -f $readErr, $lastErr)
 }
@@ -257,12 +305,14 @@ if ($good -gt 0) {
   Write-Host ""
   Write-Host "  ✅ 收到完整的 309 字节 0x0310 帧 —— 板子确实在往这根线上发视频。"
   Write-Host "     下一步：把这根线接到 VT03 的 RX 焊盘，客户端就能看到画面。"
-} elseif ($headOkCrcBad -gt 0) {
-  Write-Host "  ⚠ 有帧头结构对的 309 字节块，但 CRC 全错。"
-  Write-Host "     说明这根线上确实在吐 0x0310 形状的数据，但内容被改坏了："
-  Write-Host "       - 波特率有偏差（确认固件这边真是 921600）"
-  Write-Host "       - 两个发送端并联在同一根线上（SBUS 遥控接收机 + 视频），互相打乱"
-  Write-Host "       - 线太长 / 没共地 / 接触不良"
+} elseif ($headHits -gt 0) {
+  Write-Host "  ⚠ 这根线上确实有 0x0310 帧头（CRC8 都对），但 309 字节的整帧收不齐。"
+  Write-Host "     说明板子在发视频，断的是「传输过程中丢字节」，不是固件。"
+  Write-Host "     按帧间隔那一行判断："
+  Write-Host "       间隔中位数 < 309、每次少掉几十字节 -> USB/CH340 丢包；换 CH340、降波特率试"
+  Write-Host "       间隔忽大忽小、乱字节多          -> 没共地 / 线接触不良 / 线太长"
+  Write-Host "       间隔是 309 附近但 CRC 错          -> 波特率偏差（确认 921600 8N1）"
+  Write-Host "     夹在中间的「乱字节」不代表收到错数据，是残帧中间那些没被认出来的字节。"
 } elseif ($total -gt 0) {
   Write-Host "  ⚠ 收到了字节，但一整帧都没凑齐（60 秒正常应是 9 万字节量级）。"
   Write-Host "     先看上面那份十六进制：以 A5 12 01 开头 -> 是视频帧，只是没发完/被截断；"

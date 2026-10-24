@@ -10,8 +10,14 @@
 
 /* ========================== configuration ================================= */
 
-/* VT03 UART = USART6 (PG14)，对应板上 3pin 的图传口（电控确认 2026-10-24）。
- * 注意：板上丝印 "UART1" 的是 4pin 口，不是图传口，别改到这里来。
+/* VT03 UART = USART6 (PG14) = 板上丝印 "UART1" 的 3pin 图传口。
+ *
+ * 开发板 C 型用户手册原文：「开发板的外壳丝印（UART1 与 UART2）与 STM32 的实际串口配置
+ * 并不对应，外壳丝印 UART1 对应 STM32 的 UART6，外壳丝印 UART2 对应 STM32 的 UART1。」
+ * 所以：3pin（丝印 UART1）= USART6 = huart6 ← 视频走这个；
+ *       4pin（丝印 UART2）= USART1 = huart1。
+ * 电控说「UART1 是 4pin」是按 STM32 侧命名，指的是 4pin 那个口，两者不矛盾。
+ * 别再把这里改成 huart1。
  */
 extern UART_HandleTypeDef huart6;
 #define VIDEO_VT03_HANDLE      (&huart6)
