@@ -72,7 +72,15 @@ struct State {
 using CustomByteBlockPacketHandler = std::function<void(std::span<const uint8_t> packet_bytes)>;
 
 inline constexpr auto kUdpVideoFallbackTimeout = std::chrono::milliseconds(250);
-inline constexpr auto kCustomVideoFallbackTimeout = std::chrono::milliseconds(1000);
+
+// 「主画面偏好 = 自定义流」时的两档超时。
+// 自定义流是 4.8 帧/秒、且在比赛链路里会成段丢包（实测：有键鼠输入的时段里
+// 自定义流也只有 44% 的时间「可显示」，断口中位数 2.9 秒）。按 1 秒判死会让
+// 主画面在 UDP 和自定义流之间来回抢，官方图传跟着一闪一闪。
+//   - 双画面模式：超过 kCustomVideoLiveTimeout 没新帧就只把这一格标成不可用；
+//   - 主画面模式：超过 kCustomVideoFallbackTimeout 才把主画面让给 UDP。
+inline constexpr auto kCustomVideoLiveTimeout = std::chrono::milliseconds(1000);
+inline constexpr auto kCustomVideoFallbackTimeout = std::chrono::milliseconds(5000);
 
 State CreateInitialState();
 
@@ -86,6 +94,7 @@ bool ShowMainWindow(const State &state,
                     bool prefer_custom_video_as_main,
                     bool udp_video_display_ready,
                     bool custom_video_display_ready,
+                    bool custom_video_hold_as_main,
                     bool udp_video_inverted,
                     ImTextureRef mini_map_texture_ref,
                     const ImVec2 &mini_map_texture_size);

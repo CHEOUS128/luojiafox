@@ -132,6 +132,7 @@ bool ShowMainWindow(const State &state,
                     const bool prefer_custom_video_as_main,
                     const bool udp_video_display_ready,
                     const bool custom_video_display_ready,
+                    const bool custom_video_hold_as_main,
                     const bool udp_video_inverted,
                     const ImTextureRef mini_map_texture_ref,
                     const ImVec2 &mini_map_texture_size) {
@@ -145,12 +146,14 @@ bool ShowMainWindow(const State &state,
     const ImVec2 background_video_size = using_custom_video_as_main
                                                  ? custom_video_size
                                                  : video_size;
-    const bool background_video_display_ready = using_custom_video_as_main
-                                                        ? custom_video_display_ready
-                                                        : udp_video_display_ready;
     ImVec2 main_image_min(0.0f, 0.0f);
     ImVec2 main_image_max = viewport->Size;
-    if (background_video_display_ready && background_video_texture_ref.GetTexID() != ImTextureID_Invalid) {
+    // 主画面用「粗」超时：自定义流断包时继续显示最后一帧（最多 kCustomVideoFallbackTimeout），
+    // 而不是留一片黑。所以按 H 之后切到自定义流，断包时画面只会冻住、不会消失。
+    const bool main_image_available = using_custom_video_as_main
+                                              ? custom_video_hold_as_main
+                                              : udp_video_display_ready;
+    if (main_image_available && background_video_texture_ref.GetTexID() != ImTextureID_Invalid) {
         ImDrawList *draw_list = ImGui::GetBackgroundDrawList();
         // 180° 旋转放在 GPU 做（UV 翻转），避免 CPU 逐像素交换整帧 1080p 数据。
         // 这一步原来在解码管线里用 CPU 做，是画面卡顿/操作延迟的主要来源之一。
@@ -173,7 +176,7 @@ bool ShowMainWindow(const State &state,
         const bool is_hero = (robot_id == 1 || robot_id == 101);
         const bool is_deploy_mode = state.deploy_mode_status_sync.has_value()
                                     && state.deploy_mode_status_sync->status() == 1;
-        if (is_hero && is_deploy_mode && background_video_display_ready) {
+        if (is_hero && is_deploy_mode && main_image_available) {
             DrawHeroRulerLines(ImGui::GetBackgroundDrawList(),
                                main_image_min, main_image_max,
                                background_video_size, kHeroRulerSpacingPx);

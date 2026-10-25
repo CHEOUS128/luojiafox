@@ -252,24 +252,11 @@ void UploadLatestVideoFrames(RoboGo::platform::PlatformBackend &platform_backend
 }
 
 void UpdateVideoLayoutPreference(State &state,
-                                 const TextureView &udp_video_texture,
-                                 const TextureView &custom_video_texture,
-                                 std::chrono::steady_clock::time_point last_udp_frame_time,
-                                 std::chrono::steady_clock::time_point last_custom_frame_time,
+                                 const bool udp_video_display_ready,
+                                 const bool custom_video_display_ready,
+                                 const bool custom_video_hold_as_main,
                                  bool &prefer_custom_video_as_main,
                                  bool &using_custom_video_as_main) {
-    const auto now = std::chrono::steady_clock::now();
-    const bool udp_video_display_ready = IsVideoDisplayReady(
-            udp_video_texture,
-            last_udp_frame_time,
-            kUdpVideoFallbackTimeout,
-            now);
-    const bool custom_video_display_ready = IsVideoDisplayReady(
-            custom_video_texture,
-            last_custom_frame_time,
-            kCustomVideoFallbackTimeout,
-            now);
-
     bool handled_manual_video_layout_toggle = false;
     if (ImGui::IsKeyPressed(ImGuiKey_H, false) && !ImGui::GetIO().WantTextInput) {
         prefer_custom_video_as_main = !prefer_custom_video_as_main;
@@ -294,7 +281,7 @@ void UpdateVideoLayoutPreference(State &state,
         }
     }
 
-    const bool should_use_custom_video_as_main = custom_video_display_ready
+    const bool should_use_custom_video_as_main = custom_video_hold_as_main
                                                  && (prefer_custom_video_as_main || !udp_video_display_ready);
     if (!handled_manual_video_layout_toggle && should_use_custom_video_as_main != using_custom_video_as_main) {
         using_custom_video_as_main = should_use_custom_video_as_main;
@@ -403,18 +390,10 @@ int RunApplication(platform::PlatformBackend &platform_backend, const LaunchOpti
             const TextureView custom_video_texture = platform_backend.GetTextureView(TextureSlot::CustomVideo);
             const TextureView mini_map_texture = platform_backend.GetTextureView(TextureSlot::MiniMap);
 
-            UpdateVideoLayoutPreference(state,
-                                        udp_video_texture,
-                                        custom_video_texture,
-                                        last_udp_frame_time,
-                                        last_custom_frame_time,
-                                        prefer_custom_video_as_main,
-                                        using_custom_video_as_main);
-
-            if (ImGui::IsKeyPressed(ImGuiKey_I, false) && !ImGui::GetIO().WantTextInput) {
-                ToggleUdpVideoInversion(state, background_services);
-            }
-
+            // 两档判据都要在 UpdateVideoLayoutPreference 之前算好：
+            //   custom_video_display_ready —— 1 秒内有没有新帧（小窗/提示用，也是按 H 时的判据）
+            //   custom_video_hold_as_main  —— 5 秒内有没有新帧（自动抢主画面用）
+            // 只差这一档超时，就能让自定义流正常断包时主画面不来回切。
             const auto now = std::chrono::steady_clock::now();
             const bool udp_video_display_ready = IsVideoDisplayReady(
                     udp_video_texture,
@@ -424,8 +403,25 @@ int RunApplication(platform::PlatformBackend &platform_backend, const LaunchOpti
             const bool custom_video_display_ready = IsVideoDisplayReady(
                     custom_video_texture,
                     last_custom_frame_time,
+                    kCustomVideoLiveTimeout,
+                    now);
+            const bool custom_video_hold_as_main = IsVideoDisplayReady(
+                    custom_video_texture,
+                    last_custom_frame_time,
                     kCustomVideoFallbackTimeout,
                     now);
+
+            // 自动抢主画面只看「继续用」这一档（5 秒）；手动按 H 仍然按 1 秒那档给提示。
+            UpdateVideoLayoutPreference(state,
+                                        udp_video_display_ready,
+                                        custom_video_display_ready,
+                                        custom_video_hold_as_main,
+                                        prefer_custom_video_as_main,
+                                        using_custom_video_as_main);
+
+            if (ImGui::IsKeyPressed(ImGuiKey_I, false) && !ImGui::GetIO().WantTextInput) {
+                ToggleUdpVideoInversion(state, background_services);
+            }
 
             const bool toggle_udp_video_inversion_requested = ShowMainWindow(
                     state,

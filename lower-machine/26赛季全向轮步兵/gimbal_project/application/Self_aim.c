@@ -19,6 +19,15 @@ extern __IO uint32_t uwTick;
 uint32_t sendTick =0;
 gimbal_control_t *gimbal_data;
 
+/* ===== 10-24 计数器：看清 USB 流里到底有什么 =====
+ * g_parse_sof_seen : 找帧头状态下遇到 0xA5 的次数 -> 视频帧真的来了几帧
+ * g_parse_ff_seen  : 找帧头状态下遇到 0xFF 的次数 -> 控制帧发了多少
+ * g_parse_ctrl_ok  : 收满 32 字节且帧尾 0x0D 对的控制帧
+ * 三个都是 volatile，Watch 窗口直接加名字就能看，不用函数调用。 */
+volatile uint32_t g_parse_sof_seen = 0u;
+volatile uint32_t g_parse_ff_seen  = 0u;
+volatile uint32_t g_parse_ctrl_ok  = 0u;
+
 // uint32_t usb_rx_length = 0;
 
 
@@ -48,8 +57,10 @@ void process_usb_data_packet(uint8_t* data, uint16_t length)
 
         if (kind == 0) {
             if (b == VIDEO_SOF) {
+                g_parse_sof_seen++;
                 buf[0] = b; idx = 1u; kind = 1u;
             } else if (b == FRAME_HEADER_FF) {
+                g_parse_ff_seen++;
                 buf[0] = b; idx = 1u; kind = 2u;
             }
             continue;
@@ -71,6 +82,7 @@ void process_usb_data_packet(uint8_t* data, uint16_t length)
                 kind = 0; idx = 0;
                 /* 帧尾校验：挡掉错位帧，宁可不更新也不要用垃圾角度 */
                 if (buf[CONTROL_FRAME_BYTES - 1u] == CONTROL_TAIL) {
+                    g_parse_ctrl_ok++;
                     memcpy(&inputdata, buf + sizeof(FrameHeader), sizeof(InputData));
                 }
             }

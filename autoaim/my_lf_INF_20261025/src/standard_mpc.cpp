@@ -196,6 +196,20 @@ int main(int argc, char * argv[])
               fps,
               gs.bullet_speed,
               tracker.state());
+            // 串口写统计：视频帧只有真的整帧写进 USB 才算成功。
+            // short 在涨 = USB CDC 缓冲来不及排空（以前这里被静默当成成功）。
+            static io::Gimbal::SerialStats last_ss;
+            const auto ss = gimbal.serial_stats();
+            tools::logger()->info(
+              "[Serial] 控制帧 完整 {} 短写 {} 重发 {} | 视频帧 完整 {} 短写 {} 跨轮 {} 失败 {}",
+              ss.ctrl_ok - last_ss.ctrl_ok,
+              ss.ctrl_short - last_ss.ctrl_short,
+              ss.ctrl_resync - last_ss.ctrl_resync,
+              ss.video_ok - last_ss.video_ok,
+              ss.video_short - last_ss.video_short,
+              ss.video_stall - last_ss.video_stall,
+              ss.video_fail - last_ss.video_fail);
+            last_ss = ss;
         }
 
     //     // -------------------- 可视化 --------------------
