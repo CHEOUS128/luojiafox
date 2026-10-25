@@ -230,6 +230,22 @@ public:
         return {};
     }
 
+    [[nodiscard]] std::uint64_t rendered_frame_count() const override {
+        return 0;
+    }
+
+    [[nodiscard]] bool CanRecreateDeviceNow() const override {
+        return false;
+    }
+
+    [[nodiscard]] bool RenderPausedByWindow() const override {
+        return false;
+    }
+
+    bool TryRecoverRenderDevice() override {
+        return false;
+    }
+
 private:
     static void GlfwErrorCallback(const int error, const char *description) {
         SPDLOG_ERROR("GLFW错误 code={} description={}", error, description);

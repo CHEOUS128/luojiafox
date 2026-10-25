@@ -1,6 +1,7 @@
 #include "application.h"
 
 #include "keyboard_mouse_state_manager.h"
+#include "logging/logging.h"
 #include "main_window.h"
 #include "video/custom_byte_block_video_decoder_worker.h"
 #include "video/rgba_image_transform.h"
@@ -255,10 +256,12 @@ void UpdateVideoLayoutPreference(State &state,
                                  const bool udp_video_display_ready,
                                  const bool custom_video_display_ready,
                                  const bool custom_video_hold_as_main,
+                                 const bool layout_keys_available,
                                  bool &prefer_custom_video_as_main,
                                  bool &using_custom_video_as_main) {
     bool handled_manual_video_layout_toggle = false;
-    if (ImGui::IsKeyPressed(ImGuiKey_H, false) && !ImGui::GetIO().WantTextInput) {
+    // 按键必须在 BeginFrame 之后才读；没进这一帧时直接跳过，别把上一帧的按键重复算一次。
+    if (layout_keys_available && ImGui::IsKeyPressed(ImGuiKey_H, false) && !ImGui::GetIO().WantTextInput) {
         prefer_custom_video_as_main = !prefer_custom_video_as_main;
         handled_manual_video_layout_toggle = true;
 
@@ -322,6 +325,8 @@ LaunchOptions ParseLaunchOptions(const std::vector<std::string> &args) {
         } else if (args[i] == "--video_port" && i + 1 < args.size()) {
             options.video_port = args[i + 1];
             ++i;
+        } else if (args[i] == "--no_capture") {
+            options.enable_network_capture = false;
         }
     }
 
@@ -332,10 +337,11 @@ LaunchOptions ParseLaunchOptions(const std::vector<std::string> &args) {
 int RunApplication(platform::PlatformBackend &platform_backend, const LaunchOptions &options) {
     const auto main_start = std::chrono::steady_clock::now();
     SPDLOG_INFO("程序启动");
-    SPDLOG_INFO("解析启动参数 mqtt_server={} video_port={} invert_udp_video={}",
+    SPDLOG_INFO("解析启动参数 mqtt_server={} video_port={} invert_udp_video={} capture={}",
                 options.mqtt_server,
                 options.video_port,
-                options.invert_udp_video);
+                options.invert_udp_video,
+                options.enable_network_capture);
     SPDLOG_INFO("网络端点已解析 mqtt_host={} mqtt_port={} video_port={}",
                 options.mqtt_host,
                 options.mqtt_port,
@@ -352,10 +358,15 @@ int RunApplication(platform::PlatformBackend &platform_backend, const LaunchOpti
     State state = CreateInitialState();
 
     auto mini_map_image = RoboGo::resource::LoadEmbeddedMapImage();
+    auto upload_mini_map = [&platform_backend](const RoboGo::resource::DecodedImage &image) {
+        return platform_backend.UploadTexture(TextureSlot::MiniMap, image);
+    };
     if (!mini_map_image.has_value()) {
         SPDLOG_WARN("未能加载内嵌小地图，将回退为纯色小地图背景");
-    } else if (platform_backend.UploadTexture(TextureSlot::MiniMap, *mini_map_image)) {
+    } else if (upload_mini_map(*mini_map_image)) {
         SPDLOG_INFO("小地图纹理已上传 width={} height={}", mini_map_image->width, mini_map_image->height);
+        // 像素已经进了显存，这里直接释放：1285x711x4 ≈ 3.7 MB，重建时可以再读一次内嵌资源。
+        mini_map_image.reset();
     } else {
         SPDLOG_ERROR("创建小地图纹理失败 width={} height={}", mini_map_image->width, mini_map_image->height);
     }
@@ -372,7 +383,18 @@ int RunApplication(platform::PlatformBackend &platform_backend, const LaunchOpti
                                         .count();
         SPDLOG_INFO("程序启动完成 startup_ms={}", startup_ms);
 
+        // 主循环心跳：每秒一行。用它判断「界面卡在 UI 绘制」还是「主循环还在转、只是没画面」。
+        auto last_heartbeat_time = std::chrono::steady_clock::now();
+        std::uint64_t last_heartbeat_frames = platform_backend.rendered_frame_count();
+        std::uint64_t last_heartbeat_capture_dropped = RoboGo::logging::network_capture_dropped_count();
+        std::size_t heartbeat_loop_count = 0;
+        // 渲染看门狗：渲染帧数连续 2 秒不涨但主循环还在转，就认定画面挂住并尝试重建设备。
+        auto last_render_progress_time = std::chrono::steady_clock::now();
+        std::uint64_t last_seen_frame_count = platform_backend.rendered_frame_count();
+        std::uint64_t render_recovery_attempts = 0;
+
         while (platform_backend.ProcessEvents()) {
+            ++heartbeat_loop_count;
             background_services.ProcessMessages(state);
             background_services.DrainCustomVideoLogs(state);
             UpdateState(state);
@@ -382,7 +404,63 @@ int RunApplication(platform::PlatformBackend &platform_backend, const LaunchOpti
                                     last_udp_frame_time,
                                     last_custom_frame_time);
 
+            const auto loop_now = std::chrono::steady_clock::now();
+            if (loop_now - last_heartbeat_time >= std::chrono::seconds(1)) {
+                const std::uint64_t frames_now = platform_backend.rendered_frame_count();
+                const std::uint64_t capture_dropped_now = RoboGo::logging::network_capture_dropped_count();
+                SPDLOG_INFO("主循环心跳 rendered_frames={} (+{}) loop_rate={}/s udp_frame={}ms custom_frame={}ms capture_dropped={} (+{})",
+                            frames_now,
+                            frames_now - last_heartbeat_frames,
+                            heartbeat_loop_count,
+                            std::chrono::duration_cast<std::chrono::milliseconds>(
+                                    loop_now - last_udp_frame_time).count(),
+                            std::chrono::duration_cast<std::chrono::milliseconds>(
+                                    loop_now - last_custom_frame_time).count(),
+                            capture_dropped_now,
+                            capture_dropped_now - last_heartbeat_capture_dropped);
+                last_heartbeat_time = loop_now;
+                last_heartbeat_frames = frames_now;
+                last_heartbeat_capture_dropped = capture_dropped_now;
+                heartbeat_loop_count = 0;
+            }
+            if (platform_backend.rendered_frame_count() != last_seen_frame_count) {
+                last_seen_frame_count = platform_backend.rendered_frame_count();
+                last_render_progress_time = loop_now;
+            } else if (loop_now - last_render_progress_time >= std::chrono::seconds(2)) {
+                last_render_progress_time = loop_now;
+                if (platform_backend.CanRecreateDeviceNow()) {
+                    ++render_recovery_attempts;
+                    SPDLOG_ERROR("渲染帧数连续2秒没有增加（已画{}帧，第{}次尝试重建设备）",
+                                 last_seen_frame_count,
+                                 render_recovery_attempts);
+                    if (platform_backend.TryRecoverRenderDevice()) {
+                        last_seen_frame_count = platform_backend.rendered_frame_count();
+                        last_udp_frame_time = std::chrono::steady_clock::time_point::min();
+                        last_custom_frame_time = std::chrono::steady_clock::time_point::min();
+                        // 小地图纹理挂在旧设备上，已经作废，必须重新加载像素后重新上传。
+                        // 纹理失败时保留 reload 出来的像素，下一轮重建直接重试上传。
+                        if (!mini_map_image.has_value()) {
+                            mini_map_image = RoboGo::resource::LoadEmbeddedMapImage();
+                        }
+                        if (mini_map_image.has_value() && upload_mini_map(*mini_map_image)) {
+                            mini_map_image.reset();
+                        } else if (mini_map_image.has_value()) {
+                            SPDLOG_WARN("重建后重新上传小地图纹理失败，下次重建再试");
+                        } else {
+                            SPDLOG_WARN("重建后重新加载小地图失败");
+                        }
+                    } else {
+                        SPDLOG_ERROR("渲染设备重建失败");
+                    }
+                }
+            }
+
             if (!platform_backend.BeginFrame()) {
+                // 最小化/被遮挡时本来就不出帧，不能算“画面挂住”，否则看门狗会白重建设备。
+                // 设备重建失败（swap_chain_ 为空）不算这种情况，要继续让看门狗重试。
+                if (platform_backend.RenderPausedByWindow()) {
+                    last_render_progress_time = std::chrono::steady_clock::now();
+                }
                 continue;
             }
 
@@ -416,6 +494,7 @@ int RunApplication(platform::PlatformBackend &platform_backend, const LaunchOpti
                                         udp_video_display_ready,
                                         custom_video_display_ready,
                                         custom_video_hold_as_main,
+                                        true,
                                         prefer_custom_video_as_main,
                                         using_custom_video_as_main);
 
@@ -434,6 +513,7 @@ int RunApplication(platform::PlatformBackend &platform_backend, const LaunchOpti
                     prefer_custom_video_as_main,
                     udp_video_display_ready,
                     custom_video_display_ready,
+                    custom_video_hold_as_main,
                     background_services.IsUdpVideoInverted(),
                     mini_map_texture.texture_ref,
                     mini_map_texture.size);

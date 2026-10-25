@@ -102,7 +102,10 @@ namespace RoboGo::video {
         }
 
         const int nal_type = payload[start_offset] >> 1 & 0x3F;
-        SPDLOG_TRACE("识别到NAL类型 nal_type={} frame_bytes={}", nal_type, payload.size());
+        // 每帧都打 TRACE 会把 spdlog 异步队列塞满；只在参数集/IDR 这种关键帧打一行。
+        if (nal_type == 32 || nal_type == 33 || nal_type == 34 || nal_type == 19 || nal_type == 20 || nal_type == 21) {
+            SPDLOG_DEBUG("关键NAL nal_type={} frame_bytes={}", nal_type, payload.size());
+        }
         return nal_type;
     }
 

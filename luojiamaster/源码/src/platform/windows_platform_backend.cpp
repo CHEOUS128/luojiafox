@@ -69,6 +69,7 @@ struct DescriptorHeapAllocator {
         IM_ASSERT(cpu_index == gpu_index);
         free_indices.push_back(cpu_index);
     }
+
 };
 
 struct WindowsVideoTexture {
@@ -209,7 +210,14 @@ public:
     }
 
     [[nodiscard]] bool BeginFrame() override {
+        render_paused_by_window_ = false;
+        if (swap_chain_ == nullptr || !render_targets_valid_) {
+            // 设备重建失败/交换链坏了时不要再往下走，否则会拿空后台缓冲去画。
+            ::Sleep(10);
+            return false;
+        }
         if ((swap_chain_occluded_ && swap_chain_->Present(0, DXGI_PRESENT_TEST) == DXGI_STATUS_OCCLUDED) || ::IsIconic(hwnd_)) {
+            render_paused_by_window_ = true;
             ::Sleep(10);
             return false;
         }
@@ -236,14 +244,33 @@ public:
             }
         }
 
+        // 上一帧没画完（等待 GPU 超时、渲染失败等）时必须先收尾，
+        // 否则下一次 ImGui::NewFrame 会直接断言，界面还是会卡死。
+        if (frame_in_progress_) {
+            ImGui::EndFrame();
+            frame_in_progress_ = false;
+        }
+
         ImGui_ImplDX12_NewFrame();
         ImGui_ImplWin32_NewFrame();
         ImGui::NewFrame();
+        // 只有真正开始画的一帧才点亮：用它可以区分「界面在转」还是「卡在某处」。
+        frame_in_progress_ = true;
         return true;
     }
 
     void RenderFrame(ImDrawData *draw_data) override {
+        if (swap_chain_ == nullptr || !render_targets_valid_) {
+            frame_in_progress_ = false;
+            return;
+        }
         WindowsFrameContext *frame_context = WaitForNextFrameContext();
+        if (frame_context == nullptr) {
+            SPDLOG_ERROR("等待GPU/交换链超时（2秒），跳过这一帧");
+            ImGui::EndFrame();
+            frame_in_progress_ = false;
+            return;
+        }
         const UINT back_buffer_index = swap_chain_->GetCurrentBackBufferIndex();
         frame_context->command_allocator->Reset();
 
@@ -266,15 +293,48 @@ public:
         barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
         barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_PRESENT;
         command_list_->ResourceBarrier(1, &barrier);
-        command_list_->Close();
+        const HRESULT close_result = command_list_->Close();
+        if (FAILED(close_result)) {
+            // 命令列表没 Close 就拿不到新的帧，必须重建设备才能继续画。
+            SPDLOG_ERROR("关闭渲染命令列表失败 hr=0x{:08X}，下一帧重建设备", static_cast<unsigned int>(close_result));
+            frame_in_progress_ = false;
+            return;
+        }
 
         command_queue_->ExecuteCommandLists(1, reinterpret_cast<ID3D12CommandList *const *>(&command_list_));
-        command_queue_->Signal(fence_, ++fence_last_signaled_value_);
+        if (FAILED(command_queue_->Signal(fence_, ++fence_last_signaled_value_))) {
+            SPDLOG_ERROR("渲染命令队列Signal失败，跳过这一帧");
+            frame_in_progress_ = false;
+            return;
+        }
         frame_context->fence_value = fence_last_signaled_value_;
 
         const HRESULT present_result = swap_chain_->Present(1, 0);
+        if (FAILED(present_result)) {
+            // 设备丢失时不涨帧数，主循环的看门狗 2 秒后会自动重建设备。
+            SPDLOG_ERROR("Present失败 hr=0x{:08X}（设备可能已丢失）", static_cast<unsigned int>(present_result));
+            swap_chain_occluded_ = false;
+            frame_in_progress_ = false;
+            return;
+        }
         swap_chain_occluded_ = (present_result == DXGI_STATUS_OCCLUDED);
         ++frame_index_;
+        ++rendered_frame_count_;
+        frame_in_progress_ = false;
+    }
+
+    [[nodiscard]] std::uint64_t rendered_frame_count() const override {
+        return rendered_frame_count_;
+    }
+
+    // 返回 false 表示主循环当前卡在 BeginFrame 之后没能画完一帧。
+    [[nodiscard]] bool CanRecreateDeviceNow() const override {
+        return !frame_in_progress_;
+    }
+
+    // 窗口最小化/被遮挡时本来就不出帧，不能当成“画面挂住”。
+    [[nodiscard]] bool RenderPausedByWindow() const override {
+        return render_paused_by_window_;
     }
 
     void SetGameInputCapture(const bool enabled) override {
@@ -331,7 +391,7 @@ public:
         return UploadStaticTexture(mini_map_texture_, image.pixels.data(), image.width, image.height);
     }
 
-    [[nodiscard]] RoboGo::app::TextureView GetTextureView(const RoboGo::app::TextureSlot slot) const override {
+    RoboGo::app::TextureView GetTextureView(const RoboGo::app::TextureSlot slot) const override {
         switch (slot) {
             case RoboGo::app::TextureSlot::UdpVideo:
                 return BuildTextureView(udp_video_textures_.textures[udp_video_textures_.current_index]);
@@ -341,6 +401,64 @@ public:
                 return BuildTextureView(mini_map_texture_);
         }
         return {};
+    }
+
+    // 画面挂住（设备丢失 / 等待 fence 永远不返回）后的自愈：重新建 D3D12 设备和 ImGui。
+    // 只允许在主线程、且没有半帧未完成时调用。
+    bool TryRecoverRenderDevice() override {
+        if (!initialized_ || frame_in_progress_) {
+            return false;
+        }
+        SPDLOG_ERROR("渲染设备疑似丢失，开始重建 D3D12 与 ImGui（累计已画帧数={}）", rendered_frame_count_);
+
+        ImGui_ImplDX12_Shutdown();
+        ImGui_ImplWin32_Shutdown();
+        ImGui::DestroyContext();
+
+        CleanupDeviceD3D();
+        if (!CreateDeviceD3D()) {
+            SPDLOG_CRITICAL("重建 Direct3D 设备失败");
+            return false;
+        }
+        RoboGo::app::InitializeCommonImGui(main_scale_);
+        ImGui_ImplWin32_Init(hwnd_);
+        ImGui_ImplDX12_InitInfo init_info = {};
+        init_info.Device = device_;
+        init_info.CommandQueue = command_queue_;
+        init_info.NumFramesInFlight = kFramesInFlight;
+        init_info.RTVFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
+        init_info.DSVFormat = DXGI_FORMAT_UNKNOWN;
+        init_info.SrvDescriptorHeap = srv_descriptor_heap_;
+        init_info.UserData = this;
+        init_info.SrvDescriptorAllocFn = [](ImGui_ImplDX12_InitInfo *info,
+                                            D3D12_CPU_DESCRIPTOR_HANDLE *out_cpu_handle,
+                                            D3D12_GPU_DESCRIPTOR_HANDLE *out_gpu_handle) {
+            auto *backend = static_cast<WindowsPlatformBackend *>(info->UserData);
+            backend->srv_descriptor_heap_allocator_.Alloc(out_cpu_handle, out_gpu_handle);
+        };
+        init_info.SrvDescriptorFreeFn = [](ImGui_ImplDX12_InitInfo *info,
+                                           const D3D12_CPU_DESCRIPTOR_HANDLE cpu_handle,
+                                           const D3D12_GPU_DESCRIPTOR_HANDLE gpu_handle) {
+            auto *backend = static_cast<WindowsPlatformBackend *>(info->UserData);
+            backend->srv_descriptor_heap_allocator_.Free(cpu_handle, gpu_handle);
+        };
+        ImGui_ImplDX12_Init(&init_info);
+        RoboGo::app::LoadEmbeddedImGuiFont();
+
+        // 旧纹理是挂在旧设备上的，全部作废并按新堆重新分配描述符。
+        ReleaseDynamicTextureSet(udp_video_textures_, false);
+        ReleaseDynamicTextureSet(custom_video_textures_, false);
+        ReleaseTexture(mini_map_texture_, false);
+        AllocateVideoTextureDescriptors();
+
+        frame_index_ = 0;
+        fence_last_signaled_value_ = 0;
+        for (auto &context: frame_context_) {
+            context.fence_value = 0;
+        }
+        swap_chain_occluded_ = false;
+        SPDLOG_WARN("渲染设备重建完成，视频纹理已清空，等待下一帧重新上传");
+        return true;
     }
 
 private:
@@ -469,7 +587,8 @@ private:
         swap_chain_->SetMaximumFrameLatency(kBackBuffers);
         swap_chain_waitable_object_ = swap_chain_->GetFrameLatencyWaitableObject();
         CreateRenderTarget();
-        return true;
+        // 后台缓冲拿不到就不算初始化成功，否则会画出全黑/直接崩。
+        return render_targets_valid_;
     }
 
     void CleanupDeviceD3D() {
@@ -540,15 +659,25 @@ private:
     }
 
     void CreateRenderTarget() {
+        render_targets_valid_ = false;
+        if (swap_chain_ == nullptr || device_ == nullptr) {
+            return;
+        }
         for (UINT i = 0; i < kBackBuffers; ++i) {
             ID3D12Resource *back_buffer = nullptr;
-            swap_chain_->GetBuffer(i, IID_PPV_ARGS(&back_buffer));
+            if (FAILED(swap_chain_->GetBuffer(i, IID_PPV_ARGS(&back_buffer))) || back_buffer == nullptr) {
+                // 拿不到后台缓冲说明交换链已经坏了，这里不能硬画，交给看门狗重建设备。
+                SPDLOG_ERROR("获取交换链后台缓冲失败 index={}，等待设备重建", i);
+                return;
+            }
             device_->CreateRenderTargetView(back_buffer, nullptr, main_render_target_descriptor_[i]);
             main_render_target_resource_[i] = back_buffer;
         }
+        render_targets_valid_ = true;
     }
 
     void CleanupRenderTarget() {
+        render_targets_valid_ = false;
         WaitForPendingOperations();
         for (auto &resource: main_render_target_resource_) {
             if (resource != nullptr) {
@@ -558,23 +687,49 @@ private:
         }
     }
 
+    // 在等 GPU 的空档里把本线程的窗口消息抽干：否则登录时正好弹出别的窗口
+    // （系统提示/杀软/网页登录页），主线程来不及响应，Windows 会先把窗口标成「无响应」。
+    static void PumpWindowMessagesWhileWaiting() {
+        MSG message{};
+        while (::PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE) != 0) {
+            if (message.message == WM_QUIT) {
+                // 退出消息不能吞掉：放回队列，交给主循环的 ProcessEvents 正常退出。
+                ::PostQuitMessage(static_cast<int>(message.wParam));
+                return;
+            }
+            ::TranslateMessage(&message);
+            ::DispatchMessageW(&message);
+        }
+    }
+
     void WaitForPendingOperations() {
-        if (command_queue_ == nullptr || fence_ == nullptr || fence_event_ == nullptr) {
+        if (command_queue_ == nullptr || fence_ == nullptr || fence_event_ == nullptr || swap_chain_waitable_object_ == nullptr) {
+            return;
+        }
+        if (::WaitForSingleObject(swap_chain_waitable_object_, 500) != WAIT_OBJECT_0) {
+            // 交换链都等不到，GPU 已经挂了，再 Signal 也只会卡住设备重建，直接返回。
+            SPDLOG_WARN("等待交换链空闲超时（500毫秒），跳过GPU等待");
             return;
         }
         command_queue_->Signal(fence_, ++fence_last_signaled_value_);
         fence_->SetEventOnCompletion(fence_last_signaled_value_, fence_event_);
-        ::WaitForSingleObject(fence_event_, INFINITE);
+        if (::WaitForSingleObject(fence_event_, 1000) != WAIT_OBJECT_0) {
+            SPDLOG_ERROR("等待GPU空闲超时（1秒），设备可能已挂起");
+        }
     }
 
     WindowsFrameContext *WaitForNextFrameContext() {
         WindowsFrameContext *frame_context = &frame_context_[frame_index_ % kFramesInFlight];
+        // 原来是 INFINITE：GPU/交换链一挂，主线程就永远停在这里，界面直接“卡死”。
+        // 现在最多等 2 秒，超时就跳过这一帧，交给上层判定是否重建设备。
         if (fence_->GetCompletedValue() < frame_context->fence_value) {
             fence_->SetEventOnCompletion(frame_context->fence_value, fence_event_);
             HANDLE waitable_objects[] = {swap_chain_waitable_object_, fence_event_};
-            ::WaitForMultipleObjects(2, waitable_objects, TRUE, INFINITE);
-        } else {
-            ::WaitForSingleObject(swap_chain_waitable_object_, INFINITE);
+            if (::WaitForMultipleObjects(2, waitable_objects, TRUE, 2000) == WAIT_TIMEOUT) {
+                return nullptr;
+            }
+        } else if (::WaitForSingleObject(swap_chain_waitable_object_, 2000) == WAIT_TIMEOUT) {
+            return nullptr;
         }
         return frame_context;
     }
@@ -676,21 +831,49 @@ private:
 
         ID3D12Fence *fence = nullptr;
         hr = device_->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fence));
-        IM_ASSERT(SUCCEEDED(hr));
+        if (FAILED(hr)) {
+            upload_buffer->Release();
+            texture->Release();
+            SPDLOG_ERROR("创建纹理上传fence失败 hr=0x{:08X} width={} height={}",
+                         static_cast<unsigned int>(hr), width, height);
+            return false;
+        }
 
         HANDLE event = CreateEvent(nullptr, FALSE, FALSE, nullptr);
-        IM_ASSERT(event != nullptr);
+        if (event == nullptr) {
+            fence->Release();
+            upload_buffer->Release();
+            texture->Release();
+            SPDLOG_ERROR("创建纹理上传事件失败 error={} width={} height={}",
+                         static_cast<unsigned long>(GetLastError()), width, height);
+            return false;
+        }
 
         D3D12_COMMAND_QUEUE_DESC queue_desc = {};
         queue_desc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
 
         ID3D12CommandQueue *command_queue = nullptr;
         hr = device_->CreateCommandQueue(&queue_desc, IID_PPV_ARGS(&command_queue));
-        IM_ASSERT(SUCCEEDED(hr));
+        if (FAILED(hr)) {
+            CloseHandle(event);
+            fence->Release();
+            upload_buffer->Release();
+            texture->Release();
+            SPDLOG_ERROR("创建纹理上传命令队列失败 hr=0x{:08X}", static_cast<unsigned int>(hr));
+            return false;
+        }
 
         ID3D12CommandAllocator *command_allocator = nullptr;
         hr = device_->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&command_allocator));
-        IM_ASSERT(SUCCEEDED(hr));
+        if (FAILED(hr)) {
+            command_queue->Release();
+            CloseHandle(event);
+            fence->Release();
+            upload_buffer->Release();
+            texture->Release();
+            SPDLOG_ERROR("创建纹理上传命令分配器失败 hr=0x{:08X}", static_cast<unsigned int>(hr));
+            return false;
+        }
 
         ID3D12GraphicsCommandList *command_list = nullptr;
         hr = device_->CreateCommandList(0,
@@ -698,18 +881,44 @@ private:
                                         command_allocator,
                                         nullptr,
                                         IID_PPV_ARGS(&command_list));
-        IM_ASSERT(SUCCEEDED(hr));
+        if (FAILED(hr)) {
+            command_allocator->Release();
+            command_queue->Release();
+            CloseHandle(event);
+            fence->Release();
+            upload_buffer->Release();
+            texture->Release();
+            SPDLOG_ERROR("创建纹理上传命令列表失败 hr=0x{:08X}", static_cast<unsigned int>(hr));
+            return false;
+        }
 
         command_list->CopyTextureRegion(&dst_location, 0, 0, 0, &src_location, nullptr);
         command_list->ResourceBarrier(1, &barrier);
         hr = command_list->Close();
-        IM_ASSERT(SUCCEEDED(hr));
-
-        command_queue->ExecuteCommandLists(1, reinterpret_cast<ID3D12CommandList *const *>(&command_list));
-        hr = command_queue->Signal(fence, 1);
-        IM_ASSERT(SUCCEEDED(hr));
-        fence->SetEventOnCompletion(1, event);
-        WaitForSingleObject(event, INFINITE);
+        if (SUCCEEDED(hr)) {
+            command_queue->ExecuteCommandLists(1, reinterpret_cast<ID3D12CommandList *const *>(&command_list));
+            hr = command_queue->Signal(fence, 1);
+        }
+        if (SUCCEEDED(hr) && fence->SetEventOnCompletion(1, event) >= 0) {
+            // 以前这里是 INFINITE：GPU 一挂起，主线程就永远回不来（表现就是“点登录/进比赛后卡死”）。
+            // 现在拆成 100 毫秒一片，每片之间把窗口消息抽干；累计 5 秒还没拷完就当这次上传失败，
+            // 返回 false 由上层重试或走设备重建。
+            int texture_wait_slices = 0;
+            for (;;) {
+                const DWORD wait_result = WaitForSingleObject(event, 100);
+                if (wait_result == WAIT_OBJECT_0) {
+                    break;
+                }
+                PumpWindowMessagesWhileWaiting();
+                if (++texture_wait_slices >= 50) {
+                    SPDLOG_ERROR("纹理上传等待GPU超时 width={} height={}", width, height);
+                    hr = E_FAIL;
+                    break;
+                }
+            }
+        } else if (SUCCEEDED(hr)) {
+            hr = E_FAIL;
+        }
 
         command_list->Release();
         command_allocator->Release();
@@ -717,6 +926,12 @@ private:
         CloseHandle(event);
         fence->Release();
         upload_buffer->Release();
+
+        if (FAILED(hr)) {
+            texture->Release();
+            SPDLOG_ERROR("纹理上传失败 hr=0x{:08X} width={} height={}", static_cast<unsigned int>(hr), width, height);
+            return false;
+        }
 
         D3D12_SHADER_RESOURCE_VIEW_DESC srv_desc = {};
         srv_desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
@@ -827,7 +1042,7 @@ private:
 
         switch (message) {
             case WM_SIZE:
-                if (device_ != nullptr && w_param != SIZE_MINIMIZED) {
+                if (device_ != nullptr && swap_chain_ != nullptr && w_param != SIZE_MINIMIZED) {
                     CleanupRenderTarget();
                     DXGI_SWAP_CHAIN_DESC1 desc = {};
                     swap_chain_->GetDesc1(&desc);
@@ -836,7 +1051,12 @@ private:
                                                                       static_cast<UINT>(HIWORD(l_param)),
                                                                       desc.Format,
                                                                       desc.Flags);
-                    IM_ASSERT(SUCCEEDED(result) && "Failed to resize swapchain.");
+                    if (FAILED(result)) {
+                        // 调整交换链失败后后台缓冲就废了，标记成无效，等看门狗重建设备。
+                        render_targets_valid_ = false;
+                        SPDLOG_ERROR("调整交换链缓冲失败 hr=0x{:08X}，等待设备重建", static_cast<unsigned int>(result));
+                        return 0;
+                    }
                     CreateRenderTarget();
                 }
                 return 0;
@@ -882,6 +1102,13 @@ private:
     bool initialized_ = false;
     bool should_close_ = false;
     bool game_input_captured_ = false;
+    // BeginFrame 已成功但 RenderFrame 还没画完的那一帧，用来判断主循环是否卡在渲染里。
+    bool frame_in_progress_ = false;
+    std::uint64_t rendered_frame_count_ = 0;
+    // 窗口最小化/被遮挡导致这一帧没开始画。
+    bool render_paused_by_window_ = false;
+    // 后台缓冲是否可用。拿不到后台缓冲时不能 BeginFrame，否则会空指针画到崩溃。
+    bool render_targets_valid_ = false;
 };
 
 }// namespace

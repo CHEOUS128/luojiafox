@@ -1,6 +1,6 @@
 @echo off
 rem ============================================================
-rem  一键配置：解压依赖 + 生成构建文件
+rem  一键配置与编译：解压依赖 + CMake 配置 + Ninja 编译
 rem  用法：把本文件放到「源码」目录里再双击
 rem ============================================================
 chcp 936 >nul
@@ -64,4 +64,33 @@ echo.
 echo ============================================
 echo   第三步：CMake 配置
 echo ============================================
-powershell -NoExit -ExecutionPolicy Bypass -Command "Import-Module '%VSROOT%\Common7\Tools\Microsoft.VisualStudio.DevShell.dll'; Enter-VsDevShell -VsInstallPath '%VSROOT%' -SkipAutomaticLocation -Arch amd64 -HostArch amd64; cmake --preset release"
+echo   第四步：编译（Ninja Release，第一次要几分钟）
+echo ============================================
+powershell -NoProfile -ExecutionPolicy Bypass -Command "Import-Module '%VSROOT%\Common7\Tools\Microsoft.VisualStudio.DevShell.dll'; Enter-VsDevShell -VsInstallPath '%VSROOT%' -SkipAutomaticLocation -Arch amd64 -HostArch amd64; cmake --preset release 2>&1 | Tee-Object -FilePath 'cmake_build_log.txt'; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }; Write-Host ''; Write-Host '============================================'; Write-Host '  开始编译 cmake --build --preset release'; Write-Host '============================================'; cmake --build --preset release 2>&1 | Tee-Object -FilePath 'cmake_build_log.txt' -Append; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }"
+
+if errorlevel 1 (
+    echo.
+    echo [错误] 配置或编译失败，请把上面的报错发给我。
+    pause
+    exit /b 1
+)
+
+echo.
+echo ============================================
+echo   编译完成
+echo ============================================
+if not exist "build\release\luojiamaster.exe" (
+    echo [错误] 没有找到 build\release\luojiamaster.exe
+    pause
+    exit /b 1
+)
+for %%F in ("build\release\luojiamaster.exe") do echo 产物：%%~fF
+for %%F in ("build\release\luojiamaster.exe") do echo 时间：%%~tF   大小：%%~zF 字节
+echo  MD5：
+certutil -hashfile "build\release\luojiamaster.exe" MD5 | findstr /v ":"
+echo.
+echo 完整编译日志：%~dp0cmake_build_log.txt
+echo 如果有 error，把这个文件整个发给我。
+echo.
+echo 下一步：把上面的 exe 复制到「程序」目录，覆盖旧的 luojiamaster.exe
+pause

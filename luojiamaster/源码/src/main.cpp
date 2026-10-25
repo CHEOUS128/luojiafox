@@ -37,7 +37,7 @@ std::vector<std::string> CollectCommandLineArgs(const int argc, char *argv[]) {
 int RunMain(const std::vector<std::string> &args) {
     auto platform_backend = RoboGo::platform::CreatePlatformBackend();
     const RoboGo::app::LaunchOptions options = RoboGo::app::ParseLaunchOptions(args);
-    RoboGo::logging::initialize(platform_backend->application_name(), options.invert_udp_video);
+    RoboGo::logging::initialize(platform_backend->application_name(), options.invert_udp_video, options.enable_network_capture);
     const int result = RoboGo::app::RunApplication(*platform_backend, options);
     RoboGo::logging::shutdown();
     return result;

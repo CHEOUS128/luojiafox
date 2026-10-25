@@ -39,6 +39,8 @@ struct LaunchOptions {
     std::string mqtt_port;
     int parsed_video_port = 0;
     bool invert_udp_video = false;
+    // --no_capture：不写 network_capture.bin。排查卡死时用来做 A/B，不影响遥控。
+    bool enable_network_capture = true;
 };
 
 }// namespace RoboGo::app
