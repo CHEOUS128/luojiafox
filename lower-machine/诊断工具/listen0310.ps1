@@ -120,6 +120,8 @@ $innerOk  = 0
 $accBase  = 0
 $lastHeadPos = -1
 $spans    = New-Object System.Collections.Generic.List[int]
+$gapNeed  = New-Object System.Collections.Generic.List[int]
+$prevIlen = -1
 $total    = 0
 $readErr  = 0
 $consecErr = 0
@@ -211,8 +213,14 @@ try {
           $absPos = $accBase + $scan
           if ($absPos -ne $lastHeadPos) {
             $headHits++
-            if ($lastHeadPos -ge 0) { $spans.Add($absPos - $lastHeadPos) | Out-Null }
+            if ($lastHeadPos -ge 0) {
+              $spans.Add($absPos - $lastHeadPos) | Out-Null
+              # 上一帧应该占多少字节 = 帧头7 + 内层头4 + H.264(内层长度)
+              if ($prevIlen -ge 0) { $gapNeed.Add(($absPos - $lastHeadPos) - $prevIlen - 11) | Out-Null }
+            }
             $lastHeadPos = $absPos
+            # while 条件保证还有 9 个字节，可以安全读内层长度
+            $prevIlen = ([int]$acc[$scan + 7] -shl 8) -bor [int]$acc[$scan + 8]
           }
 
           if (($acc.Count - $scan) -lt 309) { break }   # 尾巴还没收全，留到下一轮
@@ -300,6 +308,18 @@ if ($spans.Count -gt 0) {
   Write-Host ("  帧间隔      中位 {0} 字节（最小 {1} 最大 {2}）  正好309={3} 偏短={4} 偏长={5}" -f `
     $med, $mn, $mx, $full, $trunc, $over)
 }
+if ($gapNeed.Count -gt 0) {
+  $gs = ($gapNeed | Sort-Object)
+  $gmed = $gs[[int]($gs.Count / 2)]
+  $gpos = 0; $gneg = 0; $gzero = 0
+  foreach ($g in $gapNeed) {
+    if ($g -gt 0) { $gpos++ } elseif ($g -lt 0) { $gneg++ } else { $gzero++ }
+  }
+  Write-Host ("  帧尾余量    中位 {0} 字节（最小 {1} 最大 {2}）  正好=0:{3} 多出:{4} 少:{5}" -f `
+    $gmed, $gs[0], $gs[$gs.Count - 1], $gzero, $gpos, $gneg)
+  Write-Host "     帧尾余量 = 两帧之间还剩多少字节（零填充 + CRC16）。一帧完整时它 ≈ 300 - 内层长度，"
+  Write-Host "     一般落在 40~65；明显更小 = 帧尾被切；出现负数 = 编码数据本身就缺了。"
+}
 if ($readErr -gt 0) {
   Write-Host ("  读取异常    {0} 次  最后一条：{1}" -f $readErr, $lastErr)
 }
@@ -335,12 +355,13 @@ if ($good -gt 0) {
   Write-Host "  ✅ 收到完整的 309 字节 0x0310 帧 —— 板子确实在往这根线上发视频。"
   Write-Host "     下一步：把这根线接到 VT03 的 RX 焊盘，客户端就能看到画面。"
 } elseif ($headHits -gt 0) {
-  Write-Host "  ⚠ 这根线上确实有 0x0310 帧头（CRC8 都对），但 309 字节的整帧收不齐。"
-  Write-Host "     说明板子在发视频，断的是「传输过程中丢字节」，不是固件。"
-  Write-Host "     按帧间隔那一行判断："
-  Write-Host "       间隔中位数 < 309、每次少掉几十字节 -> USB/CH340 丢包；换 CH340、降波特率试"
-  Write-Host "       间隔忽大忽小、乱字节多          -> 没共地 / 线接触不良 / 线太长"
-  Write-Host "       间隔是 309 附近但 CRC 错          -> 波特率偏差（确认 921600 8N1）"
+  Write-Host "  ⚠ 这根线上有 0x0310 帧头（CRC8 都对），但没有一帧凑满 309 字节。"
+  Write-Host "     先看上面「帧间隔」和「每帧差多少」两行，再下结论："
+  Write-Host "       每帧差多少 中位 ≈ 0   -> 线上本来就是完整的一帧（帧尾零填充少一点），"
+  Write-Host "                                 只是本工具按 309 字节算「完整」，别当成丢 H.264"
+  Write-Host "       每帧差多少 总是正的、多出来的都是 0 -> 帧尾零填充+CRC 被按 64 字节取整切掉"
+  Write-Host "                                 （USB CDC / DMA 边界），H.264 没丢"
+  Write-Host "       每帧差多少 忽正忽负、乱字节多 -> 没共地 / 线接触不良 / 波特率不对"
   Write-Host "     夹在中间的「乱字节」不代表收到错数据，是残帧中间那些没被认出来的字节。"
 } elseif ($total -gt 0) {
   Write-Host "  ⚠ 收到了字节，但一整帧都没凑齐（60 秒正常应是 9 万字节量级）。"

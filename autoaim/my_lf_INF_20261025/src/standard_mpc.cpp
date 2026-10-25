@@ -23,7 +23,11 @@
 
 const std::string keys =
   "{help h usage ? |                   | 输出命令行参数说明 }"
-  "{@config-path   | configs/demo.yaml | yaml配置文件路径}";
+  "{@config-path   | configs/demo.yaml | yaml配置文件路径}"
+  "{video-fps vf   | -1                | 覆盖 video_fps（<=0 用 yaml 的值）}"
+  "{video-width vw | -1                | 覆盖 video_width（<=0 用 yaml）}"
+  "{video-height vh | -1               | 覆盖 video_height（<=0 用 yaml）}"
+  "{video-crop vc  | -1                | 覆盖 video_crop_size（<=0 用 yaml）}";
 
 int main(int argc, char * argv[])
 {
@@ -65,11 +69,20 @@ int main(int argc, char * argv[])
             if (cfg_yaml["video_send_rate_hz"]) vs_cfg.send_rate_hz = cfg_yaml["video_send_rate_hz"].as<double>();
             if (cfg_yaml["video_single_packet"]) vs_cfg.single_packet = cfg_yaml["video_single_packet"].as<bool>();
             if (cfg_yaml["video_max_frame_bytes"]) vs_cfg.max_frame_bytes = cfg_yaml["video_max_frame_bytes"].as<int>();
+            // 命令行覆盖（做 A/B 时不用改 yaml）
+            const auto cli_fps = cli.get<double>("video-fps");
+            const auto cli_w = cli.get<int>("video-width");
+            const auto cli_h = cli.get<int>("video-height");
+            const auto cli_c = cli.get<int>("video-crop");
+            if (cli_fps > 0.0) vs_cfg.fps = cli_fps;
+            if (cli_w > 0)     vs_cfg.width = cli_w;
+            if (cli_h > 0)     vs_cfg.height = cli_h;
+            if (cli_c > 0)     vs_cfg.crop_size = cli_c;
             video_sender.emplace(vs_cfg);
-            tools::logger()->info("[VideoSender] 已启用（{}x{} @{:.0f}fps {}kbps preset={} keep_aspect={} sharpen={} 单包={}）",
+            tools::logger()->info("[VideoSender] 已启用（{}x{} @{:.0f}fps {}kbps preset={} keep_aspect={} sharpen={} 单包={} crop={}）",
                                   vs_cfg.width, vs_cfg.height, vs_cfg.fps, vs_cfg.bitrate_kbps,
                                   vs_cfg.x264_preset, vs_cfg.keep_aspect, vs_cfg.sharpen,
-                                  vs_cfg.single_packet ? "是" : "否");
+                                  vs_cfg.single_packet ? "是" : "否", vs_cfg.crop_size);
         } else {
             tools::logger()->info("[VideoSender] 未启用（配置 video_send_enable: false）");
         }
