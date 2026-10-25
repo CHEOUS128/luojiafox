@@ -4,7 +4,7 @@
 
 namespace RoboGo::logging {
 
-void initialize(std::string_view application_name, bool invert_udp_video, bool enable_network_capture = true);
+void initialize(std::string_view application_name, bool invert_udp_video);
 
 void shutdown();
 
@@ -25,9 +25,6 @@ void log_network_payload(std::string_view transport,
                          std::string_view channel,
                          std::span<const uint8_t> payload,
                          std::string_view peer = {});
-
-// 抓包队列满而被丢弃的记录数（抓包线程死掉时会持续增长）。
-std::size_t network_capture_dropped_count();
 
 inline void log_network_payload(std::string_view transport,
                                 std::string_view direction,

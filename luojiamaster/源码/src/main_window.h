@@ -79,7 +79,10 @@ inline constexpr auto kUdpVideoFallbackTimeout = std::chrono::milliseconds(250);
 // 主画面在 UDP 和自定义流之间来回抢，官方图传跟着一闪一闪。
 //   - 双画面模式：超过 kCustomVideoLiveTimeout 没新帧就只把这一格标成不可用；
 //   - 主画面模式：超过 kCustomVideoFallbackTimeout 才把主画面让给 UDP。
-inline constexpr auto kCustomVideoLiveTimeout = std::chrono::milliseconds(1000);
+// 2026-10-25 实测（会话 20261025_192645_687）：链路平均 2 包/秒，但包间隔
+// 经常到 1.0~1.8 秒（custom_ago 观测值 1035/1068/1122/1755 ms）。原来 1 秒判死，
+// 小窗会整格闪掉，看着就像「一闪就没」。这里只放宽显示保持时间，不碰接收/解码/渲染。
+inline constexpr auto kCustomVideoLiveTimeout = std::chrono::milliseconds(3000);
 inline constexpr auto kCustomVideoFallbackTimeout = std::chrono::milliseconds(5000);
 
 State CreateInitialState();

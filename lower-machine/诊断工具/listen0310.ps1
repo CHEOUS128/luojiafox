@@ -207,47 +207,46 @@ try {
             continue
           }
 
-          # 帧头 OK。到这里才用「结构对但 CRC 不对」这个分支。
-          # 上一轮因为「帧还没收全」break 时，这个帧头会再被扫到一次，
-          # 用绝对位置去重，避免重复计数。
+          # 帧头 OK（7 字节 + CRC8）。
+          # 不再要求后面 309 字节全到齐 —— 线上常把帧尾的零填充/CRC 切掉，
+          # 那样永远凑不满 309，会把每一帧都误判成「残帧」。
+          # 用「内层长度」按帧切：一帧 = 11 + 内层长度。内层长度不合法就退化成 309。
           $absPos = $accBase + $scan
           if ($absPos -ne $lastHeadPos) {
             $headHits++
             if ($lastHeadPos -ge 0) {
               $spans.Add($absPos - $lastHeadPos) | Out-Null
-              # 上一帧应该占多少字节 = 帧头7 + 内层头4 + H.264(内层长度)
               if ($prevIlen -ge 0) { $gapNeed.Add(($absPos - $lastHeadPos) - $prevIlen - 11) | Out-Null }
             }
             $lastHeadPos = $absPos
-            # while 条件保证还有 9 个字节，可以安全读内层长度
-            $prevIlen = ([int]$acc[$scan + 7] -shl 8) -bor [int]$acc[$scan + 8]
           }
+          if (($acc.Count - $scan) -lt 9) { break }
+          $innerLenHdr = ([int]$acc[$scan + 7] -shl 8) -bor [int]$acc[$scan + 8]
+          $prevIlen = $innerLenHdr
+          $need = 309
+          if ($innerLenHdr -ge 2 -and $innerLenHdr -le 296) { $need = 11 + $innerLenHdr }
+          if (($acc.Count - $scan) -lt $need) { break }   # 这一帧还没收全，留到下一轮
 
-          if (($acc.Count - $scan) -lt 309) { break }   # 尾巴还没收全，留到下一轮
-
-          $frame = $acc.GetRange($scan, 309).ToArray()
-          $ok = $true
-          if (-not $NoCrc) {
+          $frame = $acc.GetRange($scan, $need).ToArray()
+          $crcOk = $true
+          if ($need -ge 309) {
             $crcRecv = [int]$frame[307] -bor ([int]$frame[308] -shl 8)
-            if ($ok -and $crcRecv -ne (Get-Crc16 ([byte[]]$frame[0..306]))) { $ok = $false }
+            if ($crcRecv -ne (Get-Crc16 ([byte[]]$frame[0..306]))) { $crcOk = $false }
           }
-          if ($ok) {
+          if ($crcOk) {
             $good++
             $sq = [int]$frame[3]
             if ($firstSeq -lt 0) { $firstSeq = $sq }
             $lastSeq = $sq
             $seqs.Add($sq) | Out-Null
             if ($recent.Count -ge 5) { [void]$recent.Dequeue() }
-            $innerLen = ([int]$frame[7] -shl 8) -bor [int]$frame[8]
             $innerSeq = ([int]$frame[9] -shl 8) -bor [int]$frame[10]
-            if ($innerLen -ge 2 -and $innerLen -le 298) { $innerOk++ }
-            $recent.Enqueue(("seq={0,-3} 内层长度={1,-3} 内层序号={2}" -f $sq, $innerLen, $innerSeq))
-            $scan += 309
+            if ($innerLenHdr -ge 2 -and $innerLenHdr -le 296) { $innerOk++ }
+            $recent.Enqueue(("seq={0,-3} 内层长度={1,-3} 内层序号={2}" -f $sq, $innerLenHdr, $innerSeq))
+            $scan += $need
           } else {
             $badCrc++
             $headOkCrcBad++
-            # 关键：不跳 309，只跳 1 个字节重新找下一个帧头。
-            # 残帧长度不确定，跳 309 一定会把下一个好帧的帧头吃掉。
             $scan++
           }
         }
@@ -293,6 +292,7 @@ if ($portLost) {
 Write-Host ("  收到字节    {0:N0}（{1:N2} KB/s）" -f $total, ($total / 1024.0 / [Math]::Max($elapsed, 0.001)))
 Write-Host ("  好帧头      {0} 个（{1:N2} 帧/秒）" -f $headHits, ($headHits / [Math]::Max($elapsed, 0.001)))
 Write-Host ("  完整帧      {0} 帧      残帧 {1}     乱字节 {2}" -f $good, $badCrc, $badHead)
+Write-Host ("  帧率        {0:N2} 帧/秒  <- 判读就看这个数" -f ($good / [Math]::Max($elapsed, 0.001)))
 if ($good -gt 0) {
   Write-Host ("  内层长度合法 {0}/{1}" -f $innerOk, $good)
 }
@@ -317,8 +317,9 @@ if ($gapNeed.Count -gt 0) {
   }
   Write-Host ("  帧尾余量    中位 {0} 字节（最小 {1} 最大 {2}）  正好=0:{3} 多出:{4} 少:{5}" -f `
     $gmed, $gs[0], $gs[$gs.Count - 1], $gzero, $gpos, $gneg)
-  Write-Host "     帧尾余量 = 两帧之间还剩多少字节（零填充 + CRC16）。一帧完整时它 ≈ 300 - 内层长度，"
-  Write-Host "     一般落在 40~65；明显更小 = 帧尾被切；出现负数 = 编码数据本身就缺了。"
+  Write-Host "     帧尾余量 = 本帧 H.264 结束到下一个帧头之间的字节数（零填充 + CRC16）。"
+  Write-Host "     一帧完整时它 ≈ 298 - 内层长度（内层 250 -> 约 48）；"
+  Write-Host "     明显更小 = 帧尾零填充被切（H.264 没缺）；负数 = 连 H.264 都缺了。"
 }
 if ($readErr -gt 0) {
   Write-Host ("  读取异常    {0} 次  最后一条：{1}" -f $readErr, $lastErr)
@@ -352,8 +353,9 @@ if ($good -gt 0) {
   Write-Host "  最近 5 帧："
   foreach ($s in $recent) { Write-Host ("    " + $s) }
   Write-Host ""
-  Write-Host "  ✅ 收到完整的 309 字节 0x0310 帧 —— 板子确实在往这根线上发视频。"
-  Write-Host "     下一步：把这根线接到 VT03 的 RX 焊盘，客户端就能看到画面。"
+  Write-Host "  ✅ 收到有效 0x0310 帧 —— 板子确实在往这根线上发视频。"
+  Write-Host "     （「完整帧」= 帧头 + 内层头 + H.264 齐全；帧尾零填充/CRC16 被切掉也算，"
+  Write-Host "       真正看下一行「帧尾余量」：40~65 正常、明显更小 = 帧尾被切、负数 = 编码数据缺了）"
 } elseif ($headHits -gt 0) {
   Write-Host "  ⚠ 这根线上有 0x0310 帧头（CRC8 都对），但没有一帧凑满 309 字节。"
   Write-Host "     先看上面「帧间隔」和「每帧差多少」两行，再下结论："

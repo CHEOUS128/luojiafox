@@ -832,7 +832,8 @@ def _dump_robo_capture(blob, args):
     """解析 RoboGo 自己的 network_capture.bin
 
     文件头: 'RBNCAP1\\n' + u32 version + u32 flags
-    记录:   'REC2' + u32 body_size + u32 crc32 + body
+    v2 记录: 'REC2' + u32 body_size + u32 crc32 + body
+    v3 记录: u32 body_size + body（没有逐条 magic/CRC）
     body:   u64 t_us | u8 transport | u8 dir | u16 chlen | u16 peerlen |
             u32 plen | channel | peer | payload
     transport: 1=mqtt 2=udp-video ; dir: 1=rx 2=tx
@@ -843,29 +844,8 @@ def _dump_robo_capture(blob, args):
     off += 8
     print("  版本=%d flags=0x%08x" % (ver, flags))
 
-    recs = []
-    bad = 0
-    while off + 12 <= len(blob):
-        if blob[off:off + 4] != b"REC2":
-            bad += 1
-            break
-        body_size = struct.unpack_from("<I", blob, off + 4)[0]
-        off += 12
-        body = blob[off:off + body_size]
-        off += body_size
-        try:
-            # 头 = u64 + u8 + u8 + u16 + u16 + u32 = 8+1+1+2+2+4 = 18 字节
-            t_us, transport, direction, chlen, peerlen, plen = struct.unpack_from("<QBBHHI", body, 0)
-            p = 18
-            channel = body[p:p + chlen].decode("utf-8", "replace")
-            p += chlen
-            peer = body[p:p + peerlen].decode("utf-8", "replace")
-            p += peerlen
-            payload = body[p:p + plen]
-        except struct.error:
-            continue
-        recs.append((t_us, transport, direction, channel, peer, payload))
-    if bad:
+    recs, off = _read_robo_records(blob, off, ver)
+    if off < len(blob):
         print("  ! 记录在偏移附近损坏，只解析了前面的部分（%d 条）" % len(recs))
 
     if not recs:
@@ -1055,26 +1035,54 @@ def _report_robo_side(start_ts, end_ts):
             print("    → 客户端确实收到了 CustomByteBlock，可以据此判断格式/解码。")
 
 
+def _read_robo_records(blob, off, ver):
+    """按版本解析 RoboGo 抓包记录，返回 (记录列表, 停下的偏移)。
+
+    v2: 'REC2' + u32 body_size + u32 crc32 + body
+    v3: u32 body_size + body
+    body 头都是 u64 t_us | u8 transport | u8 dir | u16 chlen | u16 peerlen | u32 plen。
+    """
+    recs = []
+    while True:
+        if ver >= 3:
+            if off + 4 > len(blob):
+                break
+            body_size = struct.unpack_from("<I", blob, off)[0]
+            off += 4
+        else:
+            if off + 12 > len(blob):
+                break
+            if blob[off:off + 4] != b"REC2":
+                break
+            body_size = struct.unpack_from("<I", blob, off + 4)[0]
+            off += 12
+        if off + body_size > len(blob):
+            break
+        body = blob[off:off + body_size]
+        off += body_size
+        try:
+            t_us, transport, direction, chlen, peerlen, plen = struct.unpack_from("<QBBHHI", body, 0)
+        except struct.error:
+            continue
+        p = 18
+        channel = body[p:p + chlen].decode("utf-8", "replace")
+        p += chlen
+        peer = body[p:p + peerlen].decode("utf-8", "replace")
+        p += peerlen
+        payload = body[p:p + plen]
+        recs.append((t_us, transport, direction, channel, peer, payload))
+    return recs, off
+
+
 def _count_cbb_rx(cap_path):
     """只数 network_capture.bin 里 CustomByteBlock 的 rx 记录，不做完整解析。"""
-    n = 0
     with open(cap_path, "rb") as fh:
-        head = fh.read(16)
-        if head[:8] != b"RBNCAP1\n":
-            return 0
-        while True:
-            hdr = fh.read(12)
-            if len(hdr) < 12 or hdr[:4] != b"REC2":
-                break
-            body_size = struct.unpack_from("<I", hdr, 4)[0]
-            body = fh.read(body_size)
-            if len(body) < body_size:
-                break
-            _t, _tr, direction, chlen, peerlen, _plen = struct.unpack_from("<QBBHHI", body, 0)
-            channel = body[18:18 + chlen].decode("utf-8", "replace")
-            if channel == "CustomByteBlock" and direction == 1:
-                n += 1
-    return n
+        blob = fh.read()
+    if blob[:8] != b"RBNCAP1\n":
+        return 0
+    ver = struct.unpack_from("<I", blob, 8)[0]
+    recs, _off = _read_robo_records(blob, 16, ver)
+    return sum(1 for r in recs if r[3] == "CustomByteBlock" and r[2] == 1)
 
 
 def _mqtt_enc_len(n):
@@ -1372,16 +1380,16 @@ def cmd_selftest(args):
 
     # 8) 造一个假的 RoboGo 抓包，验证 dump 能读
     def rec(t_us, transport, direction, chan, peer, payload):
-        """与 logging.cpp build_record_body() 严格一致：
-        u64 t_us | u8 transport | u8 dir | u16 chlen | u16 peerlen | u32 plen | channel | peer | payload
+        """与 logging.cpp v3 格式严格一致：
+        u32 body_size + (u64 t_us | u8 transport | u8 dir | u16 chlen | u16 peerlen | u32 plen | channel | peer | payload)
         """
         cb, pb = chan.encode(), peer.encode()
         b = struct.pack("<QBBHHI", t_us, transport, direction,
                         len(cb), len(pb), len(payload)) + cb + pb + payload
-        return b"REC2" + struct.pack("<II", len(b), 0) + b
+        return struct.pack("<I", len(b)) + b
 
     import tempfile
-    cap = bytearray(b"RBNCAP1\n" + struct.pack("<II", 2, 0))
+    cap = bytearray(b"RBNCAP1\n" + struct.pack("<II", 3, 0))
     for i in range(6):
         data = make_payload_300(i, i // 3)
         cap += rec(1000000 * i, 1, 1, "CustomByteBlock", "192.168.12.1:3333", b"\x0a" + _mqtt_enc_len(len(data)) + data)

@@ -23,6 +23,8 @@ void CustomByteBlockVideoDecoderWorker::enqueue_packet_bytes(std::span<const std
     }
 
     std::vector<std::uint8_t> packet_bytes(wire_bytes.begin(), wire_bytes.end());
+    packets_received_.fetch_add(1, std::memory_order_relaxed);
+    bytes_received_.fetch_add(packet_bytes.size(), std::memory_order_relaxed);
     if (!packet_queue_.enqueue(std::move(packet_bytes))) {
         SPDLOG_ERROR("CustomByteBlock 解码队列入队失败 bytes={}", wire_bytes.size());
         emit_log(2, "CustomByteBlock 解码队列入队失败");
@@ -50,10 +52,12 @@ void CustomByteBlockVideoDecoderWorker::run() {
                 }
                 continue;
             }
+            packets_dequeued_.fetch_add(1, std::memory_order_relaxed);
 
             try {
                 auto decoded_frames = decoder.push_packet_bytes(packet_bytes);
                 for (auto &decoded_frame: decoded_frames) {
+                    frames_output_.fetch_add(1, std::memory_order_relaxed);
                     if (frame_handler_) {
                         frame_handler_(std::move(decoded_frame));
                     }
@@ -70,6 +74,7 @@ void CustomByteBlockVideoDecoderWorker::run() {
         try {
             auto flushed_frames = decoder.flush();
             for (auto &decoded_frame: flushed_frames) {
+                frames_output_.fetch_add(1, std::memory_order_relaxed);
                 if (frame_handler_) {
                     frame_handler_(std::move(decoded_frame));
                 }

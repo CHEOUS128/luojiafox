@@ -15,34 +15,25 @@ namespace RoboGo::video {
     void VideoShardsManager::on_receive_shard(const uint8_t *data, size_t size) {
         auto *packet = new uint8_t[size];
         memcpy(packet, data, size);
-        // 队列满了绝不能阻塞网络线程，也不能无限增长（会耗死整个进程）。直接丢掉这个分片。
-        // 注意：队列元素类型是 pair<uint8_t*, size_t>，try_enqueue 必须把整个 pair 一次传进去。
-        if (!packet_queue.try_enqueue(std::make_pair(packet, size))) {
-            delete[] packet;
-        }
+        packet_queue.emplace(packet, size);
     }
 
     void VideoShardsManager::handle_once() {
-        static std::uint64_t s_dropped_shards = 0;
         // 如果数据包过多导致阻塞，就丢弃旧的数据包
-        if (packet_queue.size_approx() >= 4096) {
+        if (packet_queue.size_approx() >= 512) {
             std::size_t trimmed_count = 0;
             std::pair<uint8_t *, size_t> stale_packet;
-            while (packet_queue.size_approx() > 2048 && packet_queue.try_dequeue(stale_packet)) {
+            while (packet_queue.size_approx() > 256 && packet_queue.try_dequeue(stale_packet)) {
                 delete[] stale_packet.first;
                 ++trimmed_count;
             }
-            // 解析不过来时几乎每个分片都会触发一次，所以限制成每 256 个才写一行。
-            s_dropped_shards += trimmed_count;
-            if (trimmed_count > 0 && (s_dropped_shards & 0xFF) < trimmed_count) {
-                SPDLOG_WARN("UDP 视频分片队列堆积，已丢弃旧分片累计 {} 个", s_dropped_shards);
+            if (trimmed_count > 0) {
+                SPDLOG_WARN("UDP 视频分片队列堆积，已丢弃旧 {} 个分片", trimmed_count);
             }
         }
         // 获取一个数据包
         std::pair<uint8_t *, size_t> packet;
-        // 队列空时最多等 200 微秒。原来只等 1 微秒，解码线程空转就把一个核吃满；
-        // 有包进来会立刻唤醒，不影响延迟。
-        if (!packet_queue.wait_dequeue_timed(packet, std::chrono::microseconds(200))) {
+        if (!packet_queue.wait_dequeue_timed(packet, std::chrono::microseconds(1))) {
             return;
         }
         auto [data, size] = packet;
