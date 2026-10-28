@@ -12,6 +12,7 @@
 //
 // 配置优先级：命令行覆盖 > config yaml 的 video_* 项 > 内置默认值
 // 可用的覆盖项：--fps N --kbps N --preset NAME --keep-aspect 0|1 --crop N --sharpen X
+//               --large-frame 0|1 --gop N --gray 0|1
 // 想贴 ACE 的取景（中心裁 1000×1000 再缩到 300×240）：--keep-aspect 0 --crop 1000
 //
 // 输出文件：
@@ -32,6 +33,7 @@
 #include <cstring>
 #include <fstream>
 #include <iostream>
+#include <map>
 #include <memory>
 #include <opencv2/opencv.hpp>
 #include <string>
@@ -135,7 +137,52 @@ struct CliOverrides
   bool has_keep_aspect = false; bool keep_aspect = true;
   bool has_crop = false;  int crop = 0;
   bool has_sharpen = false; double sharpen = 0.0;
+  bool has_large_frame = false; bool large_frame = false;
+  bool has_gop = false;   int gop = 5;
+  bool has_gray = false;  bool gray = false;
   bool compare = false;
+};
+
+// 统计「一帧拆成几个包」的分布。
+// 判据：一个内层包如果载荷正好填满 296 字节（300-2B长度-2B序号），说明这一帧还没完；
+//       否则（短包）就是本帧最后一包。H.264 末尾必有 rbsp_stop_bit，不可能刚好整包填满，
+//       所以这条判据在实测中是安全的。I+P 模式下这一行能直接看出 I 帧是不是 3 包、P 帧是不是 1 包。
+struct FrameRunStats
+{
+  std::map<std::size_t, std::size_t> hist;  // 包数 → 帧数
+  std::size_t frames = 0;
+  std::size_t packets = 0;
+  std::size_t cur = 0;
+
+  void add(const std::vector<uint8_t> & frame, std::vector<uint8_t> & h264_out)
+  {
+    const auto payload = extractPayload(frame);
+    const bool full_packet = payload.size() >= (kDataBytes - kTransportPrefix - kInnerSeqBytes);
+    h264_out.insert(h264_out.end(), payload.begin(), payload.end());
+    ++packets;
+    ++cur;
+    if (!full_packet) {
+      ++hist[cur];
+      ++frames;
+      cur = 0;
+    }
+  }
+
+  void finish()
+  {
+    if (cur > 0) {  // 最后一帧被 flush 截断（少见）
+      ++hist[cur];
+      ++frames;
+      cur = 0;
+    }
+  }
+
+  void print(const char * title) const
+  {
+    std::cout << title << "：共 " << frames << " 帧 / " << packets << " 包  ";
+    for (const auto & [n, c] : hist) std::cout << "[" << n << "包 × " << c << "帧] ";
+    std::cout << "\n";
+  }
 };
 
 }  // namespace
@@ -161,7 +208,8 @@ int main(int argc, char ** argv)
       std::cout << "用法:\n"
                 << "  " << argv[0] << " [输出目录]\n"
                 << "  " << argv[0] << " [输出目录] -c <config.yaml>\n"
-                << "  可选: --fps N --kbps N --preset NAME --keep-aspect 0|1 --crop N --sharpen X --compare\n";
+                << "  可选: --fps N --kbps N --preset NAME --keep-aspect 0|1 --crop N --sharpen X\n"
+                << "        --large-frame 0|1 --gop N --gray 0|1 --compare\n";
       return 0;
     } else if (a == "--fps") {
       ov.has_fps = true; ov.fps = std::stod(next("--fps"));
@@ -175,6 +223,12 @@ int main(int argc, char ** argv)
       ov.has_crop = true; ov.crop = std::stoi(next("--crop"));
     } else if (a == "--sharpen") {
       ov.has_sharpen = true; ov.sharpen = std::stod(next("--sharpen"));
+    } else if (a == "--large-frame") {
+      ov.has_large_frame = true; ov.large_frame = (next("--large-frame") != "0");
+    } else if (a == "--gop") {
+      ov.has_gop = true; ov.gop = std::stoi(next("--gop"));
+    } else if (a == "--gray") {
+      ov.has_gray = true; ov.gray = (next("--gray") != "0");
     } else if (a == "--compare") {
       ov.compare = true;
     } else {
@@ -207,8 +261,15 @@ int main(int argc, char ** argv)
       if (yaml["video_x264_preset"])    cfg.x264_preset = yaml["video_x264_preset"].as<std::string>();
       if (yaml["video_keep_aspect"])    cfg.keep_aspect = yaml["video_keep_aspect"].as<bool>();
       if (yaml["video_sharpen"])        cfg.sharpen = yaml["video_sharpen"].as<double>();
+      if (yaml["video_send_rate_hz"])   cfg.send_rate_hz = yaml["video_send_rate_hz"].as<double>();
       if (yaml["video_single_packet"])  cfg.single_packet = yaml["video_single_packet"].as<bool>();
       if (yaml["video_max_frame_bytes"]) cfg.max_frame_bytes = yaml["video_max_frame_bytes"].as<int>();
+      // ---- 2026-10-28 画质版：I+P + 一帧拆多包（与 standard_mpc 的读取保持一致）----
+      if (yaml["video_large_frame"])    cfg.large_frame = yaml["video_large_frame"].as<bool>();
+      if (yaml["video_gop"])            cfg.gop = yaml["video_gop"].as<int>();
+      if (yaml["video_max_frame_packets"]) cfg.max_frame_packets = yaml["video_max_frame_packets"].as<int>();
+      if (yaml["video_gray"])           cfg.gray = yaml["video_gray"].as<bool>();
+      if (cfg.large_frame) cfg.single_packet = false;  // 互斥，大帧优先
     } catch (const std::exception & e) {
       std::cerr << "⚠ 读取配置失败（使用默认参数）: " << e.what() << "\n";
     }
@@ -219,6 +280,10 @@ int main(int argc, char ** argv)
   if (ov.has_keep_aspect) cfg.keep_aspect = ov.keep_aspect;
   if (ov.has_crop) cfg.crop_size = ov.crop;
   if (ov.has_sharpen) cfg.sharpen = ov.sharpen;
+  if (ov.has_large_frame) cfg.large_frame = ov.large_frame;
+  if (ov.has_gop) cfg.gop = ov.gop;
+  if (ov.has_gray) cfg.gray = ov.gray;
+  if (cfg.large_frame) cfg.single_packet = false;  // 命令行覆盖之后也要保证互斥
 
   // ---- 创建相机（可选）----
   std::unique_ptr<io::Camera> camera;
@@ -258,14 +323,27 @@ int main(int argc, char ** argv)
   size_t total_bytes = 0;
   int frames_with_output = 0;
   std::vector<uint8_t> h264_stream;
+  FrameRunStats run_stats;
+  auto collect = [&](const std::vector<std::vector<uint8_t>> & packets) {
+    for (const auto & pkt : packets) {
+      frames_out.write(reinterpret_cast<const char *>(pkt.data()),
+                       static_cast<std::streamsize>(pkt.size()));
+      ++total_packets;
+      total_bytes += pkt.size();
+      run_stats.add(pkt, h264_stream);
+    }
+  };
 
   // 各环节耗时统计（帮助判断瓶颈在相机、编码还是节流）
   double t_read = 0, t_compare = 0, t_feed = 0;
 
   std::cout << "采集 " << kRunSeconds << " 秒（" << (camera ? "真实相机" : "合成 1280x1024")
             << " → " << (cfg.keep_aspect ? "整幅缩放" : "中心裁剪") << " "
-            << cfg.width << "x" << cfg.height << " @ " << cfg.fps << "fps "
+            << " @" << cfg.fps << "fps "
             << cfg.bitrate_kbps << "kbps preset=" << cfg.x264_preset
+            << " keep_aspect=" << cfg.keep_aspect
+            << " 单包=" << cfg.single_packet << " 大帧=" << cfg.large_frame
+            << " GOP=" << cfg.gop << " 灰度=" << cfg.gray
             << " sharpen=" << cfg.sharpen << "）...\n";
 
   cv::Mat last_view;
@@ -310,14 +388,7 @@ int main(int argc, char ** argv)
     t_feed += std::chrono::duration<double>(std::chrono::steady_clock::now() - t_f).count();
     if (!packets.empty()) ++frames_with_output;
 
-    for (const auto & pkt : packets) {
-      frames_out.write(reinterpret_cast<const char *>(pkt.data()),
-                       static_cast<std::streamsize>(pkt.size()));
-      ++total_packets;
-      total_bytes += pkt.size();
-      const auto payload = extractPayload(pkt);
-      h264_stream.insert(h264_stream.end(), payload.begin(), payload.end());
-    }
+    collect(packets);
 
     const auto iter_elapsed = std::chrono::steady_clock::now() - iter_start;
     if (iter_elapsed < std::chrono::duration_cast<std::chrono::steady_clock::duration>(loop_period)) {
@@ -327,14 +398,8 @@ int main(int argc, char ** argv)
   }
 
   // flush 剩余
-  for (const auto & pkt : sender.flush()) {
-    frames_out.write(reinterpret_cast<const char *>(pkt.data()),
-                     static_cast<std::streamsize>(pkt.size()));
-    ++total_packets;
-    total_bytes += pkt.size();
-    const auto payload = extractPayload(pkt);
-    h264_stream.insert(h264_stream.end(), payload.begin(), payload.end());
-  }
+  collect(sender.flush());
+  run_stats.finish();
 
   // 只裁整条流末尾补的 0
   while (!h264_stream.empty() && h264_stream.back() == 0) h264_stream.pop_back();
@@ -373,6 +438,13 @@ int main(int argc, char ** argv)
             << " | feed(不阻塞) " << (t_feed * 1000.0 / n_in) << " ms";
   if (ov.compare) std::cout << " | 对比图 " << (t_compare * 1000.0 / n_in) << " ms";
   std::cout << "\n";
+  // ★ 判断大帧模式是否生效就看这一行：
+  //   大帧+I+P 应该是 [1包 × 多数帧] 和 [3包 × 少数帧] 两种，包率约 28/秒；
+  //   如果只有 [1包 × 全部]，说明 P 帧/拆分没生效（或 I 帧都被超限丢了）。
+  run_stats.print("每帧包数分布");
+  std::cout << "包率:             " << (total_packets / elapsed_s) << " 包/秒"
+            << "（令牌桶上限 " << cfg.send_rate_hz << "/秒；大帧 GOP" << cfg.gop
+            << " 理论约 " << (cfg.fps * (1.0 + (cfg.gop - 1.0) / cfg.gop)) << " 包/秒）\n";
   std::cout << "注：编码在 VideoSender 独立线程里，feed 只入队最新帧，不应占用主循环时间。\n";
 
   // 帧数一致性检查

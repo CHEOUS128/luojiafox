@@ -132,14 +132,50 @@ video_send_enable: true       # 完整功能：图传开启
 #       5fps 编码 0 帧出包 → 客户端一个 CustomByteBlock 包都收不到（实测 cbb pkt_in=+0）。
 # 160x160（10x10 宏块，最省码率）是 10-23 验证过能塞进 296B 的尺寸，先用它把画面稳定拿到，
 # 之后再按「包到达率」逐步往上试 192/240，而不是一次跳到 480。
-video_width: 160
-video_height: 160
-video_keep_aspect: false      # false=从原图中心裁 crop_size×crop_size 再缩到上面的大小
-video_fps: 5.0                # 与 10-23 验证通过的单包配置一致
-video_bitrate_kbps: 10        # 与 10-23 验证通过的单包配置一致
-video_crop_size: 320          # 从 1280x1024 中心裁 320x320（约 1/4 边长）
+# 2026-10-28 改为「整幅全视野」：keep_aspect=true 走等比缩放分支，crop_size 不再生效。
+# 1280x1024 是 5:4，所以 160x102.4 的比例是 5:4 → 用 192x152 时 192:152 ≈ 1.263 ≈ 5:4，
+# 上下只会留几行黑边，可接受。
+video_width: 192              # 2026-10-28 晚由 160 提到 192（像素 ×1.44，比特够用后换真细节）
+video_height: 152
+video_keep_aspect: true       # true=整幅画面等比缩放到 width×height（全视野，不裁）
+video_fps: 20.0               # 2026-10-28 由 5.0 提到 20.0；此前实测只有 10.8 帧/秒，
+                              # 真因是 feed() 把发送间隔量化到主循环周期，已修正为精确 20fps
+video_bitrate_kbps: 0         # 0 = 自动。2026-10-28 晚大帧模式的预算公式改成
+                              # 「令牌桶 40×85% = 34 包/秒，再按实测系数 1.35 折成约 60kbps」。
+                              # 实测 300 帧真实赛场画面（192x152 GOP10 灰度，含 1080p 视频转出的运动）：
+                              #   54kbps → 33.4 包/秒、SSIM 0.9847
+                              #   60kbps → 35.5 包/秒（令牌桶 88.8%）、中位 312B、最坏一帧 6 包、SSIM 0.9853
+                              #   63kbps → 36.2 包/秒、SSIM 0.9863
+                              #   74kbps → 41.1 包/秒（令牌桶 102.8%，已超）、SSIM 0.9903
+                              # 越往上画质越好，但令牌桶先撑爆 —— 74kbps 实测就已经在借钱了。
+                              # 手填的值会被上面的预算值夹住（填 200 也只会用约 60）。
+video_crop_size: 320          # keep_aspect=true 时无效，保留只为切回半视野时手改
 video_x264_preset: "slow"     # 编码在独立线程，不阻塞主循环
 video_sharpen: 0.0            # 单包模式下不要锐化：锐化会加高频细节、把帧撑大
 video_send_rate_hz: 40.0      # 出包节拍（包/秒），协议上限 50
-video_single_packet: true     # ★一帧一个包：超 296 字节的帧直接丢，不拆包
-video_max_frame_bytes: 296    # 一帧 H.264 的硬上限 = 300 - 2B长度 - 2B序号
+video_single_packet: false    # 大帧模式下此项会被强制置 false（两者互斥，同时 true 会抛异常）
+video_max_frame_bytes: 296    # 单包内 H.264 的硬上限 = 300 - 2B长度 - 2B序号
+
+# ============ 2026-10-28 画质版：I 帧 + P 帧 + 一帧拆多包 ============
+# 为什么要改：每帧都是独立的完整帧（全 IDR）在 160x128 下只有 0.1 bpp，画面永远糊。
+#   实测（本机 x264，160x128，20fps，目标 42.6kbps）：
+#     全 I 帧单包  → 273 B/帧，SSIM 0.9613
+#     I+P GOP5 拆包 → I 帧约 832B(3包) / P 帧约 149B(1包)，SSIM 0.9945，28 包/秒
+#   令牌桶 40 包/秒够用（12 kB/s，协议上限 15 kB/s），还有余量。
+# 代价：P 帧依赖前一个 I 帧，万一整段 burst 断流会花屏，最多等一个 GOP（10 帧 = 0.5 秒）。
+#
+# ★回退方法（不用重编译）：把下面 video_large_frame 改成 false，
+#   再把 video_single_packet 改回 true，然后 sudo systemctl restart autoaim-20261025
+video_large_frame: true       # ★I+P + 拆包总开关
+video_gop: 10                 # GOP 长度（帧）。越小越抗丢包、越费带宽。
+                              # 2026-10-28 晚 5→10：实测同样是 37 包/秒，GOP10 比 GOP5
+                              # 每帧多约 10% 字节（同样的包数里塞更多信息），代价是丢 I 帧后
+                              # 最长花屏 0.5 秒（而不是 0.25 秒）。
+video_max_frame_packets: 8    # 一帧最多拆几个包（8×296=2368B）。同时也是 VBV 的来源：
+                              # VBV = 8×296×8 = 18944 bit，保证 I 帧不会冲过 8 包。
+video_gray: true              # 2026-10-28 晚打开。灰度 = H.264 的 4:0:0（只有亮度平面），
+                              # 实测同样 65kbps 下亮度 SSIM 0.9861 vs 彩色 0.9811。
+                              # ★前置条件：编码器 profile 必须是 high（代码已按 gray 自动切），
+                              #   baseline/main 都不支持 4:0:0，开了会在启动时直接报错。
+                              # 代价：没颜色，红蓝灯条只剩亮度差，晚于装甲板识别可能不够用。
+                              # 回退：改成 false 即可（客户端不用动）。

@@ -210,6 +210,7 @@ struct CustomByteBlockVideoDecoder::Impl {
     std::int64_t next_pts = 0;
     bool has_expected_sequence = false;
     std::uint16_t expected_sequence_id = 0;
+    bool waiting_for_keyframe = false;   // 丢包/乱序后等下一个 IDR 再解，避免长期花屏
     WireFormat wire_format = WireFormat::Unknown;
     std::chrono::steady_clock::time_point last_packet_time = std::chrono::steady_clock::time_point::min();
 };
@@ -403,18 +404,17 @@ std::vector<CustomByteBlockDecodedFrame> decode_access_unit(CustomByteBlockVideo
     }
 
     const bool keyframe = access_unit_has_idr(access_unit, access_unit_size);
-    // 【诊断用改动】不再因为"还没收到关键帧"而丢弃数据。
-    //
-    // 原逻辑：waiting_for_keyframe 为 true 时，非 IDR 帧直接 return {}，
-    //         必须等到一个完整 IDR 关键帧才开始解码。
-    // 问题：发送端关键帧间隔 20 帧。若帧率很低（或链路丢包导致关键帧丢失），
-    //       客户端可能长时间一帧都不解码，界面一直显示"等待视频流"，
-    //       无法判断数据到底有没有到达。
-    // 现在：所有帧都送进解码器。非 IDR 起始的流会先解出花屏/残缺画面，
-    //       等 IDR 到达后自动恢复正常。这样能立刻确认"数据到了"。
-    //
-    // 目的：定位链路问题。确认链路无误后，可以恢复为只等关键帧以提升观感。
-    (void)keyframe;
+    // 【2026-10-28 改回「等关键帧」】之前的诊断版把所有帧都塞进解码器，是为了先确认
+    // 链路通不通。现在发送端支持「I+P + 一帧多包」，一旦丢了一个 P 帧，后面的 P 帧
+    // 全都引用损坏的参考帧，会一直花屏到下一个 I 帧——诊断版会把这个花屏无限拖长。
+    // 所以：丢包/乱序后置 waiting_for_keyframe，跳过非 IDR 帧，等下一个 I 帧再解。
+    // 发送端 GOP=5、20fps → 最多等 250ms。想退回诊断版：把下面这段 if 删掉即可。
+    if (impl->waiting_for_keyframe) {
+        if (!keyframe) {
+            return {};
+        }
+        impl->waiting_for_keyframe = false;
+    }
 
     if (access_unit_size > config.max_access_unit_bytes) {
         SPDLOG_WARN("丢弃过大的 CustomByteBlock 访问单元 bytes={} limit={}",
@@ -448,6 +448,7 @@ std::vector<CustomByteBlockDecodedFrame> decode_access_unit(CustomByteBlockVideo
         SPDLOG_WARN("CustomByteBlock 解码器拒收访问单元 keyframe={} message={}",
                     keyframe,
                     ffmpeg_error_to_string(ret_send));
+        impl->waiting_for_keyframe = true;
         reset_decoder_after_loss(impl);
         return {};
     }
@@ -576,18 +577,15 @@ std::vector<CustomByteBlockDecodedFrame> process_serialized_packet(CustomByteBlo
     } else if (packet.sequence_id == impl.expected_sequence_id) {
         impl.expected_sequence_id = static_cast<std::uint16_t>(impl.expected_sequence_id + 1U);
     } else if (sequence_is_newer(packet.sequence_id, impl.expected_sequence_id)) {
-        // 【诊断用改动】丢包时不再重置解码器。
-        //
-        // 原逻辑：发现序列号跳变（丢包）就 reset_decoder_after_loss()，
-        //         会 avcodec_flush_buffers + 清空待输出帧 + 重置解析器，
-        //         并要求重新等关键帧。
-        // 问题：链路一旦频繁丢包，每个包都会触发一次重置，
-        //       解码器永远处于"刚被清空"的状态，一帧都出不来。
-        // 现在：只记录日志，不重置。让 FFmpeg 自己去扛。
-        //       花屏/残帧可以接受，重点是能出画面。
-        SPDLOG_WARN("CustomByteBlock 丢包（不重置解码器）expected_sequence={} received_sequence={}",
+        // 【2026-10-28】丢包时不再 reset_decoder_after_loss（那会把解码器清空、
+        // 每个包都触发一次重置、一帧都出不来），但也不能当作没事发生：
+        // 对「I+P」流来说，丢一个 P 帧会让后面所有 P 帧都引用坏参考帧，永久花屏。
+        // 折中：只置 waiting_for_keyframe，跳过后续非 IDR 帧，等下一个 I 帧再解。
+        // 单包模式（每帧都是 IDR）下这个标志下一帧就自动清掉，没有副作用。
+        SPDLOG_WARN("CustomByteBlock 丢包（等下一个关键帧）expected_sequence={} received_sequence={}",
                     impl.expected_sequence_id,
                     packet.sequence_id);
+        impl.waiting_for_keyframe = true;
         impl.expected_sequence_id = static_cast<std::uint16_t>(packet.sequence_id + 1U);
         impl.has_expected_sequence = true;
     } else {
@@ -599,17 +597,17 @@ std::vector<CustomByteBlockDecodedFrame> process_serialized_packet(CustomByteBlo
             const auto idle_ms = impl.last_packet_time == std::chrono::steady_clock::time_point::min()
                                          ? 0LL
                                          : std::chrono::duration_cast<std::chrono::milliseconds>(now - impl.last_packet_time).count();
-            SPDLOG_INFO("CustomByteBlock 序列重同步（不重置解码器）expected_sequence={} received_sequence={} idle_ms={} backward_distance={}",
+            SPDLOG_INFO("CustomByteBlock 序列重同步（等下一个关键帧）expected_sequence={} received_sequence={} idle_ms={} backward_distance={}",
                         impl.expected_sequence_id,
                         packet.sequence_id,
                         idle_ms,
                         backward_distance);
+            impl.waiting_for_keyframe = true;
             impl.expected_sequence_id = static_cast<std::uint16_t>(packet.sequence_id + 1U);
             impl.has_expected_sequence = true;
         } else {
-            // 【诊断用改动】乱序/重复包也照常送进解码器，不再静默丢弃。
-            // 原来的 return {} 会在网络抖动时大量丢包，
-            // 极低帧率场景下可能一帧都到不了解码器。
+            // 极短时间内的乱序/重复包：照常送进解码器（不置 waiting_for_keyframe，
+            // 否则一次轻微抖动就要等一个 GOP，画面会一顿一顿的）。
             SPDLOG_DEBUG("CustomByteBlock 乱序或重复包（仍送入解码器）expected_sequence={} received_sequence={}",
                          impl.expected_sequence_id,
                          packet.sequence_id);

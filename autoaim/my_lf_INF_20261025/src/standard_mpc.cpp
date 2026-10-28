@@ -69,6 +69,14 @@ int main(int argc, char * argv[])
             if (cfg_yaml["video_send_rate_hz"]) vs_cfg.send_rate_hz = cfg_yaml["video_send_rate_hz"].as<double>();
             if (cfg_yaml["video_single_packet"]) vs_cfg.single_packet = cfg_yaml["video_single_packet"].as<bool>();
             if (cfg_yaml["video_max_frame_bytes"]) vs_cfg.max_frame_bytes = cfg_yaml["video_max_frame_bytes"].as<int>();
+            // ---- 2026-10-28 画质版：I+P + 一帧拆多包 ----
+            if (cfg_yaml["video_large_frame"]) vs_cfg.large_frame = cfg_yaml["video_large_frame"].as<bool>();
+            if (cfg_yaml["video_gop"])         vs_cfg.gop = cfg_yaml["video_gop"].as<int>();
+            if (cfg_yaml["video_max_frame_packets"]) vs_cfg.max_frame_packets = cfg_yaml["video_max_frame_packets"].as<int>();
+            if (cfg_yaml["video_gray"])        vs_cfg.gray = cfg_yaml["video_gray"].as<bool>();
+            // 大帧模式下 single_packet 必须让路：yaml 里两个都是 true 会直接抛异常，
+            // 这里强制关掉单包模式，避免「改了 yaml 但忘了关旧开关」导致起不来。
+            if (vs_cfg.large_frame) vs_cfg.single_packet = false;
             // 命令行覆盖（做 A/B 时不用改 yaml）
             const auto cli_fps = cli.get<double>("video-fps");
             const auto cli_w = cli.get<int>("video-width");
@@ -79,10 +87,14 @@ int main(int argc, char * argv[])
             if (cli_h > 0)     vs_cfg.height = cli_h;
             if (cli_c > 0)     vs_cfg.crop_size = cli_c;
             video_sender.emplace(vs_cfg);
-            tools::logger()->info("[VideoSender] 已启用（{}x{} @{:.0f}fps {}kbps preset={} keep_aspect={} sharpen={} 单包={} crop={}）",
+            tools::logger()->info("[VideoSender] 已启用（{}x{} @{:.0f}fps {}kbps preset={} keep_aspect={} sharpen={} 单包={} 大帧={} GOP={} 灰度={} crop={}）",
                                   vs_cfg.width, vs_cfg.height, vs_cfg.fps, vs_cfg.bitrate_kbps,
                                   vs_cfg.x264_preset, vs_cfg.keep_aspect, vs_cfg.sharpen,
-                                  vs_cfg.single_packet ? "是" : "否", vs_cfg.crop_size);
+                                  vs_cfg.single_packet ? "是" : "否",
+                                  vs_cfg.large_frame ? "是" : "否",
+                                  vs_cfg.gop,
+                                  vs_cfg.gray ? "是" : "否",
+                                  vs_cfg.crop_size);
         } else {
             tools::logger()->info("[VideoSender] 未启用（配置 video_send_enable: false）");
         }

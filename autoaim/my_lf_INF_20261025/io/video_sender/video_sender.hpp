@@ -52,6 +52,22 @@ struct VideoSenderConfig
   //         塞不进一个包就整帧丢掉（绝不拆成多个包），这样每个到达的包都能独立解出一张图。
   bool single_packet = false;
   int max_frame_bytes = 296;    // 一帧的 H.264 上限（300 - 2B长度 - 2B序号 = 296）
+
+  // ---- 「I+P + 大帧拆包」模式（2026-10-28 新增，与 single_packet 互斥）----
+  // 为什么要有：296B 单包在 160×128 下只有 0.1 bpp，画面永远糊。
+  //   实测（本机 x264 复现，160×128，20fps）：
+  //     每帧 IDR + 1 包  → 273B/帧，SSIM 0.9613
+  //     I+P GOP5 + 拆包  → I 帧 751B(3包) / P 帧 155B(1包)，SSIM 0.9945，28 包/秒
+  //   而令牌桶允许 40 包/秒（= 12 kB/s，协议上限 15 kB/s），还有余量。
+  // 代价：P 帧依赖前一个 I 帧，跨 burst 断流会花屏，最多等一个 GOP（gop 帧 = gop/20 秒）。
+  // 回退：把 yaml 里 video_large_frame 改成 false、video_single_packet 改成 true，
+  //       重启即回到单包模式，不需要重新编译。
+  bool large_frame = false;
+  int gop = 5;                  // I+P 的 GOP 长度（帧）。越小越抗丢包、越费带宽
+  int max_frame_packets = 8;    // 一帧最多拆几个 0x0310 包（8×296=2368B 上限，防跑飞）
+
+  // 灰度（省下 U/V 的比特全给亮度；实测亮度 SSIM 0.901→0.979，+35% 亮度比特）
+  bool gray = false;
 };
 
 // 0x0310 帧常量
