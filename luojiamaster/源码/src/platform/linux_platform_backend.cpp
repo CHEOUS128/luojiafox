@@ -118,6 +118,7 @@ public:
 
         DestroyDynamicTextureSet(udp_video_textures_);
         DestroyDynamicTextureSet(custom_video_textures_);
+        DestroyDynamicTextureSet(teammate_video_textures_);
         DestroyVulkanTexture(mini_map_texture_);
 
         ImGui_ImplVulkan_Shutdown();
@@ -205,6 +206,8 @@ public:
                 return UploadDynamicTexture(udp_video_textures_, frame);
             case RoboGo::app::TextureSlot::CustomVideo:
                 return UploadDynamicTexture(custom_video_textures_, frame);
+            case RoboGo::app::TextureSlot::TeammateVideo:
+                return UploadDynamicTexture(teammate_video_textures_, frame);
             case RoboGo::app::TextureSlot::MiniMap:
                 return UploadStaticTexture(mini_map_texture_, frame.buffer.data(), frame.width, frame.height);
         }
@@ -224,6 +227,8 @@ public:
                 return BuildTextureView(udp_video_textures_.textures[udp_video_textures_.current_index]);
             case RoboGo::app::TextureSlot::CustomVideo:
                 return BuildTextureView(custom_video_textures_.textures[custom_video_textures_.current_index]);
+            case RoboGo::app::TextureSlot::TeammateVideo:
+                return BuildTextureView(teammate_video_textures_.textures[teammate_video_textures_.current_index]);
             case RoboGo::app::TextureSlot::MiniMap:
                 return BuildTextureView(mini_map_texture_);
         }
@@ -843,6 +848,7 @@ private:
     float main_scale_ = 1.0f;
     LinuxDynamicTextureSet udp_video_textures_;
     LinuxDynamicTextureSet custom_video_textures_;
+    LinuxDynamicTextureSet teammate_video_textures_;
     LinuxVideoTexture mini_map_texture_;
     bool initialized_ = false;
     bool game_input_captured_ = false;

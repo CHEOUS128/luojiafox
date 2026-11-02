@@ -185,6 +185,7 @@ public:
 
         ReleaseDynamicTextureSet(udp_video_textures_, true);
         ReleaseDynamicTextureSet(custom_video_textures_, true);
+        ReleaseDynamicTextureSet(teammate_video_textures_, true);
         ReleaseTexture(mini_map_texture_, true);
 
         ImGui_ImplDX12_Shutdown();
@@ -318,6 +319,8 @@ public:
                 return UploadDynamicTexture(udp_video_textures_, frame);
             case RoboGo::app::TextureSlot::CustomVideo:
                 return UploadDynamicTexture(custom_video_textures_, frame);
+            case RoboGo::app::TextureSlot::TeammateVideo:
+                return UploadDynamicTexture(teammate_video_textures_, frame);
             case RoboGo::app::TextureSlot::MiniMap:
                 return UploadStaticTexture(mini_map_texture_, frame.buffer.data(), frame.width, frame.height);
         }
@@ -337,6 +340,8 @@ public:
                 return BuildTextureView(udp_video_textures_.textures[udp_video_textures_.current_index]);
             case RoboGo::app::TextureSlot::CustomVideo:
                 return BuildTextureView(custom_video_textures_.textures[custom_video_textures_.current_index]);
+            case RoboGo::app::TextureSlot::TeammateVideo:
+                return BuildTextureView(teammate_video_textures_.textures[teammate_video_textures_.current_index]);
             case RoboGo::app::TextureSlot::MiniMap:
                 return BuildTextureView(mini_map_texture_);
         }
@@ -738,6 +743,10 @@ private:
             srv_descriptor_heap_allocator_.Alloc(&texture.cpu_handle, &texture.gpu_handle);
             texture.descriptor_allocated = true;
         }
+        for (auto &texture: teammate_video_textures_.textures) {
+            srv_descriptor_heap_allocator_.Alloc(&texture.cpu_handle, &texture.gpu_handle);
+            texture.descriptor_allocated = true;
+        }
         srv_descriptor_heap_allocator_.Alloc(&mini_map_texture_.cpu_handle, &mini_map_texture_.gpu_handle);
         mini_map_texture_.descriptor_allocated = true;
     }
@@ -878,6 +887,7 @@ private:
     float main_scale_ = 1.0f;
     WindowsDynamicTextureSet udp_video_textures_;
     WindowsDynamicTextureSet custom_video_textures_;
+    WindowsDynamicTextureSet teammate_video_textures_;
     WindowsVideoTexture mini_map_texture_;
     bool initialized_ = false;
     bool should_close_ = false;

@@ -1,0 +1,14 @@
+# 换行与编码：Windows 脚本必须 CRLF，否则 cmd 解析 if/label 会出怪问题
+*.bat   text eol=crlf
+*.cmd   text eol=crlf
+*.ps1   text eol=crlf
+
+# 二进制：绝不能让 git 做换行转换
+*.exe    binary
+*.lib    binary
+*.ico    binary
+*.h265   binary
+*.engine binary
+*.onnx   binary
+*.png    binary
+*.jpg    binary

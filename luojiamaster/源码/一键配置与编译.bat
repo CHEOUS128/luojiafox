@@ -62,11 +62,11 @@ if not exist "%VSROOT%" (
 
 echo.
 echo ============================================
-echo   第三步：CMake 配置
+echo   第三步：CMake 配置（离线依赖：不联网拉第三方）
 echo ============================================
 echo   第四步：编译（Ninja Release，第一次要几分钟）
 echo ============================================
-powershell -NoProfile -ExecutionPolicy Bypass -Command "Import-Module '%VSROOT%\Common7\Tools\Microsoft.VisualStudio.DevShell.dll'; Enter-VsDevShell -VsInstallPath '%VSROOT%' -SkipAutomaticLocation -Arch amd64 -HostArch amd64; cmake --preset release 2>&1 | Tee-Object -FilePath 'cmake_build_log.txt'; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }; Write-Host ''; Write-Host '============================================'; Write-Host '  开始编译 cmake --build --preset release'; Write-Host '============================================'; cmake --build --preset release 2>&1 | Tee-Object -FilePath 'cmake_build_log.txt' -Append; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "Import-Module '%VSROOT%\Common7\Tools\Microsoft.VisualStudio.DevShell.dll'; Enter-VsDevShell -VsInstallPath '%VSROOT%' -SkipAutomaticLocation -Arch amd64 -HostArch amd64; cmake --preset release -DFETCHCONTENT_FULLY_DISCONNECTED=ON 2>&1 | Tee-Object -FilePath 'cmake_build_log.txt'; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }; Write-Host ''; Write-Host '============================================'; Write-Host '  开始编译 cmake --build --preset release'; Write-Host '============================================'; cmake --build --preset release 2>&1 | Tee-Object -FilePath 'cmake_build_log.txt' -Append; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }"
 
 if errorlevel 1 (
     echo.

@@ -222,12 +222,15 @@ add_executable(luojiamaster WIN32
     src/panel/panel_layout.cpp
     src/panel/robot_status_panel.cpp
     src/panel/start_panel.cpp
+    src/panel/teammate_panel.cpp
     src/logging/logging.cpp
     src/io/mqtt_client.cpp
     src/io/video_stream_receiver.cpp
+    src/net/teammate_link.cpp
     src/video/custom_byte_block_video_decoder.cpp
     src/video/custom_byte_block_video_decoder_worker.cpp
     src/video/rgba_image_transform.cpp
+    src/video/teammate_video_receiver.cpp
     src/video/video_decoder.cpp
     src/video/video_shards_manager.cpp
     src/video/video_stream_manager.cpp

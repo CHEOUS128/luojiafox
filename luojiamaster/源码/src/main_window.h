@@ -3,6 +3,7 @@
 #include <pch.h>
 #include "custom_control_payload.h"
 #include "io/mqtt_client.h"
+#include "panel/teammate_panel.h"
 
 struct LogEntry {
     char time[9];
@@ -85,22 +86,41 @@ inline constexpr auto kUdpVideoFallbackTimeout = std::chrono::milliseconds(250);
 inline constexpr auto kCustomVideoLiveTimeout = std::chrono::milliseconds(3000);
 inline constexpr auto kCustomVideoFallbackTimeout = std::chrono::milliseconds(5000);
 
+// 队友画面的三档时间（只影响显示，不影响接收/解码）。
+//   在线   —— 1 秒内有过新帧，正常显示
+//   掉线   —— 5 秒内有过帧，画面冻住、标题条变红提示，但不清屏
+//   无画面 —— 超过 5 秒，显示「无信号」占位
+inline constexpr auto kTeammateVideoLiveTimeout = std::chrono::milliseconds(1000);
+inline constexpr auto kTeammateVideoOfflineTimeout = std::chrono::milliseconds(5000);
+
+// 队友画面（2027 自定义客户端互联）在 UI 层的全部状态。
+// 单独成一个结构体，免得 ShowMainWindow 的参数表继续膨胀。
+// 定义在 panel/teammate_panel.h，这里只是给调用方一个统一的入口。
+#include "panel/teammate_panel.h"
+
 State CreateInitialState();
 
-bool ShowMainWindow(const State &state,
-                    RoboGo::io::MqttClient &mqtt_client,
-                    ImTextureRef video_texture_ref,
-                    const ImVec2 &video_size,
-                    ImTextureRef custom_video_texture_ref,
-                    const ImVec2 &custom_video_size,
-                    bool using_custom_video_as_main,
-                    bool prefer_custom_video_as_main,
-                    bool udp_video_display_ready,
-                    bool custom_video_display_ready,
-                    bool custom_video_hold_as_main,
-                    bool udp_video_inverted,
-                    ImTextureRef mini_map_texture_ref,
-                    const ImVec2 &mini_map_texture_size);
+// 主窗口一帧里，用户通过界面触发、需要 application.cpp 去改状态的两件事。
+struct MainWindowActions {
+    bool toggle_udp_video_inversion = false;  // 按 I / 点翻转按钮：切换官方 UDP 画面 180°
+    bool switch_teammate_role = false;        // 点队友小窗标题条上的 [A]/[B]：换队友角色
+};
+
+MainWindowActions ShowMainWindow(const State &state,
+                                 RoboGo::io::MqttClient &mqtt_client,
+                                 ImTextureRef video_texture_ref,
+                                 const ImVec2 &video_size,
+                                 ImTextureRef custom_video_texture_ref,
+                                 const ImVec2 &custom_video_size,
+                                 bool using_custom_video_as_main,
+                                 bool prefer_custom_video_as_main,
+                                 bool udp_video_display_ready,
+                                 bool custom_video_display_ready,
+                                 bool custom_video_hold_as_main,
+                                 bool udp_video_inverted,
+                                 ImTextureRef mini_map_texture_ref,
+                                 const ImVec2 &mini_map_texture_size,
+                                 const TeammateViewState &teammate_view);
 
 void UpdateState(State &state);
 

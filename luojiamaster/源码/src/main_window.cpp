@@ -10,6 +10,7 @@
 #include "panel/mini_map.h"
 #include "panel/robot_status_panel.h"
 #include "panel/start_panel.h"
+#include "panel/teammate_panel.h"
 
 namespace {
 
@@ -122,23 +123,27 @@ State CreateInitialState() {
     return state;
 }
 
-bool ShowMainWindow(const State &state,
-                    RoboGo::io::MqttClient &mqtt_client,
-                    ImTextureRef video_texture_ref,
-                    const ImVec2 &video_size,
-                    ImTextureRef custom_video_texture_ref,
-                    const ImVec2 &custom_video_size,
-                    const bool using_custom_video_as_main,
-                    const bool prefer_custom_video_as_main,
-                    const bool udp_video_display_ready,
-                    const bool custom_video_display_ready,
-                    const bool custom_video_hold_as_main,
-                    const bool udp_video_inverted,
-                    const ImTextureRef mini_map_texture_ref,
-                    const ImVec2 &mini_map_texture_size) {
+MainWindowActions ShowMainWindow(const State &state,
+                                 RoboGo::io::MqttClient &mqtt_client,
+                                 ImTextureRef video_texture_ref,
+                                 const ImVec2 &video_size,
+                                 ImTextureRef custom_video_texture_ref,
+                                 const ImVec2 &custom_video_size,
+                                 const bool using_custom_video_as_main,
+                                 const bool prefer_custom_video_as_main,
+                                 const bool udp_video_display_ready,
+                                 const bool custom_video_display_ready,
+                                 const bool custom_video_hold_as_main,
+                                 const bool udp_video_inverted,
+                                 const ImTextureRef mini_map_texture_ref,
+                                 const ImVec2 &mini_map_texture_size,
+                                 const TeammateViewState &teammate_view) {
     const ImGuiViewport *viewport = ImGui::GetMainViewport();
     ImGuiStyle &style = ImGui::GetStyle();
     float font_size = ImGui::GetFontSize();
+
+    // 队友画面按 L 接管主画面时，主背景让位给队友那一路（在下面统一画）。
+    const bool teammate_as_main = teammate_view.enabled && teammate_view.take_main_screen;
 
     const ImTextureRef background_video_texture_ref = using_custom_video_as_main
                                                               ? custom_video_texture_ref
@@ -153,7 +158,7 @@ bool ShowMainWindow(const State &state,
     const bool main_image_available = using_custom_video_as_main
                                               ? custom_video_hold_as_main
                                               : udp_video_display_ready;
-    if (main_image_available && background_video_texture_ref.GetTexID() != ImTextureID_Invalid) {
+    if (!teammate_as_main && main_image_available && background_video_texture_ref.GetTexID() != ImTextureID_Invalid) {
         ImDrawList *draw_list = ImGui::GetBackgroundDrawList();
         // 180° 旋转放在 GPU 做（UV 翻转），避免 CPU 逐像素交换整帧 1080p 数据。
         // 这一步原来在解码管线里用 CPU 做，是画面卡顿/操作延迟的主要来源之一。
@@ -259,15 +264,43 @@ bool ShowMainWindow(const State &state,
     ImGui::SetNextWindowSize(ImVec2(mini_map_width, mini_map_height));
     ShowMiniMap(state, mqtt_client, mini_map_texture_ref, mini_map_texture_size);
 
+    // 队友视角小窗：占右侧栏最上面那一块，BuffPanel 从它下面开始。
+    // 默认就画（双击 exe 就有），标题条上的 [A]/[B] 点一下切角色。
+    float teammate_panel_width = viewport->Size.x * 0.2f;
+    float teammate_panel_height = 0.0f;
+    bool teammate_role_toggle_requested = false;
+    if (teammate_view.enabled) {
+        const float collapsed_height = TeammateCollapsedHeight();
+        const float expanded_height = viewport->Size.x * 0.2f / 16.0f * 9.0f;
+        teammate_panel_height = teammate_view.collapsed ? collapsed_height : expanded_height;
+        const ImVec2 teammate_pos(viewport->Size.x - teammate_panel_width, viewport->Size.y * 0.15f);
+        teammate_role_toggle_requested =
+                ShowTeammateViewport(teammate_view,
+                                     teammate_pos,
+                                     ImVec2(teammate_panel_width, teammate_panel_height),
+                                     teammate_view.collapsed);
+    }
+
     float buff_panel_width = viewport->Size.x * 0.2f;
-    float buff_panel_height = viewport->Size.y - viewport->Size.y * 0.15f - mini_map_height;
-    ImGui::SetNextWindowPos(ImVec2(viewport->Size.x - buff_panel_width, viewport->Size.y * 0.15f), ImGuiCond_Always);
+    // 小窗和 Buff 面板之间留 6 像素，不然两块面板会贴在一起像被压扁了。
+    float buff_panel_top = viewport->Size.y * 0.15f + teammate_panel_height
+                           + (teammate_panel_height > 0.0f ? 6.0f : 0.0f);
+    float buff_panel_height = viewport->Size.y - buff_panel_top - mini_map_height;
+    if (buff_panel_height < 0.0f) {
+        buff_panel_height = 0.0f;
+    }
+    ImGui::SetNextWindowPos(ImVec2(viewport->Size.x - buff_panel_width, buff_panel_top), ImGuiCond_Always);
     ImGui::SetNextWindowSize(ImVec2(buff_panel_width, buff_panel_height));
     ShowBuffPanel(state);
 
+    // L 接管主画面：画在所有面板的最上层。
+    if (teammate_as_main) {
+        ShowTeammateFullscreen(teammate_view);
+    }
+
     ShowBottomPanel(state);
 
-    return toggle_udp_video_inversion_requested;
+    return MainWindowActions{toggle_udp_video_inversion_requested, teammate_role_toggle_requested};
 }
 
 void UpdateState(State &state) {

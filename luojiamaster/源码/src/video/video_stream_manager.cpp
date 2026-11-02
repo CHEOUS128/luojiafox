@@ -4,17 +4,25 @@ namespace RoboGo::video {
 
     VideoStreamManager::VideoStreamManager(boost::asio::io_context &io_context,
                                            boost::asio::ip::udp::endpoint endpoint,
-                                           const std::function<void(const AVFrame *frame)> &frame_callback)
+                                           const std::function<void(const AVFrame *frame)> &frame_callback,
+                                           std::function<void(const std::vector<uint8_t> &frame)> raw_frame_handler)
         : video_stream_receiver(io_context, endpoint, [this](const uint8_t *data, size_t size) {
               // 接收到数据包之后送入分片管理
               video_shards_manager.on_receive_shard(data, size);
           }),
-          video_decoder(frame_callback) {
+          video_decoder(frame_callback),
+          raw_frame_callback(std::move(raw_frame_handler)) {
         SPDLOG_INFO("创建视频流管理器 endpoint={}:{}",
                     endpoint.address().to_string(),
                     endpoint.port());
         // 接收到完整的视频帧之后去解码
         video_shards_manager.set_frame_callback([this](const std::vector<uint8_t> &frame) {
+            // 队友画面旁路：把官方图传的原始 HEVC 字节原样交给上层转发。
+            // 只是入队，不阻塞，也不看 stream_ready——对方自己会等 IDR。
+            if (this->raw_frame_callback) {
+                this->raw_frame_callback(frame);
+            }
+
             if (!stream_ready) {
                 int nal_type = VideoDecoder::get_nal_type(frame);
                 if (nal_type == -1) {
