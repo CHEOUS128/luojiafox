@@ -6,18 +6,18 @@ rem  四台电脑摆法 · 自定义客户端现场自检
 rem  在【自定义客户端】那台电脑上双击即可，不需要管理员
 rem
 rem  四台电脑标准摆法（两台车 + 两台官方端 + 两台客户端）：
-rem    PC-A 官方端·步兵  主板 192.168.1.2    USB① 192.168.12.1 → PC-C
-rem    PC-B 官方端·英雄  主板 DHCP/1.3      USB① 192.168.12.1 → PC-D
-rem    PC-C 客户端·步兵  主板 192.168.12.2  USB② 10.77.0.1    ← 本机可能是它
-rem    PC-D 客户端·英雄  主板 192.168.12.2  USB② 10.77.0.2    ← 也可能是它
-rem  队友网线只连 PC-C 和 PC-D 的 USB②。
+rem    PC-A 官方端·步兵  Wi-Fi 192.168.1.2   自带网口 192.168.12.1 → PC-C
+rem    PC-B 官方端·英雄  Wi-Fi DHCP          自带网口 192.168.12.1 → PC-D
+rem    PC-C 客户端·步兵  自带网口 12.2       USB 网卡 10.77.0.1 ← 本机可能是它
+rem    PC-D 客户端·英雄  自带网口 12.2       USB 网卡 10.77.0.2 ← 也可能是它
+rem  官方链路走自带网口，队友网线只连 PC-C 和 PC-D 的 USB 转网卡。
 rem
 rem  检查内容：
 rem    1. 两块网卡地址在不在（192.168.12.2 + 10.77.0.x）
 rem    2. 自己那条官方链路通不通（ping 192.168.12.1）
 rem    3. 队友网线通不通（ping 10.77.0.1 / 10.77.0.2，对端那台必须通）
 rem    4. 路由器与裁判端（192.168.1.1 / 192.168.1.2，离线下只能 [--]）
-rem    5. 防火墙（TCP 47700 + UDP 3334）
+rem    5. 防火墙（TCP 47700 + UDP 3334 + ICMP 回显）
 rem    6. 端口（3333 MQTT / 47700 队友）
 rem    7. 队友视角.ini（可选；没有文件就是默认 A 机）
 rem    8. exe 的 MD5（两台客户端必须一模一样）
@@ -35,7 +35,7 @@ echo ===== 1. 网卡地址 =====
 ipconfig | findstr /C:"IPv4"
 ipconfig | findstr /C:"192.168.12.2" >nul
 if errorlevel 1 (
-    echo [!!] 没找到 192.168.12.2 -- 接【自己那台】官方端的主板网卡没设对
+    echo [!!] 没找到 192.168.12.2 -- 接【自己那台】官方端的自带网口没设对
     set "FAILED=1"
 ) else (
     echo [OK] 官方链路网卡 192.168.12.2 在
@@ -98,7 +98,7 @@ if errorlevel 1 (
 )
 echo.
 
-echo ===== 5. 防火墙（客户端这两条必须放行）=====
+echo ===== 5. 防火墙（客户端这三条必须放行）=====
 netsh advfirewall firewall show rule name="RM Teammate Video 47700" | findstr /C:"RM Teammate Video 47700" >nul
 if errorlevel 1 (
     echo [!!] 没有 TCP 47700 规则 -- 右键 防火墙-放行客户端端口.bat 以管理员运行
@@ -112,6 +112,12 @@ if errorlevel 1 (
     set "FAILED=1"
 ) else (
     echo [OK] UDP 3334 已放行（官方图传）
+)
+netsh advfirewall firewall show rule name="RM ICMP Echo" | findstr /C:"RM ICMP Echo" >nul
+if errorlevel 1 (
+    echo [--] 没有 ICMP 回显规则 -- 队友那台可能 ping 不通本机（视频仍可能正常）
+) else (
+    echo [OK] ICMP 已放行（ping 能通）
 )
 echo.
 
@@ -131,9 +137,9 @@ if errorlevel 1 (
 echo.
 
 echo ===== 7. 队友视角.ini（可选）=====
-rem 默认没有这个文件：双击 exe 就是 A 机；B 机点一下标题条的 [默认A] 标签。
+rem 双击 exe 默认 A 机（标题条标 [默认A]）；点一下标签变 [B] 并写回本文件，下次还是 B。
 if not exist "%HERE%队友视角.ini" (
-    echo [OK] 没有 队友视角.ini -- 正常，默认 A 机；要 B 机就在标题条点 [默认A]
+    echo [OK] 没有 队友视角.ini -- 正常，默认 A 机；要 B 机就点一下标题条的角色标签
 ) else (
     findstr /B /C:"peer=off" /C:"peer=OFF" "%HERE%队友视角.ini" >nul
     if not errorlevel 1 (
