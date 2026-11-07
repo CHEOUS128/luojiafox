@@ -177,6 +177,10 @@ target_link_libraries(planner_test ${OpenCV_LIBS} fmt::fmt yaml-cpp auto_aim too
 add_executable(video_sender_test tests/video_sender_test.cpp)
 target_link_libraries(video_sender_test ${OpenCV_LIBS} fmt::fmt yaml-cpp tools io)
 
+# 工业相机录帧（压片战争的素材源）：只读相机，逐帧存 PNG，不碰 CAN/串口/云台
+add_executable(camera_record_test tests/camera_record_test.cpp)
+target_link_libraries(camera_record_test ${OpenCV_LIBS} fmt::fmt yaml-cpp tools io)
+
 add_executable(planner_test_offline tests/planner_test_offline.cpp)
 target_link_libraries(planner_test_offline ${OpenCV_LIBS} fmt::fmt yaml-cpp auto_aim tools io)
 

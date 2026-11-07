@@ -12,7 +12,7 @@
 //
 // 配置优先级：命令行覆盖 > config yaml 的 video_* 项 > 内置默认值
 // 可用的覆盖项：--fps N --kbps N --preset NAME --keep-aspect 0|1 --crop N --sharpen X
-//               --large-frame 0|1 --gop N --gray 0|1
+//               --large-frame 0|1 --gop N --gray 0|1 --seconds S
 // 想贴 ACE 的取景（中心裁 1000×1000 再缩到 300×240）：--keep-aspect 0 --crop 1000
 //
 // 输出文件：
@@ -21,6 +21,13 @@
 //   video_test_last.png     最后一帧原始图像（原始分辨率）
 //   video_test_view.png     取景+锐化后的 300×240 画面（--compare 时输出）
 //   video_test_encoded.png  解码回来的第一帧（--compare 时用 ffmpeg 生成）
+//   video_test_raw.bin      每帧**相机原片**，紧排 BGR（W×H×3 字节/帧）
+//                           W/H 就是相机真实出图尺寸，本程序在启动日志里打出来。
+//
+// ★ 2026-11-07 CH 的规矩：左栏素材必须是车上这枚相机拍的**彩色原片**，
+//   不能在 Windows 上从测试画面凑。所以 -c 模式下把每一帧原图原封不动写出来，
+//   拷回 Windows 交给 scripts\准备素材.bat 当编码输入，左栏也用同一份。
+//   体积：1280×1024×3 ≈ 3.75 MB/帧。--seconds 控制时长（默认 6 秒 ≈ 450 MB）。
 //
 // 注意：只把「内层 H.264 载荷」写进 .h264，不把补 0 写进去；
 //       补 0 只在整条流末尾一次性裁掉，绝不在中间包上裁。
@@ -31,6 +38,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <map>
@@ -140,6 +148,7 @@ struct CliOverrides
   bool has_large_frame = false; bool large_frame = false;
   bool has_gop = false;   int gop = 5;
   bool has_gray = false;  bool gray = false;
+  bool has_seconds = false; double seconds = 6.0;
   bool compare = false;
 };
 
@@ -209,7 +218,7 @@ int main(int argc, char ** argv)
                 << "  " << argv[0] << " [输出目录]\n"
                 << "  " << argv[0] << " [输出目录] -c <config.yaml>\n"
                 << "  可选: --fps N --kbps N --preset NAME --keep-aspect 0|1 --crop N --sharpen X\n"
-                << "        --large-frame 0|1 --gop N --gray 0|1 --compare\n";
+                << "        --large-frame 0|1 --gop N --gray 0|1 --seconds S --compare\n";
       return 0;
     } else if (a == "--fps") {
       ov.has_fps = true; ov.fps = std::stod(next("--fps"));
@@ -229,8 +238,14 @@ int main(int argc, char ** argv)
       ov.has_gop = true; ov.gop = std::stoi(next("--gop"));
     } else if (a == "--gray") {
       ov.has_gray = true; ov.gray = (next("--gray") != "0");
+    } else if (a == "--seconds") {
+      ov.has_seconds = true; ov.seconds = std::stod(next("--seconds"));
     } else if (a == "--compare") {
       ov.compare = true;
+    } else if (!a.empty() && a[0] == '-') {
+      // 以前不认识的参数会掉进 out_dir 分支，变成「输出目录: --seconds」这种静默错乱。
+      std::cerr << "❌ 不认识的参数: " << a << "（用 --help 看用法）\n";
+      return 1;
     } else {
       out_dir = a;
     }
@@ -241,6 +256,17 @@ int main(int argc, char ** argv)
   const std::string last_png = out_dir + "/video_test_last.png";
   const std::string view_png = out_dir + "/video_test_view.png";
   const std::string enc_png = out_dir + "/video_test_encoded.png";
+  // ★ 相机原片：压片战争的左栏素材 + 编码输入都从这一个文件来。
+  const std::string orig_raw = out_dir + "/video_test_raw.bin";
+
+  // 输出目录不存在就建（records/raw 这种路径，以前只能手动 mkdir，还会撞权限）
+  {
+    std::error_code ec;
+    std::filesystem::create_directories(out_dir, ec);
+    if (!std::filesystem::is_directory(out_dir, ec))
+      std::cerr << "⚠ 建不出输出目录 " << out_dir << "（" << ec.message()
+                << "），文件可能写不进去\n";
+  }
 
   std::cout << "=== VideoSender 验证 ===\n";
   std::cout << "模式: " << (camera_config.empty() ? "合成测试图" : "真实相机 (" + camera_config + ")")
@@ -310,10 +336,27 @@ int main(int argc, char ** argv)
     return 1;
   }
 
+  // ★ 原片输出：按 video_fps 节流，和 VideoSender 内部接受编码的节拍**完全一样**，
+  //   这样 raw 的第 i 帧 ≈ 编码器的第 i 帧，左栏和右栏才配得上。
+  //   必须照抄 VideoSender::feed 的「固定节拍累加」，不能用 now-last>=interval，
+  //   否则节拍会漂，120 帧能漂出好几帧的错位。
+  //   必须是 -c 真实相机模式才有意义（合成图模式下写出来的是假画面）。
+  auto raw_next = std::chrono::steady_clock::now();
+  const auto raw_interval = std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+    std::chrono::duration<double>(1.0 / std::max(0.1, cfg.fps)));
+  std::ofstream orig_raw_out(orig_raw, std::ios::binary);
+  if (!orig_raw_out) {
+    std::cerr << "❌ 无法创建 " << orig_raw << "（磁盘满了？）\n";
+    return 1;
+  }
+  int orig_saved = 0;      // 写进 video_test_raw.bin 的帧数
+  int orig_w = 0;          // 相机真实出图宽（第一帧确定）
+  int orig_h = 0;          // 相机真实出图高
+
   // 采样：按时间跑（默认 6 秒）。输入源模拟真实相机（约 75fps），
   // 由 VideoSender 内部按 video_fps 节流；不再人为 sleep 到 12fps——
   // 那样每轮计时会和 100ms 节流窗口打架，把重复帧全丢掉，帧率统计失真。
-  constexpr double kRunSeconds = 6.0;
+  const double kRunSeconds = std::max(1.0, ov.seconds);
   constexpr int kSrcW = 1280;
   constexpr int kSrcH = 1024;
   constexpr double kSourceFps = 75.0;          // 模拟自瞄主循环频率
@@ -383,6 +426,37 @@ int main(int argc, char ** argv)
 
     last_input = img;   // 浅拷贝：只用来最后保存原始画面
 
+    // ★ 原片一定要在 feed() 之前存：
+    //   encode_and_pack 里的 cv::resize / USM 会改动同一块 Mat 的数据
+    //   （它拿的是 const&，但 cv::Mat 浅拷贝共享像素），喂完再存就不是原片了。
+    const auto now_raw = std::chrono::steady_clock::now();
+    if (!img.empty() && img.type() == CV_8UC3 && now_raw >= raw_next) {
+      raw_next += raw_interval;
+      if (raw_next + raw_interval < now_raw) raw_next = now_raw + raw_interval;
+      if (orig_w == 0) {
+        orig_w = img.cols;
+        orig_h = img.rows;
+        std::cout << "相机实际出图 " << orig_w << "x" << orig_h
+                  << "（原片 3 通道 BGR；压片仿真的左栏 = 这个分辨率）\n";
+        if (orig_w != kSrcW || orig_h != kSrcH) {
+          std::cout << "⚠ 和默认假设 " << kSrcW << "x" << kSrcH
+                    << " 不一致；cam_*.bgr 必须按 " << orig_w << "x" << orig_h
+                    << " 声明，否则 Windows 那边切帧会错位。本程序最后会打出正确命令。\n";
+        }
+      }
+      if (img.cols == orig_w && img.rows == orig_h) {
+        orig_raw_out.write(reinterpret_cast<const char *>(img.data),
+                           static_cast<std::streamsize>(img.total() * img.elemSize()));
+        if (!orig_raw_out) {
+          // 磁盘满/写失败：早点说，否则拷回去的文件在 Windows 那边切帧校验才会发现
+          std::cerr << "❌ 写原片失败（磁盘满了？）已停在第 " << orig_saved
+                    << " 帧，这个 bin 不完整，别拷\n";
+          return 1;
+        }
+        ++orig_saved;
+      }
+    }
+
     const auto t_f = std::chrono::steady_clock::now();
     const auto packets = sender.feed(img, ts_ns);
     t_feed += std::chrono::duration<double>(std::chrono::steady_clock::now() - t_f).count();
@@ -421,6 +495,25 @@ int main(int argc, char ** argv)
     std::chrono::duration_cast<std::chrono::milliseconds>(t_end - t_start).count() / 1000.0;
   frames_out.close();
   stream_out.close();
+  orig_raw_out.close();
+
+  // ---- 给压片仿真用的原片 ----
+  std::cout << "\n=== 压片仿真用的相机原片（2026-11-07）===\n";
+  if (camera) {
+    std::cout << "原片帧数  " << orig_saved << " 帧  "
+              << (orig_w > 0 ? std::to_string(orig_w) + "x" + std::to_string(orig_h) + "x3" : std::string("尺寸未知"))
+              << " BGR（原封不动）→ " << orig_raw << "\n";
+    if (orig_saved > 0 && orig_w > 0) {
+      const long long per_frame = static_cast<long long>(orig_w) * orig_h * 3;
+      std::cout << "文件字节  " << (per_frame * orig_saved) << "（" << per_frame << " / 帧）\n";
+      std::cout << "拷回 Windows 后跑（把三个 <路径> 换成实际路径）：\n";
+      std::cout << "  scripts\\准备素材.bat <这个bin> "
+                << orig_w << "x" << orig_h << "\n";
+    }
+  } else {
+    std::cout << "⚠ 合成图模式：原片是程序画出来的，不是相机，已跳过不写。\n"
+                 "   要拿真原片请加 -c configs/standard3.yaml\n";
+  }
 
   // ---- 汇总 ----
   std::cout << "\n=== 结果 ===\n";

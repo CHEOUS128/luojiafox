@@ -40,6 +40,29 @@ autoaim/**/assets/
 autoaim/**/*.mp4
 autoaim/**/record_*.mp4
 
+# ===== 压片战争仿真（compression-war）=====
+# 裸帧素材：200 帧就 250MB，而且一帧一帧都是可重新生成的
+compression-war/素材/
+compression-war/**/*.gray
+compression-war/**/*.raw
+# 中间码流
+compression-war/**/*.h264
+# 一次跑的产物（summary.txt / per_frame.csv / viewer 的几百张 PNG）
+compression-war/runs/
+# 外部 ffmpeg 与编译产物（根目录和 scripts\ 里各放一份）
+compression-war/ffmpeg.exe
+compression-war/cw_sim.exe
+compression-war/scripts/ffmpeg.exe
+compression-war/scripts/cw_sim.exe
+# 编译日志
+compression-war/build_log.txt
+# 单文件播放器（base64 打包后 7MB+）
+compression-war/**/*.html
+
+# 整包离线上传用的临时压缩包（622 MB，远超前 GitHub 100 MB 单文件上限）
+# 内容 = 本仓库各目录的快照，属于可重新生成的派生物，不进 git
+luojiamaster.zip
+
 # ===== IDE / 系统 =====
 .vs/
 .vscode/
