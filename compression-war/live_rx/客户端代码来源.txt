@@ -1,0 +1,13 @@
+实时接收端基线：2026-11-09，从 luojiamaster/源码/src/video/ 复制。
+
+原始 custom_byte_block_video_decoder.cpp SHA256:
+4c6ec4a253f0265cddd0043c95dd644e20314522986c7d4230fe0e5a6037e711
+原始 custom_byte_block_video_decoder.h SHA256:
+73836d82006caa86640f9056385a5bcb4239fc336be4dfe131e21acfa585cdf3
+
+此目录是独立快照。实时目标只编译这里的副本，不自动跟随客户端源文件更新。
+仿真副本添加了可选、只读的解析器字节范围观测、码流校验回调和 trace_id 字段，用于对应原片计时；
+不改变解包、丢包判定、等待 IDR、FFmpeg 解析或解码行为。
+trace_id 不写入通信载荷。无法可靠关联时为0，禁止按输出顺序硬配原片。
+
+离线 cw_sim 目标保持原有直接编译客户端解码器的方式，以保留历史对账行为。

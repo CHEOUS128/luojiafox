@@ -1,7 +1,7 @@
 # compression-war 仿真器
 #
 # 依赖的三块东西：
-#   1. 客户端的真实解码器源码（从 ../luojiamaster/源码 拿，不复制、不修改）
+#   1. 离线/独立复核只读编译客户端解码器；实时入口使用 live_rx 中的独立快照
 #   2. 客户端自带的那份 ffmpeg 静态库（只解不编，编码走外部 ffmpeg 进程）
 #   3. spdlog / stb 头文件（同样来自 luojiamaster/源码/3rdparty_downloads）
 #
@@ -9,7 +9,7 @@
 #   cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 #   cmake --build build -j
 #
-# Windows 构建：先跑 脚本\一键编译.bat（会进 VS 开发者环境）
+# Windows：scripts/编译-实时仿真.ps1 构建实时入口；一键编译.bat 保留旧离线入口
 cmake_minimum_required(VERSION 3.20)
 project(cw_sim CXX)
 
@@ -121,4 +121,52 @@ if(WIN32)
   # 二进制会大一点，但对这种「只在自己机器上跑」的工具完全值得。
   target_compile_options(cw_sim PRIVATE /Zi)
   target_link_options(cw_sim PRIVATE /DEBUG /OPT:REF /OPT:ICF)
+endif()
+
+# Independent realtime runtime. The offline target above retains its original decoder.
+if(WIN32)
+  add_library(cw_live_decoder STATIC live_rx/video/custom_byte_block_video_decoder.cpp)
+  target_include_directories(cw_live_decoder PUBLIC
+    "${CMAKE_CURRENT_SOURCE_DIR}/live_rx"
+    "${CMAKE_CURRENT_SOURCE_DIR}/rx" "${FFMPEG_DIR}/include" "${SPDLOG_DIR}")
+  target_compile_options(cw_live_decoder PRIVATE /utf-8 /bigobj)
+  target_link_libraries(cw_live_decoder PUBLIC ${FFMPEG_LIBS})
+  add_executable(cw_live src/live_main.cpp src/live_engine.cpp src/live_protocol.cpp
+    src/platform_util.cpp src/platform_util_stream.cpp src/packetizer.cpp src/metrics.cpp
+    tests/live_protocol_tests.cpp)
+  target_include_directories(cw_live PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/live_rx"
+    "${CMAKE_CURRENT_SOURCE_DIR}/rx" "${CMAKE_CURRENT_SOURCE_DIR}/src"
+    "${FFMPEG_DIR}/include" "${SPDLOG_DIR}" "${STB_DIR}")
+  target_compile_options(cw_live PRIVATE /utf-8 /Zi /W4)
+  target_compile_definitions(cw_live PRIVATE UNICODE _UNICODE _CRT_SECURE_NO_WARNINGS)
+  target_link_options(cw_live PRIVATE /DEBUG /OPT:REF /OPT:ICF)
+  target_link_libraries(cw_live PRIVATE cw_live_decoder ${FFMPEG_LIBS}
+    ws2_32 bcrypt secur32 user32 gdi32 comdlg32 shell32 psapi winmm ole32 strmiids mfplat mfuuid shlwapi advapi32)
+  enable_testing()
+  add_test(NAME live_protocol COMMAND cw_live --self-test)
+  add_executable(cw_wire_verify src/wire_verify.cpp src/live_protocol.cpp
+    src/platform_util.cpp src/platform_util_stream.cpp)
+  target_compile_options(cw_wire_verify PRIVATE /utf-8 /bigobj)
+  target_compile_definitions(cw_wire_verify PRIVATE _CRT_SECURE_NO_WARNINGS)
+  target_include_directories(cw_wire_verify PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/rx"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src" "${LJ_ROOT}/src" "${FFMPEG_DIR}/include" "${SPDLOG_DIR}")
+  target_link_libraries(cw_wire_verify PRIVATE rm_decoder ${FFMPEG_LIBS} ws2_32 bcrypt secur32 user32
+    shell32 winmm ole32 strmiids mfplat mfuuid shlwapi advapi32)
+  foreach(probe IN ITEMS cw_decoder_reference cw_decoder_observed)
+    add_executable(${probe} tests/decoder_parity.cpp src/live_protocol.cpp src/packetizer.cpp
+      src/raw_io.cpp src/platform_util.cpp)
+    target_compile_options(${probe} PRIVATE /utf-8 /bigobj)
+    if(probe STREQUAL "cw_decoder_observed")
+      target_compile_definitions(${probe} PRIVATE PROBE_LIVE)
+      target_include_directories(${probe} PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/live_rx")
+      target_link_libraries(${probe} PRIVATE cw_live_decoder)
+    else()
+      target_link_libraries(${probe} PRIVATE rm_decoder)
+    endif()
+    target_include_directories(${probe} PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/rx"
+      "${CMAKE_CURRENT_SOURCE_DIR}/src" "${LJ_ROOT}/src" "${FFMPEG_DIR}/include" "${SPDLOG_DIR}" "${STB_DIR}")
+    target_link_libraries(${probe} PRIVATE ${FFMPEG_LIBS} ws2_32 bcrypt secur32 user32 shell32
+      ole32 strmiids mfplat mfuuid shlwapi advapi32)
+  endforeach()
 endif()

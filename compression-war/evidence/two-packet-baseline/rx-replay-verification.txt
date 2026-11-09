@@ -1,0 +1,9 @@
+PASS RX-only independent replay
+source_video_read=0
+observation_ids_used=0
+tx_records_read=0
+summary_read=0
+client_decoder=unmodified
+rx_packets=2347
+decoded=1200
+pixel_sha256_match=1

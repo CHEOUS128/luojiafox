@@ -1,0 +1,8 @@
+*.md text eol=lf
+*.cpp text eol=lf
+*.h text eol=lf
+CMakeLists.txt text eol=lf
+
+evidence/two-packet-baseline/** -text
+evidence/**/*.bin binary
+evidence/**/*.png binary

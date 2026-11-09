@@ -12,3 +12,7 @@
 *.onnx   binary
 *.png    binary
 *.jpg    binary
+
+# Root milestone README follows the repository Markdown LF convention.
+/README.md text eol=lf
+*.gitattributes text eol=lf

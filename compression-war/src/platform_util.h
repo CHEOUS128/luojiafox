@@ -25,6 +25,7 @@
 #include <cstdint>
 #include <string>
 #include <vector>
+#include <memory>
 
 namespace cw {
 
@@ -79,5 +80,42 @@ std::string find_executable(const std::string & name_utf8);
 //   - Windows: GetCommandLineW + CommandLineToArgvW，中文路径原样进得来
 //   - Linux:   argv 原样
 std::vector<std::string> collect_args(int argc, char ** argv);
+
+// Streaming I/O for the live simulator. All OS paths/process creation stay here.
+class StreamFile {
+public:
+    StreamFile();
+    ~StreamFile();
+    bool open(const std::string &path, const char *mode);
+    std::size_t read(void *data, std::size_t bytes);
+    bool write(const std::string &text);
+    bool rewind();
+    void close();
+private:
+    struct Impl;
+    std::unique_ptr<Impl> impl_;
+};
+
+class PipeProcess {
+public:
+    PipeProcess();
+    ~PipeProcess();
+    bool start(const std::string &exe, const std::vector<std::string> &args, std::string &error);
+    bool write(const void *data, std::size_t bytes);
+    bool read(void *data, std::size_t bytes);
+    bool line(std::string &text);
+    void close_input();
+    void stop();
+    void buffer_limit(std::size_t bytes);
+private:
+    struct Impl;
+    std::unique_ptr<Impl> impl_;
+};
+// Temporary, process-lifetime request; avoids 15.6ms rounding of packet waits.
+class TimingResolution {
+public:
+    TimingResolution();
+    ~TimingResolution();
+};
 
 }  // namespace cw
