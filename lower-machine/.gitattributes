@@ -1,0 +1,4 @@
+*.md text eol=lf
+.gitattributes text eol=lf
+"26赛季全向轮步兵/gimbal_project/application/Self_aim.c" -text whitespace=trailing-space,space-before-tab,cr-at-eol
+"26赛季全向轮步兵/gimbal_project/application/video_forward.c" text eol=lf

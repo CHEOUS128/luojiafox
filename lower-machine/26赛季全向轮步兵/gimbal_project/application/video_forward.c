@@ -134,6 +134,9 @@ static uint16_t video_crc16(const uint8_t *data, uint32_t len)
 
 /* Single producer (Self_aim parser, USB callback) / single consumer (Task). */
 static uint8_t          s_queue[VIDEO_QUEUE_DEPTH][VIDEO_FRAME_BYTES];
+/* Single consumer: do not retain a ring slot while USB IRQ can overwrite it.
+ * Static storage avoids adding 309 bytes to the Self_aim task stack. */
+static uint8_t          s_tx_frame[VIDEO_FRAME_BYTES];
 static volatile uint8_t s_head = 0u;
 static volatile uint8_t s_tail = 0u;
 
@@ -235,7 +238,14 @@ void VideoForward_Task(void)
 
   while (s_tail != s_head)
   {
-    const uint8_t *frame = s_queue[s_tail];
+    uint8_t *frame = s_tx_frame;
+    uint32_t saved_irq = __get_PRIMASK();
+    __disable_irq();
+    __DMB();
+    memcpy(frame, s_queue[s_tail], VIDEO_FRAME_BYTES);
+    s_tail = (uint8_t)((s_tail + 1u) % VIDEO_QUEUE_DEPTH);
+    __DMB();
+    __set_PRIMASK(saved_irq);
     uint8_t  tries;
     uint8_t  ok = 0u;
 
@@ -268,7 +278,6 @@ void VideoForward_Task(void)
     if (ok) s_forwarded++;
     else    s_tx_error++;
 
-    s_tail = (uint8_t)((s_tail + 1u) % VIDEO_QUEUE_DEPTH);
   }
 
   video_refresh_debug();

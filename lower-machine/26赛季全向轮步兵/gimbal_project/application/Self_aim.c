@@ -75,7 +75,29 @@ void process_usb_data_packet(uint8_t* data, uint16_t length)
         if (kind == 1u) {
             if (idx >= VIDEO_FRAME_BYTES) {
                 kind = 0; idx = 0;
-                (void)VideoForward_PushFrame(buf);
+                if (!VideoForward_PushFrame(buf)) {
+                    /* Retain a plausible next video header after a rejected frame,
+                     * including an incomplete header at the end of this buffer.
+                     * Do not reinterpret discarded video payload as control data. */
+                    for (uint16_t k = 1; k < VIDEO_FRAME_BYTES; ++k) {
+                        uint16_t left = VIDEO_FRAME_BYTES - k;
+                        if (buf[k] != VIDEO_SOF) continue;
+                        if (left >= 2 && buf[k+1] != 0x2c) continue;
+                        if (left >= 3 && buf[k+2] != 0x01) continue;
+                        if (left >= 5) {
+                            uint8_t c = 0xff;
+                            for (uint16_t j=0;j<4;++j) {
+                                c ^= buf[k+j];
+                                for (uint16_t bit=0;bit<8;++bit) c=(c&1)?(uint8_t)((c>>1)^0x8c):(uint8_t)(c>>1);
+                            }
+                            if (c != buf[k+4]) continue;
+                        }
+                        if (left >= 6 && buf[k+5] != 0x10) continue;
+                        if (left >= 7 && buf[k+6] != 0x03) continue;
+                        memmove(buf,buf+k,left); idx=left; kind=1;
+                        break;
+                    }
+                }
             }
         } else {
             if (idx >= CONTROL_FRAME_BYTES) {
