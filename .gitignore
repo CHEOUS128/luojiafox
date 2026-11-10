@@ -19,6 +19,7 @@ Listings/
 *.exp
 
 # ===== 运行时产物 =====
+/luojiamaster/源码/cmake_build_log.txt
 logs/
 *.log
 

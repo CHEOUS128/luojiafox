@@ -6,6 +6,8 @@
 
 **策略探索现已接入。** [策略使用说明](docs/策略试验使用说明.md)给出队员可直接运行的入口；[本轮对比与验收](docs/验收/策略探索-2026-11-09.md)区分收益、失败轮次和未上车验证项。39份可复现配置覆盖编码、灰度/粗颜色、分辨率、帧率、降噪和接收后处理，不限制后续增加方案。原始基线保留为`profiles/baseline.ini`。
 
+**本轮上车档选 B**。彩色、完整视野、`320×256`、目标 20 fps，H.264 每 20 帧安排一次关键帧。仿真用 `profiles/one-320-gop20.ini`，双击 `scripts/启动-B方案.bat` 直接跑。四轮一分钟测试中，稳态最低 19 fps，典型延迟约 0.1 秒。故意漏一包的那次约 0.86 秒恢复。Jetson 用 `quality` 档，现场按[仓库首页](../README.md)的顺序测。
+
 已有本机结果时双击`scripts/启动-策略对比.bat`；队员首次生成对比：
 
 ```powershell
@@ -119,4 +121,4 @@ compression-war/
 └── tools/                旧离线播放器工具
 ```
 
-后续处理从`Engine(Config, Processor preprocess, Processor reconstruct)`扩展，实际工作必须在运行线程内执行并计时。当前阶段进入方案比较；应用到正常客户端或车端另行安排。文件系统/子进程继续使用`platform_util`宽字符封装；脚本与文档编码约定见仓库交接要求。
+后续处理从`Engine(Config, Processor preprocess, Processor reconstruct)`扩展，实际工作必须在运行线程内执行并计时。现阶段先验证 Jetson 上的双包对照与 B。文件系统/子进程继续使用`platform_util`宽字符封装；脚本与文档编码约定见仓库交接要求。

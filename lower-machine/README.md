@@ -31,7 +31,7 @@ lower-machine/
 - `26赛季全向轮步兵/gimbal_project/application/Self_aim.c`：视频CRC失败时保留下一个合法帧头候选，避免持续错位。
 - `26赛季全向轮步兵/gimbal_project/application/video_forward.c`：短临界区内复制并出队，再从独立静态缓冲发送，防止USB回调覆盖正在发送的数据。
 
-电控拉取整个仓库即可，仍打开 **`26赛季全向轮步兵/gimbal_project/MDK-ARM/standard_robot.uvprojx`**，Target为 `standard_robot`，按原流程编译云台工程。工程文件、头文件、底盘工程和控制参数均未改，不需要新烧录脚本。
+电控拉取 `main`，确认包含 `722f2f8`。用 Keil 打开 [云台工程 `standard_robot.uvprojx`](26赛季全向轮步兵/gimbal_project/MDK-ARM/standard_robot.uvprojx)，选 Target `standard_robot`。编译看到 `0 Error(s)` 后按原流程烧 **云台 C 板**，成功提示 `Programming Done`。如用单独的 HEX 文件，取本次生成的 `gimbal_project/MDK-ARM/standard_tpye_c/standard_tpye_c.hex`。
 
 原工程配置为 ARM Compiler 5.06 update 7 build 960、STM32F407IGHx、Keil.STM32F4xx_DFP 3.1.1。本次主机回归通过15个用例和6组视频回放；实际固件编译、RAM/任务栈与控制实时性仍需电控确认。
 

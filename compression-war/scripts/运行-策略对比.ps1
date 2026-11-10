@@ -1,6 +1,6 @@
 ﻿param(
     [string]$InputPath = '',
-    [string[]]$Profiles = @('baseline','one-160','one-320-aq0','one-320-gop20','gray','chroma4','temporal16','sharp'),
+    [string[]]$Profiles = @('baseline','one-160','one-320','one-320-aq0','one-320-gop20','gray','chroma4','temporal16','sharp'),
     [double]$Seconds = 15,
     [string]$OutputPath = '',
     [string]$Python = ''

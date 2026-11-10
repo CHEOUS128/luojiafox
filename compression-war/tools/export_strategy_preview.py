@@ -3,9 +3,9 @@ from pathlib import Path
 import argparse,json,bisect,subprocess,sys
 if hasattr(sys.stdout,'reconfigure'):sys.stdout.reconfigure(encoding='utf-8')
 from PIL import Image,ImageDraw,ImageFont
-p=argparse.ArgumentParser();p.add_argument('root',type=Path);p.add_argument('--ffmpeg',type=Path,required=True);p.add_argument('--out',type=Path,required=True);a=p.parse_args()
+p=argparse.ArgumentParser();p.add_argument('root',type=Path);p.add_argument('--ffmpeg',type=Path,required=True);p.add_argument('--out',type=Path,required=True);p.add_argument('--plain',action='store_true');a=p.parse_args()
 data=json.loads((a.root/'comparison-data.js').read_text(encoding='utf-8')[len('window.COMPARISON='):-1]);runs={r['name']:r for r in data['runs']}
-names=['baseline','one-160','one-320-gop20'];selected=[None]+[runs[n] for n in names];samples=runs['baseline']['source'];end=max(s['sourceMs'] for s in samples)
+names=['baseline','one-320','one-320-gop20'] if a.plain else ['baseline','one-160','one-320-gop20'];selected=[None]+[runs[n] for n in names];samples=runs['baseline']['source'];end=max(s['sourceMs'] for s in samples)
 fontfile=Path('C:/Windows/Fonts/msyh.ttc');font=ImageFont.truetype(str(fontfile),16) if fontfile.exists() else ImageFont.load_default()
 cache={}
 def frame(run,t):
@@ -19,15 +19,15 @@ def image(path):
     return cache[path]
 def panel(run,t):
     im=Image.new('RGB',(640,576),(18,26,36));d=ImageDraw.Draw(im);f=frame(run,t)
-    label='原片（独立展示）' if run is None else run['label']
+    label=('原画面（参考）' if run is None else {'baseline':'原来的办法（对照）','one-320':'A：兼顾清楚和恢复','one-320-gop20':'B：更偏重细节'}.get(run['name'],run['label'])) if a.plain else ('原片（独立展示）' if run is None else run['label'])
     d.text((12,8),label,font=font,fill=(230,240,250))
     if f:
         path=f"original/{f['fileIndex']}.png" if run is None else f['image'];pic=image(path)
         scale=min(640/pic.width,512/pic.height)
         pic=pic.resize((round(pic.width*scale),round(pic.height*scale)),Image.Resampling.BICUBIC)
         im.paste(pic,((640-pic.width)//2,36+(512-pic.height)//2))
-        info=f"t={t/1000:.2f}s 源帧{f['index']}"
-        if run is not None:info+=f" 画面年龄{t-f['sourceMs']:.0f}ms {f['codedBytes']}B/{f['packets']}包"
+        info=f"播放到 {t/1000:.2f} 秒" if a.plain else f"t={t/1000:.2f}s 源帧{f['index']}"
+        if run is not None:info+=(f" 看到的是{(t-f['sourceMs'])/1000:.2f}秒前的画面" if a.plain else f" 画面年龄{t-f['sourceMs']:.0f}ms {f['codedBytes']}B/{f['packets']}包")
         d.text((12,550),info,font=font,fill=(130,220,205))
     else:d.text((160,280),'尚未收到解码图像',font=font,fill=(180,195,210))
     return im

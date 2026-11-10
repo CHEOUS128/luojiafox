@@ -20,9 +20,10 @@ vm.createContext(context);
 const html=fs.readFileSync(path.join(__dirname,'../tools/strategy_viewer.html'),'utf8');
 const script=html.match(/<script>([\s\S]*?)<\/script>/)[1];vm.runInContext(script,context);
 function test(code){return vm.runInContext(code,context)}
-test('t=50;render()');assert.match(test('cards[1].foot.textContent'),/无对应/,'received frame shown before arrival');
-test('t=150;render()');assert.match(test('cards[1].foot.textContent'),/源帧 0/,'freeze was concealed');assert.match(test('cards[1].foot.textContent'),/年龄 150/,'frozen picture age did not increase');
-ids.mode.value='frame';test('t=50;render()');assert.match(test('cards[1].foot.textContent'),/无对应/,'missing same-source frame was replaced');assert.match(test('cards[2].foot.textContent'),/源帧 1/);
+test('t=50;render()');assert.match(test('cards[1].foot.textContent'),/没有收到/,'received frame shown before arrival');
+test('t=150;render()');assert.match(test('cards[1].foot.textContent'),/0.15 秒前/,'freeze age was concealed');
+ids.mode.value='frame';test('t=50;render()');assert.match(test('cards[1].foot.textContent'),/没有收到/,'missing same-source frame was replaced');assert.match(test('cards[2].foot.textContent'),/同一时刻/);
 test("choose('candidate')");assert.equal(test('cards.length'),2);test("choose('candidate')");assert.equal(test('cards.length'),3);
 test('t=50;step(1)');assert.equal(test('t'),100);test('step(-1)');assert.equal(test('t'),50);
+test("showSet(['baseline'])");assert.equal(test('cards.length'),2);test("showSet(['baseline','candidate'])");assert.equal(test('cards.length'),3);
 console.log('PASS viewer logic: arrival gating, freeze/age, missing same-frame, selection, stepping (not a browser layout test)');
