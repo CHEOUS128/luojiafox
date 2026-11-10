@@ -50,6 +50,7 @@
 
 #include "io/camera.hpp"
 #include "io/video_sender/video_sender.hpp"
+#include "io/video_sender/cw_tx_worker.hpp"
 #include "tools/yaml.hpp"
 
 namespace
@@ -111,6 +112,7 @@ std::vector<uint8_t> extractPayload(const std::vector<uint8_t> & frame)
 // 复刻 VideoSender::feed 的取景+锐化，仅用于 --compare 出图
 cv::Mat makeView(const cv::Mat & img, const io::VideoSenderConfig & cfg)
 {
+  if (!cfg.cw_profile.empty()) return io::VideoSender::trial_view(img,cfg);
   cv::Mat view(cfg.height, cfg.width, CV_8UC3, cv::Scalar(0, 0, 0));
   if (cfg.keep_aspect) {
     const double scale = std::min(static_cast<double>(cfg.width) / img.cols,
@@ -139,6 +141,7 @@ cv::Mat makeView(const cv::Mat & img, const io::VideoSenderConfig & cfg)
 
 struct CliOverrides
 {
+  std::string cw_profile;
   bool has_fps = false;   double fps = 0.0;
   bool has_kbps = false;  int kbps = 0;
   bool has_preset = false; std::string preset;
@@ -218,8 +221,11 @@ int main(int argc, char ** argv)
                 << "  " << argv[0] << " [输出目录]\n"
                 << "  " << argv[0] << " [输出目录] -c <config.yaml>\n"
                 << "  可选: --fps N --kbps N --preset NAME --keep-aspect 0|1 --crop N --sharpen X\n"
-                << "        --large-frame 0|1 --gop N --gray 0|1 --seconds S --compare\n";
+                << "        --large-frame 0|1 --gop N --gray 0|1 --seconds S --compare\n"
+                << "        --cw-profile baseline|smooth|detail|detail-aq0|quality (cw-trial-20261109-r2)\n";
       return 0;
+    } else if (a == "--cw-profile") {
+      ov.cw_profile = next("--cw-profile");
     } else if (a == "--fps") {
       ov.has_fps = true; ov.fps = std::stod(next("--fps"));
     } else if (a == "--kbps") {
@@ -311,6 +317,11 @@ int main(int argc, char ** argv)
   if (ov.has_gray) cfg.gray = ov.gray;
   if (cfg.large_frame) cfg.single_packet = false;  // 命令行覆盖之后也要保证互斥
 
+  if (!ov.cw_profile.empty()) {
+    if (!io::cw::valid_profile(ov.cw_profile)) { std::cerr << "Unknown cw profile\n"; return 2; }
+    io::cw::apply(cfg, ov.cw_profile);
+  }
+
   // ---- 创建相机（可选）----
   std::unique_ptr<io::Camera> camera;
   if (!camera_config.empty()) {
@@ -376,6 +387,37 @@ int main(int argc, char ** argv)
       run_stats.add(pkt, h264_stream);
     }
   };
+
+  std::ofstream cw_times;
+  std::size_t cw_remaining = 0, cw_bundle_size = 0, cw_bytes = 0;
+  const auto cw_begin = std::chrono::steady_clock::now();
+  std::unique_ptr<io::cw::TxWorker> cw_tx;
+  if (!cfg.cw_profile.empty()) {
+    cw_times.open(out_dir + "/cw-packet-times.csv");
+    if (!cw_times) { std::cerr << "cannot create cw-packet-times.csv\n"; return 1; }
+    cw_times << "packet,steady_ns,frame,frame_packets,frame_h264_bytes\n";
+    cw_tx = std::make_unique<io::cw::TxWorker>(
+      [&] {
+        auto b = sender.take_trial_frame();
+        if (!b.empty()) {
+          cw_remaining = cw_bundle_size = b.size(); cw_bytes = 0;
+          for (const auto& p : b) cw_bytes += extractPayload(p).size();
+        }
+        return b;
+      },
+      [&](const auto& p) {
+        const auto at = std::chrono::steady_clock::now();
+        frames_out.write(reinterpret_cast<const char*>(p.data()),p.size());
+        auto payload = extractPayload(p);
+        h264_stream.insert(h264_stream.end(),payload.begin(),payload.end());
+        ++total_packets; total_bytes += p.size(); ++run_stats.packets;
+        cw_times << total_packets << ',' << std::chrono::duration_cast<std::chrono::nanoseconds>(at-cw_begin).count()
+                 << ',' << run_stats.frames << ',' << cw_bundle_size << ',' << cw_bytes << '\n';
+        if (--cw_remaining == 0) { ++run_stats.hist[cw_bundle_size]; ++run_stats.frames; }
+        if (!frames_out || !cw_times) throw std::runtime_error("cw capture write failed");
+        return true;
+      }, [] {});
+  }
 
   // 各环节耗时统计（帮助判断瓶颈在相机、编码还是节流）
   double t_read = 0, t_compare = 0, t_feed = 0;
@@ -472,8 +514,12 @@ int main(int argc, char ** argv)
   }
 
   // flush 剩余
-  collect(sender.flush());
-  run_stats.finish();
+  if (cw_tx) {
+    // Only the already pulled bundle may be unfinished; no forced queue release.
+    cw_tx->stop();
+    if (cw_tx->failed()) { std::cerr << "CW worker failed; capture invalid\n"; return 1; }
+    std::cout << "[CW] end pending bundle packets discarded=" << cw_remaining << "\n";
+  } else { collect(sender.flush()); run_stats.finish(); }
 
   // 只裁整条流末尾补的 0
   while (!h264_stream.empty() && h264_stream.back() == 0) h264_stream.pop_back();

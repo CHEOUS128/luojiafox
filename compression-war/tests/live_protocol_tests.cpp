@@ -43,6 +43,17 @@ int protocol_self_test() {
         check(vcl_hash(a)==vcl_hash(b)&&vcl_hash(a)!=0,"trace hash parser grouping");
         Config c;std::string error;c.send_rate=51;check(!validate(c,error),"over-rate validation");c.send_rate=50;c.width=191;check(!validate(c,error),"odd width validation");
         c.width=192;c.fps=26;check(!validate(c,error),"over-25-fps accepted");c.fps=25;check(validate(c,error),"25-fps rejected");
+        Strategy st;st.width=2147483647;st.upscale=4;check(!validate_strategy(st,error),"strategy integer overflow accepted");
+        st=Strategy{};st.width=32;st.height=32;Image scene;scene.width=64;scene.height=32;scene.bgr.assign(64*32*3,0);
+        for(std::size_t i=1;i<scene.bgr.size();i+=3)scene.bgr[i]=100;
+        ProcessingState history;preprocess_strategy(scene,st,history);
+        check(scene.width==32&&scene.height==32,"strategy output dimensions");
+        check(scene.bgr[1]==0&&scene.bgr[(8*32)*3+1]==100&&scene.bgr[(23*32+31)*3+1]==100&&scene.bgr[(24*32)*3+1]==0,"full view/padding calibration");
+        st.color="gray";preprocess_strategy(scene,st,history);bool neutral=true;
+        for(std::size_t i=0;i<scene.bgr.size();i+=3)neutral=neutral&&scene.bgr[i]==scene.bgr[i+1]&&scene.bgr[i]==scene.bgr[i+2];check(neutral,"gray processing retains color");
+        st=Strategy{};st.width=32;st.height=32;st.temporal=8;history={};scene.bgr.assign(32*32*3,30);preprocess_strategy(scene,st,history);
+        scene.bgr.assign(32*32*3,200);preprocess_strategy(scene,st,history);check(std::all_of(scene.bgr.begin(),scene.bgr.end(),[](auto v){return v==200;}),"temporal gate ghosts large motion");
+        st.sharpen=2;reconstruct_pixels(scene.bgr,scene.width,scene.height,st);check(std::all_of(scene.bgr.begin(),scene.bgr.end(),[](auto v){return v==200;}),"sharpen changes flat color");
         cw::out("PASS live protocol: %d checks (car CRC golden, corruption, protobuf, packet limits, sequence wraps, full FOV fit)\n",checks);return 0;
     }catch(const std::exception &e){cw::eout("FAIL live protocol: %s\n",e.what());return 1;}
 }

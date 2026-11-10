@@ -1,0 +1,57 @@
+{
+  "measurement": "Windows real process and GDI submission; C-board bypass; ideal channel; not Jetson or official radio",
+  "ffmpeg_sha256": "b90225987bdd042cca09a1efb5e34e9848f2d1dbf5fbcd388753a44145522997",
+  "cw_live_sha256": "0c6de11d5cf1457180649c6e2d79dabc19303a3c15d15ea5b07467341b82bc72",
+  "cw_wire_verify_sha256": "b947ed954aa44ffafb0aa889d9dd62059fcbdd1c6c9178fe7ca72331a1d5d4ea",
+  "source_sha256": {
+    "camera": "d090a6bc6f48fa480d23d58095dfb76426292f3532a490cd0d3c355d927ed1b2",
+    "motion": "4e267b876ed137819bb75e21ae6aae4d507ce5f0ec8e46907b7c3b8f2f561ca6"
+  },
+  "receiver_snapshot": {
+    "live_rx\\客户端代码来源.txt": "ca38267d6a532ebbe2f5ff9f4a3463f0b286c07a75b02dfc2c6b31c4348d7f74",
+    "live_rx\\video\\custom_byte_block_video_decoder.cpp": "c74053799d9025e5cf1185945f7aaecadefddba3119b407f912cca39c25c51bb",
+    "live_rx\\video\\custom_byte_block_video_decoder.h": "439b28f6cd4990216c79518fb2d08670f950e886abc621a7f8e77fa1e89b2da7"
+  },
+  "simulation_sources": {
+    "src\\encoder.cpp": "6ae5544ffaead39218f006a288c5c1bbcc0bc8f1b9a1c65c9871748797612c6d",
+    "src\\encoder.h": "cf55dc69b5d860fc3a8d97deba58dc9c886fc62f673f4eea9b9f4d706f76dcc8",
+    "src\\live_engine.cpp": "9dd84c77b5070279b161ca6ca4098501157230c31988496b9fa3ae2daa9a46bb",
+    "src\\live_engine.h": "759fe63ec8c59ba0771e119f696e114938b027c1d93b1cf2ea2da1e893e7f4d8",
+    "src\\live_main.cpp": "bb06762c67a2ab4a83c376455ffa5192f9817b9f1d59a9b3ea79b2cb0729c8f9",
+    "src\\live_protocol.cpp": "844d1b08fd80ab7f2c943c2c4648fcd72265a3ace7a6bdd241b61aacd0ee9749",
+    "src\\live_protocol.h": "050642dde483793068b770b24313207e07e07ee68b110583b467016fa84713e3",
+    "src\\main.cpp": "1202b771f494cafc05bd36de35a02c41dcd053d2eecc18e7f2cfac17455362d5",
+    "src\\metrics.cpp": "a7810bd99ebc490b457a5abfe01b58970197fa0271c2accfbcc56a8c90374078",
+    "src\\metrics.h": "e9123f5d290fd238d11e7340dd96a97c5b15ad4766f877acab6b5c75a471e545",
+    "src\\packetizer.cpp": "14b2cec125a8c2ea3a39695f2c1dc18bb25844109f425e59eccbe19cb605a956",
+    "src\\packetizer.h": "60cf7ad53db65c3e3f8eaeb507090abece309aee4b034f40458f4c0a84d24600",
+    "src\\platform_util.cpp": "d26ecaeb47b78182fe7a16a05c35ec0b860b643c3ab374aed753f335aec7edf4",
+    "src\\platform_util.h": "2c1a10373da1d356b93831a32d9b810bf7df4f8e5ca08144423ec5fc5ae1e76b",
+    "src\\platform_util_stream.cpp": "92e57816ae7add103ba5bafa66df4e06c394eafd082d3191e71771ee50c86a28",
+    "src\\raw_io.cpp": "6e0499016a052c714c709be635f274d19ed205a9785da4d20169884f948b059f",
+    "src\\raw_io.h": "de5d8527669ee107199125657106862e7c8e0abd2720d21a593d54896e0cb7df",
+    "src\\sim_config.h": "9818c47de356d1dd615dc5892893ae7ae4f29648fa5e03ab262ae1299aa6f008",
+    "src\\sim_runner.cpp": "eb80ed37850f9c41e19ba61c7a6b543953ff5920439cfd4230acf9babc50f9d6",
+    "src\\sim_runner.h": "c5f0f04cd5dba692bc9da1075b81d45b800b189ea4d6adcccfa4751e68f066d1",
+    "src\\strategy.cpp": "84d91473ca36a5a96b6d66e9e5a8dc7fa62f0608933c4cfa28d992185772c683",
+    "src\\strategy.h": "87bd47d3c3c33af5b3f68b0db7808998ac25f44b8a434c7887299ae079934970",
+    "src\\viewer.cpp": "4a3a713bd479b6e73d195b02237ea587a361a56f399deef940b35d26e7a09ef8",
+    "src\\viewer.h": "419115384b632998d4806db35d09aeab158598760a6ca0af1e1c7e5f2284b436",
+    "src\\wire_verify.cpp": "8a86c556d6945166d1cbcb3cd72a2b8dc0d3106d2c3936197e29eb0dab4ec1b5"
+  },
+  "verifier_reference": {
+    "luojiamaster\\源码\\src\\video\\custom_byte_block_video_decoder.cpp": "4c6ec4a253f0265cddd0043c95dd644e20314522986c7d4230fe0e5a6037e711",
+    "luojiamaster\\源码\\src\\video\\custom_byte_block_video_decoder.h": "73836d82006caa86640f9056385a5bcb4239fc336be4dfe131e21acfa585cdf3"
+  },
+  "production_trial": {
+    "autoaim\\my_lf_INF_20261025\\io\\gimbal\\gimbal.cpp": "f9816794f8b11982c2f0510408105a52235449a30e1a22f78fb17c7f78f1cd98",
+    "autoaim\\my_lf_INF_20261025\\io\\gimbal\\gimbal.hpp": "55d5fe294353b79f61a6f44e48e67cf93238c9af41af9476e09999c5503c4440",
+    "autoaim\\my_lf_INF_20261025\\io\\video_sender\\video_sender.cpp": "d004e0ac2ed053c2fe75dd39438e0de02b82da6e8ce07d7ac6823e8f6202f6c6",
+    "autoaim\\my_lf_INF_20261025\\io\\video_sender\\video_sender.hpp": "63602adcc018fa49f84f713b3d102ea16784ba4efa004e1be203729b169aeb09",
+    "autoaim\\my_lf_INF_20261025\\io\\video_sender\\cw_trial.hpp": "a0c92c7fcbaaacf301005b2f428c7d68dc1d7dc701f290907e204363a82e499f",
+    "autoaim\\my_lf_INF_20261025\\io\\video_sender\\cw_tx_worker.hpp": "0e6ba93557531d9d9f33b439e513ffa0bacc0f05d6aaa39b01e0c7516cde59b3",
+    "autoaim\\my_lf_INF_20261025\\src\\standard_mpc.cpp": "7352b51162a246d96782c20c838c78893012efee6375a855f65715fb17d1bb54",
+    "autoaim\\my_lf_INF_20261025\\tests\\video_sender_test.cpp": "0eeff99b708d1297abc93833ebcf2f5c8a408c730b555a90eb1a005113a93940"
+  },
+  "desktop_observation": "00:19 lock screen observed; user confirmed earlier lock and unlocked; native UI subsequently tested. Earlier unknown-desktop timing is retained, not used for visible acceptance."
+}

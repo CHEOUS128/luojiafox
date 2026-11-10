@@ -68,6 +68,7 @@ struct VideoSenderConfig
 
   // 灰度（省下 U/V 的比特全给亮度；实测亮度 SSIM 0.901→0.979，+35% 亮度比特）
   bool gray = false;
+  std::string cw_profile;  // Empty = original production behavior. Explicit opt-in only.
 };
 
 // 0x0310 帧常量
@@ -95,6 +96,10 @@ public:
 
   // 强制刷出编码器内部缓存的帧（停止时调用）
   std::vector<std::vector<uint8_t>> flush();
+
+  // Trial path: encoder feed never sends. A separate paced worker pulls ONE whole frame.
+  std::vector<std::vector<std::uint8_t>> take_trial_frame();
+  static cv::Mat trial_view(const cv::Mat& bgr, const VideoSenderConfig& config);
 
   const VideoSenderConfig & config() const { return config_; }
 

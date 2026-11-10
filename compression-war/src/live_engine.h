@@ -4,8 +4,10 @@
 #include <string>
 #include <vector>
 #include <functional>
+#include "strategy.h"
 namespace cw::live {
 struct Config {
+    Strategy strategy;
     std::string input="素材/car_raw.bgr", ffmpeg="ffmpeg.exe", output;
     int raw_width=1280, raw_height=1024, width=192, height=152;
     double source_fps=20, fps=20, send_rate=50, duration=0;
@@ -17,7 +19,7 @@ struct Config {
 };
 struct Image {
     int width=0,height=0;
-    std::uint64_t id=0;
+    std::uint64_t id=0,decoded_ordinal=0;
     double source_ms=0;
     std::size_t coded_bytes=0,packets=0;
     std::vector<std::uint8_t> bgr;

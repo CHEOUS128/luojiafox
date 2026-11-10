@@ -6,3 +6,8 @@ CMakeLists.txt text eol=lf
 evidence/two-packet-baseline/** -text
 evidence/**/*.bin binary
 evidence/**/*.png binary
+evidence/strategy-milestone/** -text
+*.py text eol=lf
+*.js text eol=lf
+tools/strategy_viewer.html text eol=lf
+profiles/*.ini text eol=lf

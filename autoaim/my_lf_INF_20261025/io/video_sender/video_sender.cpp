@@ -1,9 +1,11 @@
 #include "video_sender.hpp"
+#include "cw_trial.hpp"
 
 #include "tools/crc.hpp"
 #include "tools/logger.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <array>
 #include <chrono>
 #include <cmath>
@@ -111,6 +113,9 @@ struct VideoSender::Impl
   bool last_encoded_was_key = false;      // 上一个编码出来的帧是不是关键帧
   bool force_keyframe = false;            // 强制下一帧出 I 帧（I 帧丢太多时自救）
   int frames_since_key = 0;               // 距离上次成功发出 I 帧过了多少帧
+  std::atomic<std::uint64_t> cw_overwrite{0};
+  std::uint64_t cw_measured = 0;
+  double cw_pre_sum = 0, cw_encode_sum = 0, cw_pre_max = 0, cw_encode_max = 0;
   int gop = 1;                            // 生效的 GOP（I+P 模式），用于判断多久没 I 帧就自救
   std::chrono::steady_clock::time_point stat_last_log{};
   bool has_stat_last_log = false;
@@ -151,6 +156,8 @@ struct VideoSender::Impl
 VideoSender::VideoSender(const VideoSenderConfig & config)
 : impl_(std::make_unique<Impl>()), config_(config)
 {
+  const bool trial = !config_.cw_profile.empty();
+  if (trial) cw::apply(config_, config_.cw_profile);  // Final authority; no unsafe YAML overrides.
   if (config_.width <= 0 || config_.height <= 0) {
     throw std::invalid_argument("VideoSender: width/height must be positive");
   }
@@ -168,7 +175,7 @@ VideoSender::VideoSender(const VideoSenderConfig & config)
   }
 
   const AVCodec * codec = avcodec_find_encoder_by_name("libx264");
-  if (codec == nullptr) {
+  if (codec == nullptr && !trial) {
     codec = avcodec_find_encoder(AV_CODEC_ID_H264);
   }
   if (codec == nullptr) {
@@ -268,7 +275,7 @@ VideoSender::VideoSender(const VideoSenderConfig & config)
   ctx->gop_size = config_.large_frame ? gop_effective
                                       : (config_.single_packet ? 1 : std::max(1, config_.keyframe_interval));
   ctx->max_b_frames = 0;
-  ctx->thread_count = 0;
+  ctx->thread_count = trial && config_.cw_profile != "baseline" ? 1 : 0;
   ctx->keyint_min = gop_effective;
 
   av_opt_set(ctx->priv_data, "preset", config_.x264_preset.c_str(), 0);
@@ -299,7 +306,14 @@ VideoSender::VideoSender(const VideoSenderConfig & config)
     // 实测 160×128 GOP5：不加分片 P 帧 155B / 加分片 149B，画质不变（0.9945 → 0.9950），
     // 但每条横带独立熵编码，丢包只坏一条。注意别加 intra-refresh：实测 SSIM 掉到 0.9867，
     // P 帧还涨到 278B（它把刷新分摊到每帧，等于把 I 帧摊薄）。
-    x264_params += ":slices=4";
+    x264_params += trial && config_.cw_profile != "baseline" ? ":slices=1" : ":slices=4";
+  }
+  if (trial) {
+    if (config_.cw_profile == "detail-aq0") x264_params += ":aq-mode=0";
+    if (av_opt_set(ctx->priv_data, "forced-idr", "1", 0) < 0)
+      throw std::runtime_error("cw trial: libx264 forced-idr option unavailable");
+    tools::logger()->info("[CW] {} profile={} {}x{} fps=20 bps={} cap=592 packets=2 interval_ms=20 threads={} x264={}",
+      cw::version(), config_.cw_profile, config_.width, config_.height, bitrate, ctx->thread_count, x264_params);
   }
   av_opt_set(ctx->priv_data, "x264-params", x264_params.c_str(), 0);
 
@@ -326,7 +340,7 @@ VideoSender::VideoSender(const VideoSenderConfig & config)
   impl_->sws_ctx = sws_getContext(
     config_.width, config_.height, AV_PIX_FMT_BGR24,
     config_.width, config_.height, enc_pix_fmt,
-    SWS_BILINEAR, nullptr, nullptr, nullptr);
+    trial ? SWS_BICUBIC : SWS_BILINEAR, nullptr, nullptr, nullptr);
   if (impl_->sws_ctx == nullptr) {
     throw std::runtime_error("VideoSender: sws_getContext failed");
   }
@@ -395,12 +409,13 @@ std::vector<std::vector<std::uint8_t>> VideoSender::feed(
         std::lock_guard<std::mutex> lock(impl_->mtx);
         // 不需要 clone：大恒/迈德威视/USB 相机后端都是每帧新建 cv::Mat，
         // 且调用方在本轮之后不再写这块内存，浅拷贝（引用计数）即可，省一次 3.9MB memcpy。
+        if (!config_.cw_profile.empty() && impl_->pending_frame) ++impl_->cw_overwrite;
         impl_->pending_frame = bgr_frame;
       }
       impl_->cv.notify_one();
     }
   }
-  drain_due(out, false);
+  if (config_.cw_profile.empty()) drain_due(out, false);
   return out;
 }
 
@@ -416,7 +431,15 @@ void VideoSender::worker_loop()
       impl_->pending_frame.reset();
       impl_->encoding = true;
     }
-    encode_and_pack(frame);
+    if (config_.cw_profile.empty()) encode_and_pack(frame);
+    else {
+      try { encode_and_pack(frame); }
+      catch (const std::exception& e) {
+        ++impl_->stat_encode_fail; impl_->force_keyframe = true;
+        impl_->stream_buf.clear();
+        tools::logger()->error("[CW] encode failed: {}", e.what());
+      }
+    }
     {
       std::lock_guard<std::mutex> lock(impl_->mtx);
       impl_->encoding = false;
@@ -425,13 +448,42 @@ void VideoSender::worker_loop()
   }
 }
 
+cv::Mat VideoSender::trial_view(const cv::Mat& bgr, const VideoSenderConfig& c)
+{
+  cv::Mat view(c.height, c.width, CV_8UC3, cv::Scalar(0,0,0));
+  const double scale = std::min(double(c.width)/bgr.cols, double(c.height)/bgr.rows);
+  const int w = std::max(1, int(std::floor(bgr.cols*scale+1e-5)));
+  const int h = std::max(1, int(std::floor(bgr.rows*scale+1e-5)));
+  cv::Mat resized(h,w,CV_8UC3);
+  auto* sws = sws_getContext(bgr.cols, bgr.rows, AV_PIX_FMT_BGR24, w,h,AV_PIX_FMT_BGR24,
+                            SWS_AREA, nullptr,nullptr,nullptr);
+  if (!sws) throw std::runtime_error("cw trial: SWS_AREA resize allocation failed");
+  const uint8_t* src[4] = {bgr.data}; const int ss[4] = {int(bgr.step)};
+  uint8_t* dst[4] = {resized.data}; const int ds[4] = {int(resized.step)};
+  const int rows = sws_scale(sws,src,ss,0,bgr.rows,dst,ds);
+  sws_freeContext(sws);
+  if (rows != h) throw std::runtime_error("cw trial: incomplete resize");
+  resized.copyTo(view(cv::Rect((c.width-w)/2,(c.height-h)/2,w,h)));
+  return view;
+}
+
+std::vector<std::vector<std::uint8_t>> VideoSender::take_trial_frame()
+{
+  std::vector<std::vector<std::uint8_t>> out;
+  if (!config_.cw_profile.empty()) drain_due(out, false);
+  return out;
+}
+
 void VideoSender::encode_and_pack(const cv::Mat & bgr_frame)
 {
   if (bgr_frame.empty()) return;
+  const auto cw_begin = std::chrono::steady_clock::now();
 
   // ---- 取景：默认整幅缩放（全视野），可选中心裁剪 ----
   cv::Mat view;
-  if (config_.keep_aspect) {
+  if (!config_.cw_profile.empty()) {
+    view = trial_view(bgr_frame, config_);
+  } else if (config_.keep_aspect) {
     // 等比缩放到 width×height 内，左右或上下用黑边补齐（letterbox）
     view = cv::Mat(config_.height, config_.width, CV_8UC3, cv::Scalar(0, 0, 0));
     const double scale = std::min(
@@ -481,6 +533,7 @@ void VideoSender::encode_and_pack(const cv::Mat & bgr_frame)
   }
 
   // ---- 编码 ----
+  const auto cw_encode_begin = std::chrono::steady_clock::now();
   int ret = avcodec_send_frame(impl_->codec_ctx, impl_->frame);
   if (ret < 0) {
     tools::logger()->warn("[VideoSender] send_frame failed: {}", ffmpeg_err(ret));
@@ -503,6 +556,15 @@ void VideoSender::encode_and_pack(const cv::Mat & bgr_frame)
     av_packet_unref(impl_->packet);
   }
   impl_->last_encoded_was_key = got_key;
+  if (!config_.cw_profile.empty() && !impl_->stream_buf.empty())
+    impl_->stream_buf = cw::without_sei(impl_->stream_buf);
+
+  if (!config_.cw_profile.empty()) {
+    const double pre = std::chrono::duration<double,std::milli>(cw_encode_begin-cw_begin).count();
+    const double enc = std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-cw_encode_begin).count();
+    ++impl_->cw_measured; impl_->cw_pre_sum += pre; impl_->cw_encode_sum += enc;
+    impl_->cw_pre_max = std::max(impl_->cw_pre_max,pre); impl_->cw_encode_max = std::max(impl_->cw_encode_max,enc);
+  }
 
   // ---- 大帧拆包模式（I+P）：一帧 → N 个 0x0310 包，每个 ≤ 296B ----
   // 客户端不用改：它的 av_parser_parse2 是持久解析器，会跨包累积成一个完整帧。
@@ -535,6 +597,13 @@ void VideoSender::encode_and_pack(const cv::Mat & bgr_frame)
         std::lock_guard<std::mutex> lock(impl_->mtx);
         for (auto & p : packets) impl_->pending.push_back(std::move(p));
         impl_->pending_frames.push_back(packets.size());
+        if (!config_.cw_profile.empty()) {
+          // Same one-second whole-frame bound as simulation. No half-frame drops.
+          while (impl_->pending_frames.size() > std::size_t(config_.fps)) {
+            const auto count = impl_->pending_frames.front(); impl_->pending_frames.pop_front();
+            for (std::size_t i=0; i<count; ++i) { impl_->pending.pop_front(); ++impl_->stat_pkt_lost; }
+          }
+        }
       }
       // 丢包恢复：P 帧依赖前面的 I 帧。如果上一个 I 帧被丢/超限，
       // 后面的 P 帧全都在引用不存在的参考帧，客户端会一直花屏。
@@ -550,6 +619,7 @@ void VideoSender::encode_and_pack(const cv::Mat & bgr_frame)
       }
     } else if (sz > per * max_pkts) {
       ++impl_->stat_oversize;
+      if (!config_.cw_profile.empty()) { impl_->force_keyframe = true; impl_->frames_since_key = 0; }
       if (is_key) {
         ++impl_->stat_key_dropped;
         // I 帧本身塞不进「包数上限×296」= 配置问题（码率/分辨率给太大）。
@@ -581,6 +651,11 @@ void VideoSender::encode_and_pack(const cv::Mat & bgr_frame)
         impl_->stat_oversize, impl_->stat_key_dropped, impl_->stat_pkt_lost,
         impl_->stat_encode_fail,
         impl_->stat_last_bytes, impl_->stat_last_packets, per, per * max_pkts);
+      if (!config_.cw_profile.empty() && impl_->cw_measured) {
+        tools::logger()->info("[CW timing] frames={} pending_overwrite={} pre_mean_ms={:.3f} pre_max_ms={:.3f} encode_mean_ms={:.3f} encode_max_ms={:.3f}",
+          impl_->cw_measured, impl_->cw_overwrite.load(), impl_->cw_pre_sum/impl_->cw_measured, impl_->cw_pre_max,
+          impl_->cw_encode_sum/impl_->cw_measured, impl_->cw_encode_max);
+      }
       // ★ 出包丢包变了就第一时间报警。这一项涨说明「令牌桶撑不住码率」——
       //   会积压 → 丢整帧 → 断参考链，画面一顿一顿的。这时该把码率往下调，
       //   而不是往上调。2026-10-28 实测：预算按 85% 包率给时这一项应该是 0。
@@ -697,6 +772,7 @@ void VideoSender::drain_due(std::vector<std::vector<std::uint8_t>> & out, bool f
       }
       impl_->tokens -= static_cast<double>(n);
       impl_->pending_frames.pop_front();
+      if (!config_.cw_profile.empty()) break;  // One bundle owned by the paced worker.
     }
     // 兜底：积压超过 1 秒的帧量就丢最老的整帧（保持延迟不膨胀）
     while (impl_->pending_frames.size() > static_cast<std::size_t>(std::max(2.0, config_.fps)))
@@ -746,6 +822,8 @@ std::vector<std::vector<std::uint8_t>> VideoSender::flush()
 {
   std::vector<std::vector<std::uint8_t>> out;
   if (!impl_) return out;
+
+  if (!config_.cw_profile.empty()) return out;  // Trial shutdown never bypasses pacing.
 
   // 先让工作线程把已入队的帧编码完（最多等 200ms），再无条件放出全部包
   {

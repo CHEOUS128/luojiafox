@@ -25,7 +25,7 @@ std::string startup_error;
 bool autostart=false,close_on_end=false,right_native=false;
 HFONT font=nullptr;
 std::uint64_t last_probe_second=0;
-enum { Path=100,Choose,Start,Stop,Replay,Width,Height,Fps,Rate,Loop,RawWidth,RawHeight,SourceFps,Native };
+enum { Path=100,Choose,Start,Stop,Replay,Width,Height,Fps,Rate,Loop,RawWidth,RawHeight,SourceFps,Native,Profile };
 std::wstring wide(const std::string &s){return cw::to_native_path(s);}
 std::string utf8(const std::wstring &w){
     const int n=WideCharToMultiByte(CP_UTF8,0,w.data(),static_cast<int>(w.size()),nullptr,0,nullptr,nullptr);
@@ -43,6 +43,13 @@ void choose(HWND w){
     ofn.lpstrFilter=L"视频及相机原片\0*.mp4;*.mkv;*.mov;*.avi;*.h265;*.h264;*.bgr;*.raw;*.bin\0全部文件\0*.*\0";
     ofn.Flags=OFN_FILEMUSTEXIST|OFN_PATHMUSTEXIST|OFN_NOCHANGEDIR;
     if(GetOpenFileNameW(&ofn))set(w,Path,name);
+}
+void select_profile(HWND w){
+    if(engine&&engine->view().running)return;
+    wchar_t path[32768]{};OPENFILENAMEW ofn{sizeof(ofn)};ofn.hwndOwner=w;ofn.lpstrFile=path;ofn.nMaxFile=32768;ofn.lpstrFilter=L"策略配置\0*.ini\0";ofn.Flags=OFN_FILEMUSTEXIST|OFN_NOCHANGEDIR;
+    if(GetOpenFileNameW(&ofn))try{cfg.strategy=load_strategy(utf8(path));cfg.width=cfg.strategy.width;cfg.height=cfg.strategy.height;cfg.fps=cfg.strategy.fps;
+        set(w,Width,std::to_wstring(cfg.width));set(w,Height,std::to_wstring(cfg.height));set(w,Fps,std::to_wstring(cfg.fps));if(engine){engine->stop();engine.reset();}current=View{};startup_error.clear();InvalidateRect(w,nullptr,FALSE);
+    }catch(const std::exception &e){startup_error=e.what();InvalidateRect(w,nullptr,FALSE);}
 }
 void stop(){if(engine){engine->stop();current=engine->view();}}
 void start(HWND w){
@@ -107,6 +114,7 @@ LRESULT CALLBACK window_proc(HWND w,UINT msg,WPARAM wp,LPARAM lp){
     }
     case WM_COMMAND:
         if(LOWORD(wp)==Choose)choose(w);
+        if(LOWORD(wp)==Profile)select_profile(w);
         if(LOWORD(wp)==Native){right_native=SendDlgItemMessageW(w,Native,BM_GETCHECK,0,0)==BST_CHECKED;InvalidateRect(w,nullptr,FALSE);}
         if(LOWORD(wp)==Start||LOWORD(wp)==Replay)start(w);
         if(LOWORD(wp)==Stop){stop();for(int id:{Path,Choose,Width,Height,Fps,Rate,Loop,RawWidth,RawHeight,SourceFps})EnableWindow(GetDlgItem(w,id),TRUE);}
@@ -124,7 +132,7 @@ LRESULT CALLBACK window_proc(HWND w,UINT msg,WPARAM wp,LPARAM lp){
         std::wostringstream model;model<<L"C板旁路 / 理想通道 · "<<kPacketBytes<<L" B/包（净码流≤"<<kPayloadBytes
           <<L" B）· 每帧≤"<<kFramePackets<<L"包 / "<<kFrameBytes<<L" B · 50包/s按双包预算≤"<<kMaxFps<<L" fps";
         text(mem,12,91,model.str());
-        text(mem,12,120,L"相机原片（未处理）");const int half=client.right/2;
+        text(mem,12,120,L"原片 | "+wide(cfg.strategy.label));const int half=client.right/2;
         std::wostringstream frame_label;frame_label<<L"接收端（实际解码）";
         if(current.right){frame_label<<L" "<<current.right->width<<L"×"<<current.right->height;if(current.right->id)frame_label<<L" · "<<current.right->coded_bytes<<L" B / "<<current.right->packets<<L"/"<<kFramePackets<<L"包";else frame_label<<L" · 字节关联未知";}
         text(mem,half+8,120,frame_label.str());
@@ -158,10 +166,13 @@ int main(int argc,char **argv){
     cw::TimingResolution timing;
     cw::init_console();auto args=cw::collect_args(argc,argv);
     try {
+        for(std::size_t j=0;j<args.size();++j)if(args[j]=="--profile"){if(j+1>=args.size())throw std::runtime_error("--profile requires a path");cfg.strategy=load_strategy(args[++j]);cfg.width=cfg.strategy.width;cfg.height=cfg.strategy.height;cfg.fps=cfg.strategy.fps;}
         for(std::size_t i=0;i<args.size();++i){const auto &a=args[i];
             auto value=[&]()->std::string{if(++i>=args.size())throw std::runtime_error("参数缺少值："+a);return args[i];};
-            if(a=="--help"){cw::out("cw_live: 300 B/packet, <=2 packets/frame, <=592 H264 bytes, fps<=25\n  --input <video|bgr> --size WxH --fps 20 --send-rate 50\n  --raw-size WxH --source-fps 20 --loop --duration seconds --out directory\n  --autostart --close-on-end (GUI playback/validation)\n  --headless (no rendering; latency is consumption only)\n  --self-test\n  Test only: --test-pre-ms N --test-encode-ms N --test-post-ms N --drop-packet N --test-drop-all --test-oversize-frame N\n");return 0;}
+            if(a=="--help"){cw::out("cw_live: 300 B/packet, <=2 packets/frame, <=592 H264 bytes, fps<=25\n  --input <video|bgr> --size WxH --fps 20 --send-rate 50\n  --raw-size WxH --source-fps 20 --loop --duration seconds --out directory\n  --autostart --close-on-end (GUI playback/validation)\n  --headless (no rendering; latency is consumption only)\n  --profile path.ini (strategy; explicit CLI sizes/fps override profile)\n  --offline-metrics (quality evaluated after runtime)\n  --self-test\n  Test only: --test-pre-ms N --test-encode-ms N --test-post-ms N --drop-packet N --test-drop-all --test-oversize-frame N\n");return 0;}
             if(a=="--self-test")return protocol_self_test();
+            if(a=="--profile"){value();continue;}
+            if(a=="--offline-metrics"){cfg.strategy.offline_metrics=true;continue;}
             if(a=="--input")cfg.input=value();else if(a=="--ffmpeg")cfg.ffmpeg=value();
             else if(a=="--out")cfg.output=value();else if(a=="--fps")cfg.fps=std::stod(value());
             else if(a=="--source-fps")cfg.source_fps=std::stod(value());else if(a=="--send-rate")cfg.send_rate=std::stod(value());
@@ -182,7 +193,7 @@ int main(int argc,char **argv){
         SetProcessDPIAware();WNDCLASSW wc{};wc.lpfnWndProc=window_proc;wc.hInstance=GetModuleHandleW(nullptr);wc.hCursor=LoadCursorW(nullptr,IDC_ARROW);wc.lpszClassName=L"RM26CompressionLive";
         if(!RegisterClassW(&wc))throw std::runtime_error("RegisterClassW failed");
         auto w=CreateWindowExW(0,wc.lpszClassName,L"压片战争 · 实时链路仿真",WS_OVERLAPPEDWINDOW,CW_USEDEFAULT,CW_USEDEFAULT,1320,900,nullptr,nullptr,wc.hInstance,nullptr);
-        if(!w)throw std::runtime_error("CreateWindowExW failed");ShowWindow(w,SW_SHOW);UpdateWindow(w);
+        if(!w)throw std::runtime_error("CreateWindowExW failed");auto menu=CreateMenu();AppendMenuW(menu,MF_STRING,Profile,L"选择策略配置（停止时）");SetMenu(w,menu);ShowWindow(w,SW_SHOW);UpdateWindow(w);
         std::uint64_t size=0;if(!cw::file_size(cfg.input,size))choose(w);
         current.status="就绪";if(autostart)PostMessageW(w,WM_COMMAND,Start,0);
         MSG msg;while(GetMessageW(&msg,nullptr,0,0)>0){TranslateMessage(&msg);DispatchMessageW(&msg);}

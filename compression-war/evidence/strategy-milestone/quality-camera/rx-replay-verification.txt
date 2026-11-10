@@ -1,0 +1,11 @@
+PASS RX-only independent replay
+source_video_read=0
+observation_ids_used=0
+tx_records_read=0
+summary_read=0
+client_decoder=unmodified
+rx_packets=594
+decoded=300
+pixel_sha256_match=1
+processed_sha256_match=1
+replay_timing=accelerated; NOT runtime latency evidence

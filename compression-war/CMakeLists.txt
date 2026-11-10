@@ -131,7 +131,7 @@ if(WIN32)
     "${CMAKE_CURRENT_SOURCE_DIR}/rx" "${FFMPEG_DIR}/include" "${SPDLOG_DIR}")
   target_compile_options(cw_live_decoder PRIVATE /utf-8 /bigobj)
   target_link_libraries(cw_live_decoder PUBLIC ${FFMPEG_LIBS})
-  add_executable(cw_live src/live_main.cpp src/live_engine.cpp src/live_protocol.cpp
+  add_executable(cw_live src/strategy.cpp src/live_main.cpp src/live_engine.cpp src/live_protocol.cpp
     src/platform_util.cpp src/platform_util_stream.cpp src/packetizer.cpp src/metrics.cpp
     tests/live_protocol_tests.cpp)
   target_include_directories(cw_live PRIVATE
@@ -145,12 +145,12 @@ if(WIN32)
     ws2_32 bcrypt secur32 user32 gdi32 comdlg32 shell32 psapi winmm ole32 strmiids mfplat mfuuid shlwapi advapi32)
   enable_testing()
   add_test(NAME live_protocol COMMAND cw_live --self-test)
-  add_executable(cw_wire_verify src/wire_verify.cpp src/live_protocol.cpp
+  add_executable(cw_wire_verify src/strategy.cpp src/wire_verify.cpp src/live_protocol.cpp
     src/platform_util.cpp src/platform_util_stream.cpp)
   target_compile_options(cw_wire_verify PRIVATE /utf-8 /bigobj)
   target_compile_definitions(cw_wire_verify PRIVATE _CRT_SECURE_NO_WARNINGS)
   target_include_directories(cw_wire_verify PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/rx"
-    "${CMAKE_CURRENT_SOURCE_DIR}/src" "${LJ_ROOT}/src" "${FFMPEG_DIR}/include" "${SPDLOG_DIR}")
+    "${CMAKE_CURRENT_SOURCE_DIR}/src" "${LJ_ROOT}/src" "${FFMPEG_DIR}/include" "${SPDLOG_DIR}" "${STB_DIR}")
   target_link_libraries(cw_wire_verify PRIVATE rm_decoder ${FFMPEG_LIBS} ws2_32 bcrypt secur32 user32
     shell32 winmm ole32 strmiids mfplat mfuuid shlwapi advapi32)
   foreach(probe IN ITEMS cw_decoder_reference cw_decoder_observed)

@@ -1,4 +1,5 @@
 #include <fmt/core.h>
+#include <iostream>
 #include <atomic>
 #include <chrono>
 #include <memory>
@@ -10,6 +11,7 @@
 #include "io/camera.hpp"
 #include "io/gimbal/gimbal.hpp"
 #include "io/video_sender/video_sender.hpp"
+#include "io/video_sender/cw_tx_worker.hpp"
 #include "tools/yaml.hpp"
 #include "tasks/auto_aim/planner/planner.hpp"
 #include "tasks/auto_aim/solver.hpp"
@@ -27,6 +29,7 @@ const std::string keys =
   "{video-fps vf   | -1                | 覆盖 video_fps（<=0 用 yaml 的值）}"
   "{video-width vw | -1                | 覆盖 video_width（<=0 用 yaml）}"
   "{video-height vh | -1               | 覆盖 video_height（<=0 用 yaml）}"
+  "{cw-profile | | cw-trial-20261109-r2: baseline smooth detail detail-aq0 quality (explicit opt-in)}"
   "{video-crop vc  | -1                | 覆盖 video_crop_size（<=0 用 yaml）}";
 
 int main(int argc, char * argv[])
@@ -38,6 +41,10 @@ int main(int argc, char * argv[])
         return 0;
     }
     auto config_path = cli.get<std::string>(0);
+    const auto cw_profile = cli.get<std::string>("cw-profile");
+    if (!cw_profile.empty() && !io::cw::valid_profile(cw_profile)) {
+      std::cerr << "Unknown --cw-profile: " << cw_profile << std::endl; return 2;
+    }
 
     tools::Plotter plotter;
     tools::Exiter exiter;
@@ -56,7 +63,7 @@ int main(int argc, char * argv[])
         auto cfg_yaml = tools::load(config_path);
         const bool video_enable = cfg_yaml["video_send_enable"]
                                     ? cfg_yaml["video_send_enable"].as<bool>() : false;
-        if (video_enable) {
+        if (video_enable || !cw_profile.empty()) {
             io::VideoSenderConfig vs_cfg;
             if (cfg_yaml["video_width"])      vs_cfg.width = cfg_yaml["video_width"].as<int>();
             if (cfg_yaml["video_height"])     vs_cfg.height = cfg_yaml["video_height"].as<int>();
@@ -86,6 +93,7 @@ int main(int argc, char * argv[])
             if (cli_w > 0)     vs_cfg.width = cli_w;
             if (cli_h > 0)     vs_cfg.height = cli_h;
             if (cli_c > 0)     vs_cfg.crop_size = cli_c;
+            if (!cw_profile.empty()) io::cw::apply(vs_cfg, cw_profile);
             video_sender.emplace(vs_cfg);
             tools::logger()->info("[VideoSender] 已启用（{}x{} @{:.0f}fps {}kbps preset={} keep_aspect={} sharpen={} 单包={} 大帧={} GOP={} 灰度={} crop={}）",
                                   vs_cfg.width, vs_cfg.height, vs_cfg.fps, vs_cfg.bitrate_kbps,
@@ -98,6 +106,15 @@ int main(int argc, char * argv[])
         } else {
             tools::logger()->info("[VideoSender] 未启用（配置 video_send_enable: false）");
         }
+    }
+
+    std::unique_ptr<io::cw::TxWorker> cw_tx;
+    if (!cw_profile.empty()) {
+      gimbal.enable_trial_video();
+      cw_tx = std::make_unique<io::cw::TxWorker>(
+        [&] { return video_sender->take_trial_frame(); },
+        [&](const auto& packet) { return gimbal.try_send_trial_video(packet); },
+        [&] { gimbal.service_trial_video(); });
     }
 
     cv::Mat img;
@@ -149,6 +166,9 @@ int main(int argc, char * argv[])
 
     // -------------------- 主循环 --------------------
     while (!exiter.exit()) {
+        if (cw_tx && cw_tx->failed()) {
+          tools::logger()->error("[CW] transmit worker failed; stopping trial"); break;
+        }
         auto frame_start = std::chrono::steady_clock::now();
         wd->stage = 1;
         camera.read(img, frame_start);  // 读取图像和时间戳
@@ -301,7 +321,13 @@ int main(int argc, char * argv[])
     //     if (cv::waitKey(1) == 'q') break;
     }
 
+    bool cw_failed = false;
+    if (cw_tx) {
+      cw_tx->stop();
+      if (cw_tx->failed()) { cw_failed = true; tools::logger()->error("[CW] transmit worker failed; trial invalid"); }
+      if (!gimbal.finish_trial_video()) { cw_failed = true; tools::logger()->error("[CW] serial incomplete at exit; trial invalid"); }
+    }
     wd->stop = true;
     if (watchdog.joinable()) watchdog.join();
-    return 0;
+    return cw_failed ? 2 : 0;
 }

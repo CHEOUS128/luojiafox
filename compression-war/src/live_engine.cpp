@@ -71,6 +71,7 @@ bool validate(const Config &c,std::string &e) {
     else if(c.fps>c.send_rate/kFramePackets) e="目标帧率不能超过包率除以2的预留预算";
     else if(c.raw_width<1||c.raw_height<1||c.raw_width>4096||c.raw_height>4096) e="原片尺寸超出1至4096范围";
     else if(!std::isfinite(c.duration)||c.duration<0||c.test_pre_ms<0||c.test_encode_ms<0||c.test_post_ms<0) e="时间参数非法";
+    else if(!validate_strategy(c.strategy,e)) return false;
     else if(c.input.empty()) e="请选择输入视频";
     else return true;
     return false;
@@ -78,7 +79,7 @@ bool validate(const Config &c,std::string &e) {
 
 struct Engine::Impl {
     struct Record {
-        std::uint64_t id=0,hash=0;
+        std::uint64_t id=0,hash=0,ordinal=0;
         double source=0,pre_start=-1,pre_end=-1,enc_start=-1,enc_end=-1,release=-1;
         double first_arrive=-1,last_arrive=-1,decode_start=-1,decode_end=-1,post_end=-1,present=-1;
         std::size_t coded_bytes=0,packets=0,received=0;
@@ -92,6 +93,7 @@ struct Engine::Impl {
     struct MetricJob { std::uint64_t id; std::shared_ptr<Image> reference,decoded; };
     Config cfg;
     Processor pre,post;
+    ProcessingState processing_state;
     Clock::time_point origin;
     std::atomic<bool> quit{false},source_done{false},encode_done{false},channel_done{false},rx_done{false},metric_done{false};
     std::atomic<std::shared_ptr<PipeProcess>> source_process,encoder_process;
@@ -110,6 +112,7 @@ struct Engine::Impl {
     int next_display_bin=2,stable_windows=0,failed_windows=0,minimum_stable_fps=1000000;
     std::vector<double> latencies;
     StreamFile events,frames,quality,tx_bytes,tx_times,rx_bytes,rx_times,fingerprints,display_seconds;
+    StreamFile processed,associations,source_map,displays;
     std::uint64_t rx_count=0,tx_h264_bytes=0,tx_padding_bytes=0;
     std::size_t max_sent_frame_bytes=0,max_sent_frame_packets=0;
     std::uint64_t next_id=1,outer_seq=0,metric_skipped=0,source_skipped=0,source_late=0;
@@ -117,7 +120,7 @@ struct Engine::Impl {
     double last_delivery=-1,min_gap=1e30,source_supply_ms=0;
     bool started=false,closed=false;
 
-    Impl(Config c,Processor a,Processor b):cfg(std::move(c)),pre(std::move(a)),post(std::move(b)) {}
+    Impl(Config c,Processor a,Processor b):cfg(std::move(c)),pre(std::move(a)),post(std::move(b)) {cfg.strategy.width=cfg.width;cfg.strategy.height=cfg.height;cfg.strategy.fps=cfg.fps;}
     double now() const { return std::chrono::duration<double,std::milli>(Clock::now()-origin).count(); }
     void event(std::uint64_t id,const char *name,double at,const std::string &detail="") {
         std::ostringstream s; s<<std::fixed<<std::setprecision(3)<<at<<','<<id<<','<<name<<','<<detail<<'\n'; events.write(s.str());
@@ -205,6 +208,7 @@ struct Engine::Impl {
                     state.left=image; ++state.input;
                     Record r; r.id=image->id;r.source=image->source_ms;
                     event(r.id,"source",r.source,"pts_ms="+std::to_string(due));
+                    std::ostringstream sm;sm.precision(12);sm<<r.id<<','<<index<<','<<count<<','<<pts<<','<<r.source<<','<<meta.width<<','<<meta.height<<'\n';evidence(source_map,sm.str());
                     if(due+0.01>=next_sample) {
                         next_sample+=1000/cfg.fps;
                         if(next_sample<due)next_sample=due+1000/cfg.fps;
@@ -222,17 +226,6 @@ struct Engine::Impl {
         }
         source_done=true;cv.notify_all();
     }
-    void resize(Image &image) {
-        auto f=fit(image.width,image.height,cfg.width,cfg.height);
-        std::vector<std::uint8_t> pixels(static_cast<std::size_t>(cfg.width)*cfg.height*3,0);
-        auto ctx=sws_getContext(image.width,image.height,AV_PIX_FMT_BGR24,f.width,f.height,AV_PIX_FMT_BGR24,SWS_AREA,nullptr,nullptr,nullptr);
-        if(!ctx)throw std::runtime_error("缩放器创建失败");
-        const std::uint8_t *src[]={image.bgr.data()}; int ss[]={image.width*3};
-        std::uint8_t *dst[]={pixels.data()+(static_cast<std::size_t>(f.y)*cfg.width+f.x)*3};int ds[]={cfg.width*3};
-        const int rows=sws_scale(ctx,src,ss,0,image.height,dst,ds);sws_freeContext(ctx);
-        if(rows!=f.height)throw std::runtime_error("缩放失败");
-        image.width=cfg.width;image.height=cfg.height;image.bgr=std::move(pixels);
-    }
     void encode() {
         TransportSpec tx;tx.send_rate_hz=cfg.send_rate;tx.max_packets_per_frame=kFramePackets;Packetizer packetizer(tx);
         std::shared_ptr<PipeProcess> proc;
@@ -248,14 +241,19 @@ struct Engine::Impl {
                 const auto id=input->id;
                 auto small=std::make_shared<Image>(*input);
                 {std::lock_guard lock(mutex);records[id].pre_start=now();event(id,"pre-start",now());}
-                workload(cfg.test_pre_ms);if(pre)pre(*small);else resize(*small);
+                workload(cfg.test_pre_ms);if(pre)pre(*small);else preprocess_strategy(*small,cfg.strategy,processing_state);
                 if(small->width!=cfg.width||small->height!=cfg.height||small->bgr.size()!=static_cast<std::size_t>(cfg.width)*cfg.height*3)throw std::runtime_error("预处理输出尺寸或像素格式错误");
                 {std::lock_guard lock(mutex);auto &r=records[id];r.pre_end=now();r.reference=small;r.enc_start=now();event(id,"encode-start",r.enc_start);}
                 if(restart) {
                     if(proc)proc->stop();proc=std::make_shared<PipeProcess>();encoder_process=proc;
                     if(quit)break;
-                    const int bitrate=static_cast<int>(cfg.send_rate*.85*296*8/1.35);
-                    std::vector<std::string> args={"-hide_banner","-loglevel","error","-probesize","32","-analyzeduration","0","-fpsprobesize","0","-f","rawvideo","-pixel_format","bgr24","-video_size",std::to_string(cfg.width)+"x"+std::to_string(cfg.height),"-framerate",std::to_string(cfg.fps),"-i","pipe:0","-map","0:v:0","-an","-c:v","libx264","-preset","slow","-tune","zerolatency","-pix_fmt","yuv420p","-b:v",std::to_string(bitrate),"-minrate",std::to_string(bitrate),"-maxrate",std::to_string(bitrate),"-bufsize",std::to_string(kVbvBits),"-g","10","-keyint_min","10","-bf","0","-x264-params","repeat-headers=1:annexb=1:bframes=0:scenecut=0:force-cfr=1:aq-mode=1:aq-strength=1.2:keyint=10:min-keyint=10:slices=4","-bsf:v","filter_units=remove_types=6","-f","tee","[f=h264:flush_packets=1]pipe:1|[f=framecrc:flush_packets=1]pipe:2"};
+                    const int bitrate=cfg.strategy.bitrate?cfg.strategy.bitrate:static_cast<int>(cfg.send_rate*.85*296*8/1.35);
+                    const auto &s=cfg.strategy;
+                    const std::string xp="repeat-headers=1:annexb=1:bframes=0:scenecut=0:force-cfr=1:aq-mode="+std::to_string(s.aq)+":aq-strength="+std::to_string(s.aq_strength)+":keyint="+std::to_string(s.gop)+":min-keyint="+std::to_string(s.gop)+":slices="+std::to_string(s.slices);
+                    std::vector<std::string> args={"-hide_banner","-loglevel","error","-probesize","32","-analyzeduration","0","-fpsprobesize","0","-f","rawvideo","-pixel_format","bgr24","-video_size",std::to_string(cfg.width)+"x"+std::to_string(cfg.height),"-framerate",std::to_string(cfg.fps),"-i","pipe:0","-map","0:v:0","-an","-c:v","libx264","-preset",s.preset,"-tune","zerolatency","-pix_fmt","yuv420p","-b:v",std::to_string(bitrate),"-minrate",std::to_string(bitrate),"-maxrate",std::to_string(bitrate),"-bufsize",std::to_string(kVbvBits),"-g",std::to_string(s.gop),"-keyint_min",std::to_string(s.gop),"-bf","0","-x264-params",xp,"-bsf:v","filter_units=remove_types=6","-f","tee","[f=h264:flush_packets=1]pipe:1|[f=framecrc:flush_packets=1]pipe:2"};
+                    if(s.threads>0){args.insert(args.end()-3,{"-threads",std::to_string(s.threads)});}
+                    std::string arglog;for(const auto &a:args)arglog+=a+"\n";std::string save_error;
+                    if(!write_file(cfg.output+"/encoder-args.txt",arglog.data(),arglog.size(),save_error))throw std::runtime_error(save_error);
                     std::string error;if(!proc->start(cfg.ffmpeg,args,error))throw std::runtime_error(error);
                     proc->buffer_limit(4*1024*1024);restart=false;
                 }
@@ -353,16 +351,19 @@ struct Engine::Impl {
                     auto image=std::make_shared<Image>();image->id=f.trace_id;image->width=f.width;image->height=f.height;
                     image->bgr.resize(static_cast<std::size_t>(f.width)*f.height*3);
                     for(std::size_t i=0;i<image->bgr.size()/3;++i){image->bgr[3*i]=f.rgba[4*i+2];image->bgr[3*i+1]=f.rgba[4*i+1];image->bgr[3*i+2]=f.rgba[4*i];}
-                    workload(cfg.test_post_ms);if(post)post(*image);
+                    workload(cfg.test_post_ms);if(post)post(*image);else reconstruct_pixels(image->bgr,image->width,image->height,cfg.strategy);
+                    image->decoded_ordinal=state.decoded+1;
+                    const auto post_fingerprint=fingerprint_line(image->decoded_ordinal,f.frame_id,f.pts,image->width,image->height,rgba_pixels(image->bgr));
                     std::lock_guard lock(mutex);++state.decoded;
-                    evidence(fingerprints,fingerprint);decode_times.push_back(decode_end);
+                    evidence(fingerprints,fingerprint);evidence(processed,post_fingerprint);decode_times.push_back(decode_end);
+                    evidence(associations,std::to_string(image->decoded_ordinal)+","+std::to_string(image->id)+"\n");
                     auto it=records.find(image->id);
                     if(!image->id||it==records.end()){++state.unknown;image->id=0;event(0,"decoded-unassociated",now());}
                     else {
-                        auto &r=it->second;image->source_ms=r.source;r.decode_start=decode_start;r.decode_end=decode_end;r.post_end=now();
+                        auto &r=it->second;r.ordinal=image->decoded_ordinal;image->source_ms=r.source;r.decode_start=decode_start;r.decode_end=decode_end;r.post_end=now();
                         image->coded_bytes=r.coded_bytes;image->packets=r.packets;
                         event(image->id,"decoded",decode_end);event(image->id,"post-end",r.post_end);
-                        if(r.reference&&metric_queue.size()<2) {metric_queue.push_back({image->id,r.reference,image});cv.notify_all();}
+                        if(!cfg.strategy.offline_metrics&&r.reference&&metric_queue.size()<2) {metric_queue.push_back({image->id,r.reference,image});cv.notify_all();}
                         else ++metric_skipped;
                         r.reference.reset();
                     }
@@ -425,11 +426,14 @@ bool Engine::start(std::string &e) {
         std::uint64_t size=0;if(file_size(p.cfg.output+"/"+name,size)){e="输出目录含已有记录，请选择新的输出目录";return false;}
     }
     if(!p.events.open(p.cfg.output+"/events.csv","wb")||!p.frames.open(p.cfg.output+"/per_frame.csv","wb")||!p.quality.open(p.cfg.output+"/quality.csv","wb")){e="无法创建运行日志";return false;}
-    for(auto pair:{std::pair{&p.tx_bytes,"tx-0310.bin"},std::pair{&p.tx_times,"tx-times.csv"},std::pair{&p.rx_bytes,"rx-300.bin"},std::pair{&p.rx_times,"rx-times.csv"},std::pair{&p.fingerprints,"decoded.csv"},std::pair{&p.display_seconds,"display-seconds.csv"}})
+    for(auto pair:{std::pair{&p.tx_bytes,"tx-0310.bin"},std::pair{&p.tx_times,"tx-times.csv"},std::pair{&p.rx_bytes,"rx-300.bin"},std::pair{&p.rx_times,"rx-times.csv"},std::pair{&p.fingerprints,"decoded.csv"},std::pair{&p.display_seconds,"display-seconds.csv"},std::pair{&p.processed,"processed.csv"},std::pair{&p.associations,"decoded-association.csv"},std::pair{&p.source_map,"source-map.csv"},std::pair{&p.displays,"display.csv"}})
         if(!pair.first->open(p.cfg.output+"/"+pair.second,"wb")){e="无法创建传输证据文件";return false;}
     p.tx_times.write("packet,time_ms,source_frame,status\n");p.rx_times.write("packet,tx_packet,time_ms\n");
     p.fingerprints.write("ordinal,frame_id,pts,width,height,sha256\n");p.display_seconds.write("second,displayed,result\n");
     p.events.write("time_ms,frame_id,event,detail\n");
+    p.processed.write("ordinal,frame_id,pts,width,height,sha256\n");p.associations.write("ordinal,source_id\n");
+    p.source_map.write("source_id,source_index,file_index,pts_ms,source_ms,width,height\n");p.displays.write("source_id,ordinal,present_ms,source_ms\n");
+    for(bool receiver:{false,true}){const auto data=strategy_text(p.cfg.strategy,receiver);if(!write_file(p.cfg.output+(receiver?"/receiver.ini":"/strategy.ini"),data.data(),data.size(),e))return false;}
     p.frames.write("frame_id,source_ms,pre_start_ms,pre_end_ms,encode_start_ms,encode_end_ms,token_release_ms,first_arrive_ms,last_arrive_ms,decode_start_ms,decode_end_ms,post_end_ms,present_ms,coded_bytes,packets,received,why\n");
     p.quality.write("frame_id,psnr_y,ssim_y\n");
     p.origin=Clock::now();p.started=true;p.state.output=p.cfg.output;
@@ -459,6 +463,7 @@ void Engine::presented(std::uint64_t id) {
     if(p.latencies.size()>4096)p.latencies.erase(p.latencies.begin());
     p.present_times.emplace_back(at,id);p.event(id,p.cfg.headless?"headless-consumed":"present-submit",at);
     ++p.display_bins[static_cast<int>(at/1000)];
+    std::ostringstream ds;ds.precision(12);ds<<id<<','<<r.ordinal<<','<<at<<','<<r.source<<'\n';evidence(p.displays,ds.str());
 }
 void Engine::stop() {
     auto &p=*impl_;if(!p.started||p.closed)return;
@@ -474,9 +479,9 @@ void Engine::stop() {
     std::ostringstream s;s<<std::fixed<<std::setprecision(3)
       <<"mode="<<(p.cfg.headless?"headless; no real display":"live; actual GDI display submission")<<"\ninput="<<p.cfg.input
       <<"\nsource_raw_size="<<p.cfg.raw_width<<'x'<<p.cfg.raw_height<<"\nsource_raw_fps="<<p.cfg.source_fps
-      <<"\noutput_size="<<p.cfg.width<<'x'<<p.cfg.height<<"\ncolor=yuv420p; full field of view; aspect-fit; padding; no crop"
-      <<"\ntarget_fps="<<p.cfg.fps<<"\nsend_rate="<<p.cfg.send_rate<<"\nbitrate="<<int(p.cfg.send_rate*.85*296*8/1.35)
-      <<"\ngop=10\nmax_frame_packets="<<kFramePackets<<"\nmax_frame_h264_bytes="<<kFrameBytes<<"\nvbv_bits="<<kVbvBits
+      <<"\noutput_size="<<p.cfg.width<<'x'<<p.cfg.height<<"\nstrategy="<<p.cfg.strategy.name<<"\ncolor="<<p.cfg.strategy.color<<"; yuv420p; full field of view; aspect-fit; padding; no crop"
+      <<"\ntarget_fps="<<p.cfg.fps<<"\nsend_rate="<<p.cfg.send_rate<<"\nbitrate="<<(p.cfg.strategy.bitrate?p.cfg.strategy.bitrate:int(p.cfg.send_rate*.85*296*8/1.35))
+      <<"\ngop="<<p.cfg.strategy.gop<<"\nmetrics_mode="<<(p.cfg.strategy.offline_metrics?"offline":"legacy in-runtime encoder-input comparison")<<"\nmax_frame_packets="<<kFramePackets<<"\nmax_frame_h264_bytes="<<kFrameBytes<<"\nvbv_bits="<<kVbvBits
       <<"\nreserved_theoretical_fps="<<p.cfg.send_rate/kFramePackets<<"\nsei=removed; SPS/PPS/VCL preserved\nmodel=C-board bypass; ideal channel; no additional wireless loss or latency"
       <<"\nffmpeg="<<p.cfg.ffmpeg<<"\nnatural_end="<<natural<<"\nwall_ms="<<p.now()
       <<"\nsource_frames="<<p.state.input<<"\nsampling_skipped="<<p.source_skipped<<"\nencode_overwrite="<<p.state.overwritten
@@ -498,6 +503,7 @@ void Engine::stop() {
     snapshot(p.cfg.output+"/last-source.png",p.state.left);snapshot(p.cfg.output+"/last-received.png",p.state.right);
     p.events.close();p.frames.close();p.quality.close();p.closed=true;
     p.tx_bytes.close();p.tx_times.close();p.rx_bytes.close();p.rx_times.close();p.fingerprints.close();p.display_seconds.close();
+    p.processed.close();p.associations.close();p.source_map.close();p.displays.close();
     p.pending.reset();p.send_queue.clear();p.rx_queue.clear();p.metric_queue.clear();p.records.clear();
 }
 } // namespace cw::live

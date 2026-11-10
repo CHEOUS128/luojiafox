@@ -1,0 +1,347 @@
+[
+  {
+    "profile": "one-160",
+    "kind": "wide",
+    "input_sha256": "1523cd5b525cc75d11100f0ab6fb58c01b97b17fd8627eefda7711fbfe36d757",
+    "source": 120,
+    "decoded": 80,
+    "corners_rgb": [
+      [
+        252.92,
+        1.2,
+        13.28
+      ],
+      [
+        13.92,
+        135.8,
+        16.32
+      ],
+      [
+        2.16,
+        2.32,
+        252.28
+      ],
+      [
+        250.84,
+        238.96,
+        1.2
+      ]
+    ],
+    "display_acceptance": "NOT_TESTED_HEADLESS"
+  },
+  {
+    "profile": "one-160",
+    "kind": "portrait",
+    "input_sha256": "dd355bd544832b07e114b164caa981bc20a6dee5eda9722dabfead9cae227ed8",
+    "source": 120,
+    "decoded": 80,
+    "corners_rgb": [
+      [
+        252.28,
+        1.4,
+        2.6
+      ],
+      [
+        0.0,
+        125.72,
+        1.16
+      ],
+      [
+        0.08,
+        1.12,
+        250.04
+      ],
+      [
+        249.2,
+        254.0,
+        1.6
+      ]
+    ],
+    "display_acceptance": "NOT_TESTED_HEADLESS"
+  },
+  {
+    "profile": "one-160",
+    "kind": "vfr",
+    "input_sha256": "bed66e7ceab3189bcc94224aa4f863bcd6645ba85f751012024522ca4e03f7eb",
+    "source": 59,
+    "decoded": 59,
+    "corners_rgb": [],
+    "display_acceptance": "NOT_TESTED_HEADLESS"
+  },
+  {
+    "profile": "one-320",
+    "kind": "wide",
+    "input_sha256": "1523cd5b525cc75d11100f0ab6fb58c01b97b17fd8627eefda7711fbfe36d757",
+    "source": 120,
+    "decoded": 80,
+    "corners_rgb": [
+      [
+        245.92,
+        0.0,
+        0.0
+      ],
+      [
+        45.32,
+        149.0,
+        67.92
+      ],
+      [
+        20.08,
+        14.2,
+        255.0
+      ],
+      [
+        244.32,
+        238.32,
+        0.0
+      ]
+    ],
+    "display_acceptance": "NOT_TESTED_HEADLESS"
+  },
+  {
+    "profile": "one-320",
+    "kind": "portrait",
+    "input_sha256": "dd355bd544832b07e114b164caa981bc20a6dee5eda9722dabfead9cae227ed8",
+    "source": 120,
+    "decoded": 80,
+    "corners_rgb": [
+      [
+        235.96,
+        0.0,
+        0.0
+      ],
+      [
+        11.8,
+        133.8,
+        1.52
+      ],
+      [
+        0.0,
+        0.08,
+        250.12
+      ],
+      [
+        236.16,
+        250.08,
+        0.0
+      ]
+    ],
+    "display_acceptance": "NOT_TESTED_HEADLESS"
+  },
+  {
+    "profile": "one-320",
+    "kind": "vfr",
+    "input_sha256": "bed66e7ceab3189bcc94224aa4f863bcd6645ba85f751012024522ca4e03f7eb",
+    "source": 59,
+    "decoded": 59,
+    "corners_rgb": [],
+    "display_acceptance": "NOT_TESTED_HEADLESS"
+  },
+  {
+    "profile": "one-320-aq0",
+    "kind": "wide",
+    "input_sha256": "1523cd5b525cc75d11100f0ab6fb58c01b97b17fd8627eefda7711fbfe36d757",
+    "source": 120,
+    "decoded": 80,
+    "corners_rgb": [
+      [
+        234.48,
+        0.0,
+        0.0
+      ],
+      [
+        4.76,
+        122.72,
+        42.28
+      ],
+      [
+        7.16,
+        17.6,
+        255.0
+      ],
+      [
+        255.0,
+        248.8,
+        5.4
+      ]
+    ],
+    "display_acceptance": "NOT_TESTED_HEADLESS"
+  },
+  {
+    "profile": "one-320-aq0",
+    "kind": "portrait",
+    "input_sha256": "dd355bd544832b07e114b164caa981bc20a6dee5eda9722dabfead9cae227ed8",
+    "source": 120,
+    "decoded": 80,
+    "corners_rgb": [
+      [
+        243.0,
+        0.0,
+        0.0
+      ],
+      [
+        15.0,
+        133.08,
+        11.52
+      ],
+      [
+        0.0,
+        0.0,
+        249.72
+      ],
+      [
+        248.2,
+        252.2,
+        0.2
+      ]
+    ],
+    "display_acceptance": "NOT_TESTED_HEADLESS"
+  },
+  {
+    "profile": "one-320-aq0",
+    "kind": "vfr",
+    "input_sha256": "bed66e7ceab3189bcc94224aa4f863bcd6645ba85f751012024522ca4e03f7eb",
+    "source": 59,
+    "decoded": 59,
+    "corners_rgb": [],
+    "display_acceptance": "NOT_TESTED_HEADLESS"
+  },
+  {
+    "profile": "one-320-gop20",
+    "kind": "wide",
+    "input_sha256": "1523cd5b525cc75d11100f0ab6fb58c01b97b17fd8627eefda7711fbfe36d757",
+    "source": 120,
+    "decoded": 80,
+    "corners_rgb": [
+      [
+        249.72,
+        0.0,
+        0.0
+      ],
+      [
+        11.8,
+        155.56,
+        31.04
+      ],
+      [
+        23.04,
+        11.72,
+        255.0
+      ],
+      [
+        251.52,
+        244.64,
+        0.0
+      ]
+    ],
+    "display_acceptance": "NOT_TESTED_HEADLESS"
+  },
+  {
+    "profile": "one-320-gop20",
+    "kind": "portrait",
+    "input_sha256": "dd355bd544832b07e114b164caa981bc20a6dee5eda9722dabfead9cae227ed8",
+    "source": 120,
+    "decoded": 80,
+    "corners_rgb": [
+      [
+        250.92,
+        0.0,
+        0.0
+      ],
+      [
+        4.0,
+        128.0,
+        5.4
+      ],
+      [
+        0.0,
+        0.0,
+        254.6
+      ],
+      [
+        252.64,
+        251.52,
+        0.32
+      ]
+    ],
+    "display_acceptance": "NOT_TESTED_HEADLESS"
+  },
+  {
+    "profile": "one-320-gop20",
+    "kind": "vfr",
+    "input_sha256": "bed66e7ceab3189bcc94224aa4f863bcd6645ba85f751012024522ca4e03f7eb",
+    "source": 59,
+    "decoded": 59,
+    "corners_rgb": [],
+    "display_acceptance": "NOT_TESTED_HEADLESS"
+  },
+  {
+    "profile": "gray",
+    "kind": "wide",
+    "input_sha256": "1523cd5b525cc75d11100f0ab6fb58c01b97b17fd8627eefda7711fbfe36d757",
+    "source": 120,
+    "decoded": 80,
+    "corners_rgb": [
+      [
+        74.2,
+        74.2,
+        74.2
+      ],
+      [
+        77.92,
+        77.92,
+        77.92
+      ],
+      [
+        27.12,
+        29.12,
+        26.12
+      ],
+      [
+        221.48,
+        223.48,
+        220.48
+      ]
+    ],
+    "display_acceptance": "NOT_TESTED_HEADLESS"
+  },
+  {
+    "profile": "gray",
+    "kind": "portrait",
+    "input_sha256": "dd355bd544832b07e114b164caa981bc20a6dee5eda9722dabfead9cae227ed8",
+    "source": 120,
+    "decoded": 80,
+    "corners_rgb": [
+      [
+        76.4,
+        76.4,
+        76.4
+      ],
+      [
+        71.52,
+        71.52,
+        71.52
+      ],
+      [
+        24.48,
+        26.48,
+        23.48
+      ],
+      [
+        223.8,
+        223.8,
+        223.8
+      ]
+    ],
+    "display_acceptance": "NOT_TESTED_HEADLESS"
+  },
+  {
+    "profile": "gray",
+    "kind": "vfr",
+    "input_sha256": "bed66e7ceab3189bcc94224aa4f863bcd6645ba85f751012024522ca4e03f7eb",
+    "source": 59,
+    "decoded": 59,
+    "corners_rgb": [],
+    "display_acceptance": "NOT_TESTED_HEADLESS"
+  }
+]

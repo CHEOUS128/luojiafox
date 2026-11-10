@@ -1,0 +1,122 @@
+[
+  {
+    "run": "baseline-repeat1-live",
+    "start": 39.6,
+    "end": 30.7,
+    "max": 44.1
+  },
+  {
+    "run": "baseline-repeat2-live",
+    "start": 39.4,
+    "end": 30.7,
+    "max": 44.1
+  },
+  {
+    "run": "one-160-repeat1-live",
+    "start": 35.4,
+    "end": 30.8,
+    "max": 41.6
+  },
+  {
+    "run": "one-160-repeat2-live",
+    "start": 39.2,
+    "end": 30.5,
+    "max": 43.7
+  },
+  {
+    "run": "one-320-aq0-repeat1-live",
+    "start": 41.0,
+    "end": 34.6,
+    "max": 46.0
+  },
+  {
+    "run": "one-320-aq0-repeat2-live",
+    "start": 41.1,
+    "end": 31.4,
+    "max": 46.0
+  },
+  {
+    "run": "one-320-gop20-repeat1-live",
+    "start": 36.8,
+    "end": 31.3,
+    "max": 46.2
+  },
+  {
+    "run": "one-320-gop20-repeat2-live",
+    "start": 43.2,
+    "end": 34.7,
+    "max": 45.9
+  },
+  {
+    "run": "one-320-repeat1-live",
+    "start": 41.1,
+    "end": 31.1,
+    "max": 46.1
+  },
+  {
+    "run": "one-320-repeat2-live",
+    "start": 40.9,
+    "end": 31.4,
+    "max": 46.5
+  },
+  {
+    "run": "baseline-repeat1-live",
+    "start": 29.1,
+    "end": 25.7,
+    "max": 33.5
+  },
+  {
+    "run": "baseline-repeat2-live",
+    "start": 29.6,
+    "end": 26.7,
+    "max": 33.6
+  },
+  {
+    "run": "one-160-repeat1-live",
+    "start": 28.5,
+    "end": 25.3,
+    "max": 32.4
+  },
+  {
+    "run": "one-160-repeat2-live",
+    "start": 29.4,
+    "end": 26.3,
+    "max": 32.8
+  },
+  {
+    "run": "one-320-aq0-repeat1-live",
+    "start": 30.6,
+    "end": 27.1,
+    "max": 35.4
+  },
+  {
+    "run": "one-320-aq0-repeat2-live",
+    "start": 30.8,
+    "end": 28.1,
+    "max": 34.7
+  },
+  {
+    "run": "one-320-gop20-repeat1-live",
+    "start": 31.0,
+    "end": 26.3,
+    "max": 34.7
+  },
+  {
+    "run": "one-320-gop20-repeat2-live",
+    "start": 29.5,
+    "end": 26.4,
+    "max": 34.9
+  },
+  {
+    "run": "one-320-repeat1-live",
+    "start": 31.0,
+    "end": 26.7,
+    "max": 35.0
+  },
+  {
+    "run": "one-320-repeat2-live",
+    "start": 31.1,
+    "end": 27.8,
+    "max": 35.1
+  }
+]

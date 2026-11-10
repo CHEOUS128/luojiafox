@@ -160,7 +160,16 @@ std::size_t Gimbal::write_some(
   const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(budget_ms);
   std::size_t done = 0;
   while (done < len) {
-    done += serial_.write(data + done, len - done);
+    try { done += serial_.write(data + done, len - done); }
+    catch (...) {
+      if (!trial_video_) throw;
+      ++st_video_fail_;
+      // An exception may hide an internally written prefix. Do not guess its length
+      // or insert another control/video frame; require restarting the trial/transport.
+      trial_fault_ = true;
+      tools::logger()->error("[CW] serial write exception; further writes stopped (partial prefix unknown)");
+      return done;
+    }
     if (done >= len) return done;
     // 一个字节都没写出去（缓冲满/端口卡死）时空转会烧满一个核，歇 1ms 再来
     std::this_thread::sleep_for(std::chrono::milliseconds(1));
@@ -182,6 +191,7 @@ std::size_t Gimbal::write_some(
 //   3) 整帧视频 —— 只保留最新一帧，旧的直接丢（实时性优先）。
 void Gimbal::pump_writes()
 {
+  if (trial_fault_) return;
   // ---- 1) 续写上一轮没写完的视频帧 ----
   if (video_leftover_offset_ < video_leftover_.size()) {
     const std::size_t remain = video_leftover_.size() - video_leftover_offset_;
@@ -193,6 +203,7 @@ void Gimbal::pump_writes()
       return;  // 还是没写完：本轮到此为止，控制帧留到下一轮（绝不插进视频帧中间）
     }
     ++st_video_ok_;
+    if (trial_video_) trial_gate_.completed(std::chrono::steady_clock::now());
     video_leftover_.clear();
     video_leftover_offset_ = 0;
   }
@@ -212,10 +223,12 @@ void Gimbal::pump_writes()
 
   // ---- 3) 视频帧 ----
   if (video_pending_) {
+    if (trial_video_ && !trial_gate_.ready(std::chrono::steady_clock::now())) return;
     video_pending_ = false;
     const std::size_t n = write_some(video_next_.data(), video_next_.size(), kVideoBudgetMs);
     if (n == video_next_.size()) {
       ++st_video_ok_;
+      if (trial_video_) trial_gate_.completed(std::chrono::steady_clock::now());
     } else {
       ++st_video_short_;
       video_leftover_.assign(video_next_.begin() + static_cast<std::ptrdiff_t>(n),
@@ -425,6 +438,45 @@ bool Gimbal::try_send_raw(const std::uint8_t * data, std::size_t len)
     ++st_video_fail_;
     return false;
   }
+}
+
+void Gimbal::enable_trial_video()
+{
+  std::lock_guard<std::mutex> lock(write_mutex_);
+  trial_video_ = true;
+}
+
+bool Gimbal::try_send_trial_video(const std::vector<std::uint8_t>& packet)
+{
+  if (packet.size() != 309 || packet[0] != 0xA5) return false;
+  std::lock_guard<std::mutex> lock(write_mutex_);
+  if (trial_fault_) throw std::runtime_error("CW serial write exception; trial stopped");
+  if (!trial_video_ || video_pending_ || video_leftover_offset_ < video_leftover_.size()) return false;
+  video_next_ = packet;
+  video_pending_ = true;
+  // No serial IO after taking ownership: a write exception must not cause duplicate enqueue.
+  return true;
+}
+
+void Gimbal::service_trial_video()
+{
+  std::lock_guard<std::mutex> lock(write_mutex_);
+  if (trial_video_) pump_writes();
+  if (trial_fault_) throw std::runtime_error("CW serial write exception; trial stopped");
+}
+
+bool Gimbal::finish_trial_video()
+{
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(200);
+  do {
+    try { service_trial_video(); } catch (...) { return false; }
+    {
+      std::lock_guard<std::mutex> lock(write_mutex_);
+      if (!video_pending_ && video_leftover_offset_ >= video_leftover_.size()) return true;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  } while (std::chrono::steady_clock::now() < deadline);
+  return false;  // Caller is exiting; do not transmit anything else before port close.
 }
 
 bool Gimbal::read(uint8_t * buffer, size_t size)

@@ -1,0 +1,4 @@
+vehicle_trial_test.cpp
+C:\Users\CH\Documents\ChatGPT\robomaster自定义客户端开发\strategy-implementation\compression-war\build\vehicle-trial-tests\vehicle-exact.inc(119): warning C4101: “e”: 未引用的局部变量
+PASS vehicle trial: 1022 checks; exact serial methods; every video/control short-write offset; pacing; retry; SEI; legacy matrix
+此测试替换硬件接口，不等于Jetson构建或USB线上验证。

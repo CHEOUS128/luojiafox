@@ -1,0 +1,25 @@
+PASS independent captured-packet replay
+source_video_read=0
+observation_ids_used=0
+client_decoder=unmodified
+tx_packets=438
+rx_packets=438
+decoded=240
+max_packets_rolling_second=41
+min_packet_gap_ms=20.1287
+max_h264_au_bytes=495
+max_h264_au_packets=2
+h264_access_units=240
+idr_access_units=12
+max_idr_h264_bytes=495
+sei_nals=0
+sps_nals=12
+pps_nals=12
+actual_vcl_nals_per_frame_min=1
+actual_vcl_nals_per_frame_max=1
+tx_h264_bytes=82177
+tx_inner_header_bytes=1752
+tx_padding_bytes=47471
+tx_data_bytes=131400
+tx_outer_bytes=135342
+pixel_sha256_match=1

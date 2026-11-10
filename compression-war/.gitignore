@@ -3,3 +3,9 @@
 /cw_wire_verify.exe
 
 /evidence/**/replayed-decoded.csv
+
+/evidence/**/replayed-processed.csv
+/evidence/**/received-images/
+/tools/__pycache__/
+!/tools/strategy_viewer.html
+!/evidence/strategy-milestone/display-investigation/*-live.log

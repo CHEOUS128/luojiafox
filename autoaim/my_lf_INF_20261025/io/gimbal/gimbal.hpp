@@ -12,6 +12,7 @@
 #include <tuple>
 #include <vector>
 #include "serial/serial.h"
+#include "io/video_sender/cw_trial.hpp"
 #include "tools/thread_safe_queue.hpp"
 
 namespace io
@@ -106,6 +107,12 @@ public:
   //   一起当视频吞掉。现在：非零写超时 + 循环补齐 + 未写完的字节跨轮续写。
   bool try_send_raw(const std::uint8_t * data, std::size_t len);
 
+  // Trial-only service. Uses the SAME mutex, partial-write continuation and control priority.
+  void enable_trial_video();
+  bool try_send_trial_video(const std::vector<std::uint8_t>& packet);
+  void service_trial_video();
+  bool finish_trial_video();  // Bounded, paced completion of the already accepted packet.
+
   // 串口写超时（毫秒）。串口以 O_NONBLOCK 打开，库默认写超时是 0：
   // 缓冲一满就立刻放弃、短写。单次 write() 内部等 kWriteWaitMs。
   std::uint32_t write_timeout_ms() const { return kWriteWaitMs; }
@@ -155,6 +162,9 @@ private:
   std::size_t ctrl_off_ = 0;                 // 已经写出去的字节数
   std::vector<std::uint8_t> video_next_;         // 待发视频帧（只保留最新一帧）
   bool video_pending_ = false;
+  bool trial_video_ = false;
+  bool trial_fault_ = false;
+  cw::PacketGate trial_gate_;
   std::vector<std::uint8_t> video_leftover_;     // 上一帧没写完的剩余字节
   std::size_t video_leftover_offset_ = 0;
 

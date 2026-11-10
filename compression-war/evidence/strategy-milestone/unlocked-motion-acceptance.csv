@@ -1,0 +1,6 @@
+﻿run,profile,input,decoded,displayed,min_fps,windows,failed_windows,acceptance,median_ms,p95_ms,max_display_gap_ms,max_bytes,packets,oversize,min_gap_ms,max_window_packets,max_send_queue,max_rx_queue,max_trace_records,wire,reconstruction
+baseline,baseline,1199,1199,1199,19,57,0,PASS,95.305,109.735,85.5801999999967,506,2072,0,20.1164,41,1,1,512,1,1
+one-160,one-160,1199,1199,1073,0,57,6,FAIL,95.606,112.598,1898.837099999997,500,2035,0,20.1216,41,1,1,512,1,1
+one-320,one-320,1197,1194,228,0,57,57,FAIL,118.172,906.691,3055.4507000000003,502,2223,0,20.1078,41,2,1,512,1,1
+one-320-aq0,one-320-aq0,1197,1195,267,0,58,58,FAIL,111.659,684.514,3472.7748,524,2194,0,20.1138,41,2,1,512,1,1
+one-320-gop20,one-320-gop20,1193,1190,256,0,57,57,FAIL,112.789,793.1,2553.3315999999977,507,2167,0,20.0944,42,2,1,512,1,1
