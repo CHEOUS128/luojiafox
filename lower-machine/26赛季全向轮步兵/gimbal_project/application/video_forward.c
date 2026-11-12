@@ -22,24 +22,24 @@
 extern UART_HandleTypeDef huart6;
 #define VIDEO_VT03_HANDLE      (&huart6)
 
-/* Timeout for one 309-byte frame. 309 bytes at 921600 baud is about 3.4 ms. */
-#define VIDEO_UART_TIMEOUT_MS  20u
-
-/* How many times one frame is re-sent after HAL_BUSY / HAL_TIMEOUT before it
- * is given up on. Two extra tries cost at most 40 ms and hide a transient
- * BUSY (another writer briefly holding gState). It is NOT a cure for a
- * permanently stuck handle - that is what the gState recovery below is for. */
-#define VIDEO_TX_RETRY         2u
-
-/* Queue depth. 8 frames is roughly 200 ms of buffering at 40 frames/s. */
-#define VIDEO_QUEUE_DEPTH      8u
-
-/* Protocol constants. */
-#define VIDEO_FRAME_BYTES      309u
-#define VIDEO_DATA_BYTES       300u
-#define VIDEO_HEAD_BYTES       7u
-#define VIDEO_SOF              0xA5u
-#define VIDEO_CMD_ID           0x0310u
+/* DMA runs independently of RTOS preemption. This is a fault watchdog,
+ * not a blocking per-packet allowance. No loop waits for DMA or UART flags. */
+#define VIDEO_DMA_WATCHDOG_MS       100u
+#define VIDEO_ABORT_WATCHDOG_MS     100u
+#define VIDEO_PENDING_MAX_AGE_MS    200u
+/* DWT CYCCNT gates real 20ms gaps without touching its shared timeline state.
+ * If the existing clock is unavailable/changes, quantized HAL ticks fall back
+ * to 21ms conservatively. Neither clock is initialized or reconfigured here. */
+#define VIDEO_FALLBACK_START_GAP_MS 21u
+#define VIDEO_BUILD_TAG             0x261112D1u
+#define VIDEO_DMA_STATE_ERROR       0x80000000u
+#define VIDEO_TX_RETRY              2u
+#define VIDEO_QUEUE_DEPTH           8u
+#define VIDEO_FRAME_BYTES           309u
+#define VIDEO_DATA_BYTES            300u
+#define VIDEO_HEAD_BYTES            7u
+#define VIDEO_SOF                   0xA5u
+#define VIDEO_CMD_ID                0x0310u
 
 /* ========================== checksum tables =============================== */
 
@@ -132,42 +132,95 @@ static uint16_t video_crc16(const uint8_t *data, uint32_t len)
 
 /* ========================== frame queue ================================== */
 
-/* Single producer (Self_aim parser, USB callback) / single consumer (Task). */
-static uint8_t          s_queue[VIDEO_QUEUE_DEPTH][VIDEO_FRAME_BYTES];
-/* Single consumer: do not retain a ring slot while USB IRQ can overwrite it.
- * Static storage avoids adding 309 bytes to the Self_aim task stack. */
-static uint8_t          s_tx_frame[VIDEO_FRAME_BYTES];
+/* USB IRQ is the single producer; Self_aim_task is the single consumer. */
+static uint8_t s_queue[VIDEO_QUEUE_DEPTH][VIDEO_FRAME_BYTES];
+/* DMA exclusively owns this buffer until real UART TC or confirmed TX abort. */
+static uint8_t s_tx_frame[VIDEO_FRAME_BYTES];
 static volatile uint8_t s_head = 0u;
 static volatile uint8_t s_tail = 0u;
 
 static volatile uint32_t s_forwarded = 0u;
 static volatile uint32_t s_crc_error = 0u;
-static volatile uint32_t s_overflow  = 0u;
-static volatile uint32_t s_tx_error  = 0u;   /* frames given up on      */
-static volatile uint32_t s_tx_retry  = 0u;   /* extra transmit attempts */
-static volatile uint32_t s_tx_stuck  = 0u;   /* gState forcibly reset   */
-static volatile uint32_t s_usb_bytes = 0u;   /* bytes CDC handed us     */
-static volatile uint32_t s_frames    = 0u;   /* complete 309B assembled */
-static volatile uint32_t s_task_calls = 0u;  /* Task() invocations      */
+static volatile uint32_t s_overflow = 0u;
+static volatile uint32_t s_tx_error = 0u;
+static volatile uint32_t s_tx_retry = 0u;
+static volatile uint32_t s_tx_stuck = 0u;
+static volatile uint32_t s_usb_bytes = 0u;
+static volatile uint32_t s_frames = 0u;
+static volatile uint32_t s_task_calls = 0u;
 
-/* Readable from the debugger's Watch window without calling a function. */
+static volatile VideoForwardTxState_t s_tx_state = VIDEO_TX_IDLE;
+static volatile uint8_t s_owns_tx = 0u;
+static volatile uint8_t s_tc_event = 0u;
+static volatile uint8_t s_dma_error_event = 0u;
+static uint8_t s_attempts = 0u;
+static uint8_t s_have_start_tick = 0u;
+static uint32_t s_last_start_tick = 0u;
+static uint32_t s_last_start_cycle = 0u;
+static uint32_t s_last_cycle_clock_hz = 0u;
+static uint8_t s_have_start_cycle = 0u;
+static uint32_t s_pending_tick = 0u;
+static uint32_t s_abort_tick = 0u;
+
+static volatile uint32_t s_dma_started = 0u;
+static volatile uint32_t s_dma_completed = 0u;
+static volatile uint32_t s_dma_timeout = 0u;
+static volatile uint32_t s_dma_start_fail = 0u;
+static volatile uint32_t s_dma_busy = 0u;
+static volatile uint32_t s_dma_abort = 0u;
+static volatile uint32_t s_dma_abort_fail = 0u;
+static volatile uint32_t s_dma_error = 0u;
+static volatile uint32_t s_pending_expired = 0u;
+static volatile uint32_t s_init_rejected = 0u;
+static volatile uint32_t s_last_uart_status = HAL_OK;
+static volatile uint32_t s_last_dma_error = 0u;
+static volatile uint32_t s_last_tx_bytes = 0u;
+static volatile uint32_t s_timing_mode = 0u;
+static volatile uint32_t s_timing_fallback = 0u;
+
 volatile VideoForwardDebug_t VideoForward_Debug;
 
 static void video_refresh_debug(void)
 {
   VideoForward_Debug.usb_bytes = s_usb_bytes;
-  VideoForward_Debug.frames    = s_frames;
+  VideoForward_Debug.frames = s_frames;
   VideoForward_Debug.forwarded = s_forwarded;
   VideoForward_Debug.crc_error = s_crc_error;
-  VideoForward_Debug.overflow  = s_overflow;
-  VideoForward_Debug.tx_error  = s_tx_error;
-  VideoForward_Debug.tx_retry  = s_tx_retry;
-  VideoForward_Debug.tx_stuck  = s_tx_stuck;
+  VideoForward_Debug.overflow = s_overflow;
+  VideoForward_Debug.tx_error = s_tx_error;
+  VideoForward_Debug.tx_retry = s_tx_retry;
+  VideoForward_Debug.tx_stuck = s_tx_stuck;
   VideoForward_Debug.task_calls = s_task_calls;
+  VideoForward_Debug.tx_state = (uint32_t)s_tx_state;
+  VideoForward_Debug.dma_started = s_dma_started;
+  VideoForward_Debug.dma_completed = s_dma_completed;
+  VideoForward_Debug.dma_timeout = s_dma_timeout;
+  VideoForward_Debug.dma_start_fail = s_dma_start_fail;
+  VideoForward_Debug.dma_busy = s_dma_busy;
+  VideoForward_Debug.dma_abort = s_dma_abort;
+  VideoForward_Debug.dma_abort_fail = s_dma_abort_fail;
+  VideoForward_Debug.dma_error = s_dma_error;
+  VideoForward_Debug.pending_expired = s_pending_expired;
+  VideoForward_Debug.init_rejected = s_init_rejected;
+  VideoForward_Debug.last_uart_status = s_last_uart_status;
+  VideoForward_Debug.last_dma_error = s_last_dma_error;
+  VideoForward_Debug.last_tx_bytes = s_last_tx_bytes;
+  VideoForward_Debug.queue_depth = (uint32_t)((s_head + VIDEO_QUEUE_DEPTH - s_tail) % VIDEO_QUEUE_DEPTH);
+  VideoForward_Debug.attempts = s_attempts;
+  VideoForward_Debug.timing_mode = s_timing_mode;
+  VideoForward_Debug.timing_fallback = s_timing_fallback;
+  VideoForward_Debug.build_tag = VIDEO_BUILD_TAG;
 }
 
 void VideoForward_Init(void)
 {
+  /* Init is normally boot-only. Never release an active DMA buffer on re-init. */
+  if (s_owns_tx)
+  {
+    s_init_rejected++;
+    video_refresh_debug();
+    return;
+  }
   s_head = 0u;
   s_tail = 0u;
   s_forwarded = 0u;
@@ -179,6 +232,32 @@ void VideoForward_Init(void)
   s_usb_bytes = 0u;
   s_frames = 0u;
   s_task_calls = 0u;
+  s_tx_state = VIDEO_TX_IDLE;
+  s_tc_event = 0u;
+  s_dma_error_event = 0u;
+  s_attempts = 0u;
+  s_have_start_tick = 0u;
+  s_last_start_tick = 0u;
+  s_last_start_cycle = 0u;
+  s_last_cycle_clock_hz = 0u;
+  s_have_start_cycle = 0u;
+  s_pending_tick = 0u;
+  s_abort_tick = 0u;
+  s_dma_started = 0u;
+  s_dma_completed = 0u;
+  s_dma_timeout = 0u;
+  s_dma_start_fail = 0u;
+  s_dma_busy = 0u;
+  s_dma_abort = 0u;
+  s_dma_abort_fail = 0u;
+  s_dma_error = 0u;
+  s_pending_expired = 0u;
+  s_init_rejected = 0u;
+  s_last_uart_status = HAL_OK;
+  s_last_dma_error = 0u;
+  s_last_tx_bytes = 0u;
+  s_timing_mode = 0u;
+  s_timing_fallback = 0u;
   video_refresh_debug();
 }
 
@@ -191,95 +270,387 @@ void VideoForward_NoteUsbBytes(uint16_t len)
 static uint8_t video_frame_is_valid(const uint8_t *frame)
 {
   uint16_t crc_recv;
-
   if (frame[0] != VIDEO_SOF) return 0u;
   if (frame[1] != (uint8_t)(VIDEO_DATA_BYTES & 0xFFu)) return 0u;
   if (frame[2] != (uint8_t)((VIDEO_DATA_BYTES >> 8) & 0xFFu)) return 0u;
   if (frame[5] != 0x10u || frame[6] != 0x03u) return 0u;
-
   if (frame[4] != video_crc8(frame, 4u)) return 0u;
-
   crc_recv = (uint16_t)((uint16_t)frame[307] | ((uint16_t)frame[308] << 8));
   if (crc_recv != video_crc16(frame, VIDEO_HEAD_BYTES + VIDEO_DATA_BYTES)) return 0u;
-
   return 1u;
 }
 
 uint8_t VideoForward_PushFrame(const uint8_t *frame)
 {
   uint8_t next;
-
   if (frame == 0) return 0u;
-
   s_frames++;
-
   if (!video_frame_is_valid(frame))
   {
     s_crc_error++;
     return 0u;
   }
-
   next = (uint8_t)((s_head + 1u) % VIDEO_QUEUE_DEPTH);
   if (next == s_tail)
   {
-    /* Queue full: drop the oldest frame so latency cannot grow. */
     s_tail = (uint8_t)((s_tail + 1u) % VIDEO_QUEUE_DEPTH);
     s_overflow++;
   }
-
   memcpy(s_queue[s_head], frame, VIDEO_FRAME_BYTES);
+  __DMB();
   s_head = next;
   return 1u;
 }
 
+/* These callbacks are TX-only counterparts of local HAL UART
+ * UART_DMATransmitCplt / UART_DMAError. Never use the latter: its RX error
+ * branch can stop DMAR, which belongs to the existing remote-control parser. */
+static void video_dma_complete(DMA_HandleTypeDef *hdma)
+{
+  UART_HandleTypeDef *uart = VIDEO_VT03_HANDLE;
+  if (!s_owns_tx || s_tx_state != VIDEO_TX_IN_FLIGHT || hdma != uart->hdmatx) return;
+  if (s_dma_error_event || hdma->ErrorCode != HAL_DMA_ERROR_NONE ||
+      hdma->State != HAL_DMA_STATE_READY ||
+      (hdma->Instance->CR & DMA_SxCR_EN) != 0u || hdma->Instance->NDTR != 0u)
+  {
+    s_last_dma_error |= hdma->ErrorCode | VIDEO_DMA_STATE_ERROR;
+    s_dma_error_event = 1u;
+    CLEAR_BIT(uart->Instance->CR3, USART_CR3_DMAT);
+    CLEAR_BIT(uart->Instance->CR1, USART_CR1_TCIE);
+    return;
+  }
+  uart->TxXferCount = 0u;
+  CLEAR_BIT(uart->Instance->CR3, USART_CR3_DMAT);
+  SET_BIT(uart->Instance->CR1, USART_CR1_TCIE);
+}
+
+static void video_dma_error(DMA_HandleTypeDef *hdma)
+{
+  UART_HandleTypeDef *uart = VIDEO_VT03_HANDLE;
+  if (!s_owns_tx || s_tx_state != VIDEO_TX_IN_FLIGHT || hdma != uart->hdmatx) return;
+  s_last_dma_error = hdma->ErrorCode;
+  s_dma_error_event = 1u;
+  CLEAR_BIT(uart->Instance->CR3, USART_CR3_DMAT);
+  CLEAR_BIT(uart->Instance->CR1, USART_CR1_TCIE);
+}
+
+void VideoForward_TxCompleteFromISR(void)
+{
+  UART_HandleTypeDef *uart = VIDEO_VT03_HANDLE;
+  DMA_HandleTypeDef *dma = uart->hdmatx;
+  if (!s_owns_tx || s_tx_state != VIDEO_TX_IN_FLIGHT) return;
+  if ((uart->Instance->SR & USART_SR_TC) == 0u ||
+      (uart->Instance->CR1 & USART_CR1_TCIE) == 0u) return;
+  /* Once an owned TC interrupt is pending, always mask it, including invalid
+   * state/error cases; otherwise an interrupt storm could starve the task. */
+  CLEAR_BIT(uart->Instance->CR1, USART_CR1_TCIE);
+  if (dma == 0)
+  {
+    s_last_dma_error |= VIDEO_DMA_STATE_ERROR;
+    s_dma_error_event = 1u;
+    CLEAR_BIT(uart->Instance->CR3, USART_CR3_DMAT);
+    return;
+  }
+  if (s_dma_error_event ||
+      dma->ErrorCode != HAL_DMA_ERROR_NONE ||
+      (uart->Instance->CR3 & USART_CR3_DMAT) != 0u ||
+      (dma->Instance->CR & DMA_SxCR_EN) != 0u || dma->Instance->NDTR != 0u ||
+      dma->State != HAL_DMA_STATE_READY || uart->gState != HAL_UART_STATE_BUSY_TX)
+  {
+    s_last_dma_error |= dma->ErrorCode | VIDEO_DMA_STATE_ERROR;
+    s_dma_error_event = 1u;
+    CLEAR_BIT(uart->Instance->CR3, USART_CR3_DMAT);
+    return;
+  }
+  /* Exact TX-only completion semantics of local HAL UART_EndTransmit_IT.
+   * Do not call HAL_UART_IRQHandler: ORE+DMAR may abort the unrelated RX. */
+  uart->gState = HAL_UART_STATE_READY;
+  __DMB();
+  s_tc_event = 1u;
+}
+
+static uint8_t video_hardware_ready(void)
+{
+  UART_HandleTypeDef *uart = VIDEO_VT03_HANDLE;
+  DMA_HandleTypeDef *dma = uart->hdmatx;
+  return (uint8_t)(dma != 0 && uart->gState == HAL_UART_STATE_READY &&
+    uart->Lock == HAL_UNLOCKED && dma->State == HAL_DMA_STATE_READY &&
+    dma->Lock == HAL_UNLOCKED && (dma->Instance->CR & DMA_SxCR_EN) == 0u &&
+    (uart->Instance->CR3 & USART_CR3_DMAT) == 0u &&
+    (uart->Instance->CR1 & (USART_CR1_TCIE | USART_CR1_TXEIE)) == 0u);
+}
+
+static uint8_t video_cycle_clock_ready(void)
+{
+  /* STM32F407 here runs at 168MHz. Reject an absent/invalid clock rather
+   * than silently converting a zero frequency into an unlimited channel. */
+  return (uint8_t)(SystemCoreClock >= 1000000u && SystemCoreClock <= 168000000u &&
+    (CoreDebug->DEMCR & CoreDebug_DEMCR_TRCENA_Msk) != 0u &&
+    (DWT->CTRL & DWT_CTRL_CYCCNTENA_Msk) != 0u);
+}
+
+static uint8_t video_start_gap_ready(uint32_t now, uint8_t *fallback)
+{
+  uint8_t cycle_ready = video_cycle_clock_ready();
+  *fallback = (uint8_t)!cycle_ready;
+  if (!s_have_start_tick) return 1u;
+  if (cycle_ready && s_have_start_cycle && SystemCoreClock == s_last_cycle_clock_hz)
+  {
+    uint32_t minimum_cycles = (SystemCoreClock + 49u) / 50u;
+    return (uint8_t)((uint32_t)(DWT->CYCCNT - s_last_start_cycle) >= minimum_cycles);
+  }
+  /* Once an unavailable/changed clock is observed, do not reuse its old
+   * cycle anchor even if the clock returns before the next start. */
+  s_have_start_cycle = 0u;
+  /* Switching time domains is conservative; unsigned CYCCNT wrap is safe. */
+  *fallback = 1u;
+  return (uint8_t)((uint32_t)(now - s_last_start_tick) >= VIDEO_FALLBACK_START_GAP_MS);
+}
+
+static void video_record_start(void)
+{
+  s_last_start_tick = HAL_GetTick();
+  s_have_start_tick = 1u;
+  if (video_cycle_clock_ready())
+  {
+    s_last_start_cycle = DWT->CYCCNT;
+    s_last_cycle_clock_hz = SystemCoreClock;
+    s_have_start_cycle = 1u;
+  }
+  else s_have_start_cycle = 0u;
+}
+
+static void video_begin_stop(uint32_t now)
+{
+  UART_HandleTypeDef *uart = VIDEO_VT03_HANDLE;
+  uint32_t saved_irq = __get_PRIMASK();
+  __disable_irq();
+  s_tx_state = VIDEO_TX_STOPPING;
+  CLEAR_BIT(uart->Instance->CR1, USART_CR1_TCIE | USART_CR1_TXEIE);
+  CLEAR_BIT(uart->Instance->CR3, USART_CR3_DMAT);
+  if (uart->hdmatx != 0) __HAL_DMA_DISABLE(uart->hdmatx);
+  __DMB();
+  __set_PRIMASK(saved_irq);
+  s_abort_tick = now;
+  s_dma_abort++;
+  s_tx_stuck++;
+}
+
+static void video_retry_or_drop(uint32_t now)
+{
+  s_owns_tx = 0u;
+  s_tc_event = 0u;
+  s_dma_error_event = 0u;
+  if (s_attempts < (1u + VIDEO_TX_RETRY))
+  {
+    s_pending_tick = now;
+    s_tx_state = VIDEO_TX_PENDING;
+  }
+  else
+  {
+    s_tx_error++;
+    s_tx_state = VIDEO_TX_IDLE;
+  }
+}
+
+static void video_latch_fault(void)
+{
+  s_dma_abort_fail++;
+  s_tx_error++;
+  /* Retain ownership and the buffer: hardware has not been proven safe to
+   * reuse. USB input remains bounded by the existing dropping ring queue. */
+  s_tx_state = VIDEO_TX_FAULT;
+}
+
+static void video_finish_stop(uint32_t now)
+{
+  UART_HandleTypeDef *uart = VIDEO_VT03_HANDLE;
+  DMA_HandleTypeDef *dma = uart->hdmatx;
+  uint32_t saved_irq;
+  HAL_StatusTypeDef status = HAL_OK;
+  if (dma == 0)
+  {
+    video_latch_fault();
+    return;
+  }
+  if ((dma->Instance->CR & DMA_SxCR_EN) != 0u)
+  {
+    if ((uint32_t)(now - s_abort_tick) >= VIDEO_ABORT_WATCHDOG_MS) video_latch_fault();
+    return;
+  }
+  saved_irq = __get_PRIMASK();
+  __disable_irq();
+  /* EN is already zero and this module owns TX. HAL_DMA_Abort's hardware
+   * wait therefore has zero iterations. Never call it with EN still set. */
+  if (dma->State == HAL_DMA_STATE_BUSY) status = HAL_DMA_Abort(dma);
+  else if (dma->State != HAL_DMA_STATE_READY || dma->Lock != HAL_UNLOCKED) status = HAL_ERROR;
+  if (status == HAL_OK && (dma->Instance->CR & DMA_SxCR_EN) == 0u)
+  {
+    /* DMAT is already zero, so local HAL_UART_AbortTransmit cannot call a
+     * blocking DMA abort. It resets only UART TX, never RxState or DMAR. */
+    status = HAL_UART_AbortTransmit(uart);
+  }
+  __DMB();
+  __set_PRIMASK(saved_irq);
+  s_last_uart_status = (uint32_t)status;
+  if (status != HAL_OK || !video_hardware_ready())
+  {
+    video_latch_fault();
+    return;
+  }
+  video_retry_or_drop(now);
+}
+
+static void video_start_dma(uint32_t now)
+{
+  UART_HandleTypeDef *uart = VIDEO_VT03_HANDLE;
+  DMA_HandleTypeDef *dma;
+  HAL_StatusTypeDef status;
+  uint8_t fallback;
+  uint32_t saved_irq = __get_PRIMASK();
+  __disable_irq();
+  if (!video_hardware_ready())
+  {
+    __set_PRIMASK(saved_irq);
+    s_dma_busy++;
+    return;
+  }
+  /* Task entry may have been preempted for a long time. Re-check using the
+   * current tick while acquiring TX; stale task time must not allow bursts. */
+  now = HAL_GetTick();
+  if (!video_start_gap_ready(now, &fallback))
+  {
+    __set_PRIMASK(saved_irq);
+    return;
+  }
+  dma = uart->hdmatx;
+  uart->Lock = HAL_LOCKED;
+  s_owns_tx = 1u;
+  s_tc_event = 0u;
+  s_dma_error_event = 0u;
+  s_tx_state = VIDEO_TX_IN_FLIGHT;
+  if (s_attempts != 0u) s_tx_retry++;
+  s_attempts++;
+  video_record_start();
+  s_timing_mode = fallback ? 0u : 1u;
+  if (fallback) s_timing_fallback++;
+  s_last_tx_bytes = 0u;
+  s_last_dma_error = 0u;
+
+  /* Checked TX-only equivalent of local HAL_UART_Transmit_DMA (1279ff).
+   * That version ignores HAL_DMA_Start_IT's status and installs an error
+   * callback with RX side effects. Keep only its TX metadata/flag sequence. */
+  uart->pTxBuffPtr = s_tx_frame;
+  uart->TxXferSize = VIDEO_FRAME_BYTES;
+  uart->TxXferCount = VIDEO_FRAME_BYTES;
+  uart->gState = HAL_UART_STATE_BUSY_TX;
+  dma->XferCpltCallback = video_dma_complete;
+  dma->XferHalfCpltCallback = 0;
+  dma->XferErrorCallback = video_dma_error;
+  dma->XferAbortCallback = 0;
+  __HAL_UART_CLEAR_FLAG(uart, UART_FLAG_TC);
+  status = HAL_DMA_Start_IT(dma, (uint32_t)s_tx_frame,
+                            (uint32_t)&uart->Instance->DR, VIDEO_FRAME_BYTES);
+  s_last_uart_status = (uint32_t)status;
+  if (status == HAL_OK && dma->State == HAL_DMA_STATE_BUSY &&
+      (dma->Instance->CR & DMA_SxCR_EN) != 0u && dma->Instance->NDTR == VIDEO_FRAME_BYTES)
+  {
+    s_dma_started++;
+    __DMB();
+    SET_BIT(uart->Instance->CR3, USART_CR3_DMAT);
+    /* Record after the physical request is enabled, not before preemption. */
+    video_record_start();
+    __HAL_UNLOCK(uart);
+    __set_PRIMASK(saved_irq);
+    return;
+  }
+  s_dma_start_fail++;
+  s_last_dma_error = dma->ErrorCode;
+  if (status == HAL_OK) s_last_uart_status = HAL_ERROR;
+  __HAL_UNLOCK(uart);
+  __set_PRIMASK(saved_irq);
+  /* Even a defective/fault-injected HAL that returned OK without starting
+   * cannot be counted as forwarded or let the buffer be reused too early. */
+  video_begin_stop(now);
+}
+
 void VideoForward_Task(void)
 {
+  uint32_t now = HAL_GetTick();
+  uint32_t saved_irq;
   s_task_calls++;
-
-  while (s_tail != s_head)
+  if (s_tx_state == VIDEO_TX_FAULT) goto done;
+  if (s_tx_state == VIDEO_TX_IN_FLIGHT)
   {
-    uint8_t *frame = s_tx_frame;
-    uint32_t saved_irq = __get_PRIMASK();
+    DMA_HandleTypeDef *dma = VIDEO_VT03_HANDLE->hdmatx;
+    /* DMA/TC IRQs can complete between a timeout test and its stop request.
+     * Resolve events and request a stop in one short atomic decision. */
+    saved_irq = __get_PRIMASK();
+    __disable_irq();
+    if (dma != 0 && dma->Instance->NDTR <= VIDEO_FRAME_BYTES)
+      s_last_tx_bytes = VIDEO_FRAME_BYTES - dma->Instance->NDTR;
+    if (s_dma_error_event)
+    {
+      s_dma_error++;
+      video_begin_stop(now);
+      __set_PRIMASK(saved_irq);
+      goto done;
+    }
+    if (s_tc_event)
+    {
+      s_dma_completed++;
+      s_forwarded++;
+      s_owns_tx = 0u;
+      s_tc_event = 0u;
+      s_tx_state = VIDEO_TX_IDLE;
+      __set_PRIMASK(saved_irq);
+    }
+    else
+    {
+      if ((uint32_t)(now - s_last_start_tick) >= VIDEO_DMA_WATCHDOG_MS)
+      {
+        s_dma_timeout++;
+        video_begin_stop(now);
+      }
+      __set_PRIMASK(saved_irq);
+      goto done;
+    }
+  }
+  if (s_tx_state == VIDEO_TX_STOPPING)
+  {
+    video_finish_stop(now);
+    goto done;
+  }
+  if (s_tx_state == VIDEO_TX_IDLE)
+  {
+    saved_irq = __get_PRIMASK();
     __disable_irq();
     __DMB();
-    memcpy(frame, s_queue[s_tail], VIDEO_FRAME_BYTES);
+    if (s_tail == s_head)
+    {
+      __set_PRIMASK(saved_irq);
+      goto done;
+    }
+    memcpy(s_tx_frame, s_queue[s_tail], VIDEO_FRAME_BYTES);
     s_tail = (uint8_t)((s_tail + 1u) % VIDEO_QUEUE_DEPTH);
     __DMB();
     __set_PRIMASK(saved_irq);
-    uint8_t  tries;
-    uint8_t  ok = 0u;
-
-    for (tries = 0u; tries <= VIDEO_TX_RETRY; tries++)
-    {
-      if (HAL_UART_Transmit(VIDEO_VT03_HANDLE, (uint8_t *)frame,
-                            (uint16_t)VIDEO_FRAME_BYTES,
-                            (uint32_t)VIDEO_UART_TIMEOUT_MS) == HAL_OK)
-      {
-        ok = 1u;
-        break;
-      }
-
-      /* The HAL abandons the rest of the frame on both HAL_BUSY (another
-       * writer still owns gState) and HAL_TIMEOUT, and leaves the wire in
-       * the middle of a frame. If gState is not READY after that, no call
-       * will ever succeed again until the handle is re-armed by hand. */
-      if (VIDEO_VT03_HANDLE->gState != HAL_UART_STATE_READY)
-      {
-        __HAL_UART_CLEAR_OREFLAG(VIDEO_VT03_HANDLE);
-        VIDEO_VT03_HANDLE->gState  = HAL_UART_STATE_READY;
-        VIDEO_VT03_HANDLE->RxState = HAL_UART_STATE_READY;
-        __HAL_UNLOCK(VIDEO_VT03_HANDLE);
-        s_tx_stuck++;
-      }
-
-      if (tries < VIDEO_TX_RETRY) s_tx_retry++;
-    }
-
-    if (ok) s_forwarded++;
-    else    s_tx_error++;
-
+    s_attempts = 0u;
+    s_pending_tick = now;
+    s_tx_state = VIDEO_TX_PENDING;
   }
-
+  if (s_tx_state == VIDEO_TX_PENDING)
+  {
+    if ((uint32_t)(now - s_pending_tick) >= VIDEO_PENDING_MAX_AGE_MS)
+    {
+      s_pending_expired++;
+      s_tx_error++;
+      s_tx_state = VIDEO_TX_IDLE;
+      goto done;
+    }
+    video_start_dma(now);
+  }
+done:
   video_refresh_debug();
 }
 

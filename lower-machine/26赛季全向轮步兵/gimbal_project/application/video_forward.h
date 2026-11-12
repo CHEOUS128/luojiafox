@@ -33,8 +33,22 @@ void VideoForward_NoteUsbBytes(uint16_t len);
  * Returns 1 if the frame was valid and queued. */
 uint8_t VideoForward_PushFrame(const uint8_t *frame);
 
-/* Call from the main loop (or a task). Sends queued frames to VT03. */
+/* Call from Self_aim_task every 5 ms. Bounded non-blocking TX DMA work. */
 void VideoForward_Task(void);
+
+/* Call at the END of the existing USART6_IRQHandler, independently of its
+ * RXNE/IDLE branches. Handles only this module's real UART TC completion;
+ * never call the full HAL UART IRQ handler for this manually managed RX. */
+void VideoForward_TxCompleteFromISR(void);
+
+typedef enum
+{
+  VIDEO_TX_IDLE = 0u,
+  VIDEO_TX_PENDING = 1u,
+  VIDEO_TX_IN_FLIGHT = 2u,
+  VIDEO_TX_STOPPING = 3u,
+  VIDEO_TX_FAULT = 4u
+} VideoForwardTxState_t;
 
 /* Watch-window mirror.
  *
@@ -48,24 +62,44 @@ typedef struct
 {
   uint32_t usb_bytes;   /* bytes the USB CDC callback received           */
   uint32_t frames;      /* complete 309-byte frames assembled            */
-  uint32_t forwarded;   /* frames HAL_UART_Transmit accepted             */
+  uint32_t forwarded;   /* frames completed at real UART TC             */
   uint32_t crc_error;   /* frames rejected by CRC8/CRC16                 */
   uint32_t overflow;    /* frames dropped because the queue was full     */
   uint32_t tx_error;    /* frames given up after VIDEO_TX_RETRY retries  */
   uint32_t tx_retry;    /* extra transmit attempts actually used         */
-  uint32_t tx_stuck;    /* times gState had to be re-armed by hand       */
+  uint32_t tx_stuck;    /* TX-only recovery sequences requested       */
   uint32_t task_calls;  /* VideoForward_Task() invocations               */
+  /* Existing fields above retain their offsets. Appended DMA diagnostics. */
+  uint32_t tx_state;        /* VideoForwardTxState_t */
+  uint32_t dma_started;     /* verified successful DMA starts */
+  uint32_t dma_completed;   /* real UART TC, not a DMA start */
+  uint32_t dma_timeout;     /* 100ms fault watchdog */
+  uint32_t dma_start_fail;  /* rejected or fake-success DMA starts */
+  uint32_t dma_busy;        /* deferred; no ownership taken */
+  uint32_t dma_abort;       /* non-blocking TX stop requests */
+  uint32_t dma_abort_fail;  /* latched fault, buffer retained */
+  uint32_t dma_error;       /* TX-specific DMA error events */
+  uint32_t pending_expired; /* abandoned after 200ms awaiting hardware */
+  uint32_t init_rejected;   /* attempted re-init while DMA owns buffer */
+  uint32_t last_uart_status;
+  uint32_t last_dma_error;
+  uint32_t last_tx_bytes;
+  uint32_t queue_depth;     /* excludes the private pending/in-flight frame */
+  uint32_t attempts;
+  uint32_t timing_mode;      /* 1=DWT cycle gap, 0=conservative HAL tick gap */
+  uint32_t timing_fallback;  /* starts using the 21ms fallback/transition */
+  uint32_t build_tag;        /* 0x261112D1 identifies this DMA fix */
 } VideoForwardDebug_t;
 
 extern volatile VideoForwardDebug_t VideoForward_Debug;
 
 /* Diagnostics. */
-uint32_t VideoForward_GetForwarded(void);   /* frames handed to USART6 OK   */
+uint32_t VideoForward_GetForwarded(void);   /* frames completed at UART TC   */
 uint32_t VideoForward_GetCrcError(void);    /* bad CRC8/CRC16, not queued   */
 uint32_t VideoForward_GetOverflow(void);    /* queue full, oldest dropped   */
 uint32_t VideoForward_GetTxError(void);     /* given up after retries       */
 uint32_t VideoForward_GetTxRetry(void);     /* extra attempts that were used*/
-uint32_t VideoForward_GetTxStuck(void);     /* gState was stuck, force reset*/
+uint32_t VideoForward_GetTxStuck(void);     /* TX-only stop requests*/
 uint32_t VideoForward_GetUsbBytes(void);    /* bytes received from the host */
 uint32_t VideoForward_GetFrames(void);      /* 309-byte frames assembled    */
 

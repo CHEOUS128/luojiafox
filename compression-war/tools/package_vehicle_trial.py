@@ -13,6 +13,6 @@ with zipfile.ZipFile(a.out,'w',zipfile.ZIP_DEFLATED) as z:
         b=(upper/name).read_bytes();sha=hashlib.sha256(b).hexdigest();manifest.append(dict(file=name,bytes=len(b),sha256=sha))
         z.writestr(name,b)
     z.writestr('SHA256SUMS',''.join(r['sha256']+'  '+r['file']+'\n' for r in manifest))
-    z.writestr('manifest.json',json.dumps(dict(version='cw-trial-20261109-r2',status='Windows host serial tests only; Jetson build and real vehicle validation required',files=manifest),ensure_ascii=False,indent=2))
-    z.writestr('READ-ME.txt','Copy into an isolated my_lf_INF_20261025 trial directory, not the running service directory.\nBuild ONLY: make standard_mpc video_sender_test\nProfiles: baseline smooth detail detail-aq0 quality.\nNo profile preserves original YAML path.\nSee compression-war/docs/车端策略试验交付.md before vehicle use.\n')
+    z.writestr('manifest.json',json.dumps(dict(version='cw-trial-20261109-r2',status='B quality profile with gimbal TX DMA accepted in real vehicle use on 2026-11-12; package contains Jetson source only',files=manifest),ensure_ascii=False,indent=2))
+    z.writestr('READ-ME.txt','For planned maintenance of the accepted B quality setup; retain existing models, calibration and configuration.\nBuild ONLY: make standard_mpc video_sender_test\nProfiles: baseline smooth detail detail-aq0 quality.\nNo profile preserves original YAML path.\nSee docs/2026-11-12-实车成功版本.md for the deployed service, manual ToDesk transfer and build procedure.\n')
 sha=hashlib.sha256(a.out.read_bytes()).hexdigest();a.out.with_suffix('.sha256').write_text(sha+'  '+a.out.name+'\n',encoding='utf-8');print(a.out,sha)

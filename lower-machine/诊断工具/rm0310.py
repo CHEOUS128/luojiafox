@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
+# 历史诊断工具：当前成功版本见 lower-machine/README.md。
+# 本文件保留离线 dump 与历史格式复算；旧 recv/send 不作现役完整性验收入口。
+# 2026-11-12 已采用严格309B双CRC采集并完成DMA修复及官方链路使用验收。
 """
 rm0310.py —— 0x0310 第二视角链路「分段隔离」诊断工具（纯标准库，不用 pip 就能查包）
 

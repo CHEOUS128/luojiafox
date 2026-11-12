@@ -13,6 +13,11 @@
 *.png    binary
 *.jpg    binary
 
-# Root milestone README follows the repository Markdown LF convention.
-/README.md text eol=lf
+# Markdown documents use UTF-8 without BOM and LF.
+*.md text eol=lf
 *.gitattributes text eol=lf
+
+# The delivered gimbal sources retain CRLF; CR is not trailing whitespace.
+lower-machine/26赛季全向轮步兵/gimbal_project/application/video_forward.c whitespace=trailing-space,space-before-tab,cr-at-eol
+lower-machine/26赛季全向轮步兵/gimbal_project/application/video_forward.h whitespace=trailing-space,space-before-tab,cr-at-eol
+lower-machine/26赛季全向轮步兵/gimbal_project/application/remote_control.c whitespace=trailing-space,space-before-tab,cr-at-eol

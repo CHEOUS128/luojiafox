@@ -1,77 +1,70 @@
 # luojiafox
 
-珞珈狐战队 RoboMaster RM26 软件仓库。首页放本轮上车要做的事，换车、标定、组网和旧实测见[整车复现参考](docs/整车复现与历史实测.md)。
+珞珈狐战队 RoboMaster RM26 软件仓库。
 
-## 这次上车怎么测
+**当前版本：2026-11-12 视频链路成功版（B 方案 + 云台 DMA 转发）。** 电控已编译并烧录云台板，CH 接回官方图传实测后，确认自定义客户端收到了正常、理想的视频流。这套组合现在作为继续开发的起点。
 
-本轮试验档选 **B**。它保留彩色和完整视野，画面是 `320×256`，目标每秒 20 张。在 Windows 仿真中，四轮一分钟测试的稳态最低是每秒 19 张，典型延迟约 0.1 秒。车上还要实际跑一遍。
+新队员先看这一页，再按 [实车成功版本：运行、部署与维护](docs/2026-11-12-实车成功版本.md) 操作。换车标定及旧实测另见 [整车复现与历史实测](docs/整车复现与历史实测.md)。
 
-| 顺序 | 现场做什么 | 看什么 |
-| --- | --- | --- |
-| 1 | 云台板刷入修复版，小电脑仍跑平时的服务，客户端看本车视频 | 车静止、不操作时能否持续出图。再单独测有操作时的表现 |
-| 2 | 小电脑切到双包对照档 `baseline` | 看小电脑能否跟上，客户端收包和出图是否连续 |
-| 3 | 小电脑切到 B 档 `quality` | 看移动时目标好不好认、停顿多久、掉图后能否恢复 |
+## 现在跑的是哪一套
 
-同一段测试记下固件版本、Jetson 档位、车是否在动、操作手是否在操作。有异常时记下客户端日志的时间。现场操作客户端时避开 `Ctrl`，它会触发整车复位。
-
-## 小电脑负责人
-
-用 ToDesk 把这两个文件传到 Jetson 的 **`/home/nvidia4/cw_transfer/`**。打包文件都在本机仓库的 `compression-war/runs/delivery/`。
-
-- `RM26_cw_trial_20261109_r2.zip`，8 个改动过的源码文件。
-- `RM26_cw_trial_20261109_r2.sha256`，用来检查包有没有传错或损坏。
-
-在这台 Windows 的 PowerShell 打开传输文件夹：
-
-```powershell
-Invoke-Item -LiteralPath 'C:\Users\CH\Desktop\robot记录\luojiafox\compression-war\runs\delivery'
+```text
+工业相机 → Jetson 完整自瞄程序 + B 档视频编码 → USB
+→ 云台 C 板校验、排队、DMA 完整发送 → VT03 → VT13
+→ 官方选手端 → MQTT CustomByteBlock → luojiamaster 解码显示
 ```
 
-Jetson 在独立目录 `~/my_lf_INF_20261025_cwtrial/` 编译，沿用本车的标定和模型。只编 `standard_mpc` 和 `video_sender_test`。两个程序的 `--help` 都出现 `cw-trial-20261109-r2`，就确认编到新版。
-
-[一步步连 Jetson、传文件、编译、切到 B 和切回旧版](compression-war/docs/车端策略试验交付.md)。只想远程打开终端时用 ToDesk 就够；想让 Codex 从 Windows 读日志和检查编译结果，按同一页的局域网 SSH 步骤连。
-
-## 电控负责人
-
-拉取仓库 `main`，确认包含提交 **`722f2f8`**。这次改动都在 `lower-machine/26赛季全向轮步兵/gimbal_project/application/`：
-
-| 文件 | 修了什么 |
+| 部分 | 当前使用版本 |
 | --- | --- |
-| `Self_aim.c` | 视频帧校验失败后重新找下一帧的开头，避免后续一直读错位置。 |
-| `video_forward.c` | 先把待发送的帧复制到独立缓冲，再发给图传，防止新数据在发送途中覆盖它。 |
+| Jetson | 仓库 `autoaim/my_lf_INF_20261025`；本车部署目录为 `/home/nvidia4/my_lf_INF_20261025_cwtrial`，由 `autoaim-20261025.service` 自启动，参数 `--cw-profile=quality` |
+| 视频 B 档 | 彩色、完整视野、等比缩小补边，`320×256`、目标 20 fps、H.264、GOP20；仿真同档为 `one-320-gop20` |
+| 传输预算 | 每包 300 B 数据段，最多 296 B H.264；外层 309 B；所有图像含关键帧最多 2 包、592 B；最高 50 包/秒，间隔至少 20 ms |
+| 云台 C 板 | 本仓库 `gimbal_project` 的 DMA 转发版，构建标记 `0x261112D1`；底盘工程未改 |
+| Windows 客户端 | `luojiamaster/程序/luojiamaster.exe`，10,843,136 B，MD5 `f76e9fe71ca07a9f7be1ee1e7a543bfc`；本轮未修改客户端源码或 EXE |
 
-用 Keil 打开[云台工程 `standard_robot.uvprojx`](lower-machine/26赛季全向轮步兵/gimbal_project/MDK-ARM/standard_robot.uvprojx)，选 Target **`standard_robot`**。编译看到 `0 Error(s)` 后，由电控按原流程烧到 **云台 C 板**，看到 `Programming Done` 再上车验证。
+原自瞄算法、模型和本车标定继续沿用。B 档由命令行选择，YAML 里保留的旧灰度、多包参数不是当前现役视频档位。
 
-如果电控习惯单独选固件文件，取这次编译生成的 `gimbal_project/MDK-ARM/standard_tpye_c/standard_tpye_c.hex`。文件名里的 `tpye` 是工程原来的拼法。主机测试已通过，Keil 编译和实车结果由现场记录。[电控 README](lower-machine/README.md)
+## 队员怎么直接使用
 
-## 自定义客户端负责人
+1. 按原接线给相机、Jetson、云台 C 板和官方图传上电。Jetson 已配置自启动，不要再手工开第二个自瞄程序。
+2. 这台客户端 Windows 接官方端的网口设为 **`192.168.12.2 / 255.255.255.0`**；对面官方端为 **`192.168.12.1`**。网关、DNS 留空。
+3. 双击 `luojiamaster/程序/luojiamaster.exe`，服务器填 **`192.168.12.1:3333`**，队伍和机器人 ID 与官方端一致。进入比赛模式后按 **`H`** 看本车第二视角。
 
-这次上车可直接双击 **`luojiamaster/程序/luojiamaster.exe`**。B 仍发客户端已经能解的 H.264。客户端两台电脑用同一份 EXE，按 `H` 看本车第二视角。
+官方选手端设置、队友视角和四台电脑接法看 [现场手册](luojiamaster/现场施行手册-四台电脑-WiFi版.md)；客户端操作看 [使用说明](luojiamaster/使用说明.md)。**客户端不要按 Ctrl，它会触发整车复位。接串口不接 12V、VCC、5V、3V3 电源脚。**
 
-在这台 Windows 上从源码编译时，打开 PowerShell，整段复制：
+## 这次修了什么，怎么确认有效
 
-```powershell
-$src = 'C:\Users\CH\Desktop\robot记录\luojiafox\luojiamaster\源码'
-$link = Get-Item -LiteralPath 'C:\rm26build' -ErrorAction Stop
-if ($link.LinkType -ne 'Junction' -or $link.Target -ne $src) { throw 'C:\rm26build 指向不对，请先核对完整复现指南 3.4 节' }
-Set-Location -LiteralPath $src
-& '.\一键配置与编译.bat'
-if ($LASTEXITCODE -ne 0) { throw '编译失败，查看源码目录的 cmake_build_log.txt' }
-Get-Item -LiteralPath '.\build\release\luojiamaster.exe' | Select-Object LastWriteTime, Length
-Get-FileHash -Algorithm MD5 -LiteralPath '.\build\release\luojiamaster.exe', '..\程序\luojiamaster.exe' | Format-List Hash, Path
-```
+原来车静止时很难出图。排查发现 C 板每个 309 B 视频包常常只发出约 278 B，就超时并从头重试，连续三次仍然是残包。现在改为 DMA 整包发送，发送完成后才换缓冲；异常恢复只处理发送端，保留原遥控接收。
 
-这台电脑已用现有构建目录跑通脚本。产物大小为 **10,843,136 B**，MD5 是 **`f76e9fe71ca07a9f7be1ee1e7a543bfc`**，两份 EXE 完全相同。如果这次自己编出的值不同，先保留输出核对版本，再决定是否换 EXE。[从零编译和短路径设置](luojiamaster/完整复现指南.md)
+本轮正式合入三份文件，均在 `lower-machine/26赛季全向轮步兵/gimbal_project/application/`：
 
-## 四个目录
+| 文件 | 作用 |
+| --- | --- |
+| `video_forward.c` | DMA 发送、缓冲保护、发送完成确认、限速与错误恢复 |
+| `video_forward.h` | 发送完成接口和版本、状态计数 |
+| `remote_control.c` | 原 USART6 中断末尾补发送完成处理，原遥控接收逻辑保留 |
 
-| 目录 | 用途 | 继续看 |
-| --- | --- | --- |
-| `autoaim/` | Jetson 自瞄和第二视角发送 | [自瞄 README](autoaim/README.md) |
-| `lower-machine/` | 云台和底盘固件 | [电控 README](lower-machine/README.md) |
-| `luojiamaster/` | Windows 客户端、接线和运行说明 | [使用说明](luojiamaster/使用说明.md) · [四台电脑现场手册](luojiamaster/现场施行手册-四台电脑-WiFi版.md) · [接手基线](luojiamaster/客户端能力基线.md) |
-| `compression-war/` | Windows 上看片、比较和复核传输 | [仿真 README](compression-war/README.md) |
+34 项主机测试通过。烧录后静止采集 60 秒，收到 **2391 个完整视频包，CRC 全通过、无缺号和重复**；收到的数据可连续解码，按原到包时间统计约 **20 张/秒**。随后 CH 接回官方图传，确认实际使用效果正常。具体证据、源码校验值和历史更正在 [电控修复记录](lower-machine/档案/2026-11-12-云台视频DMA修复与实车闭环.md)。
 
-GitHub 留源码、说明、能复核结论的小样本和交付版客户端。`runs/` 里的重复试跑、传车 ZIP、编译日志和周报视频留在本机。过去的复现资料和参数集中在[整车复现参考](docs/整车复现与历史实测.md)，各子系统的过程记录在各自的 `档案/`。
+后两轮 CH340 采集曾报接收溢出，未记为完整通过；CH 当前未观察到它影响实际使用，暂不继续追查。官方链路这次按实际使用验收，未另填报精确延迟和丢包率。
 
-自瞄基于[同济大学 SuperPower 战队自瞄算法](https://github.com/TongjiSuperPower)，客户端基于 ACE。沿用原项目许可。
+## 维护时分别看哪里
+
+| 负责人 / 目录 | 去哪里 |
+| --- | --- |
+| Jetson、自瞄、模型和标定：`autoaim/` | [自瞄 README](autoaim/README.md)；现役服务、ToDesk 传输与编译见 [统一维护说明](docs/2026-11-12-实车成功版本.md) |
+| 电控：`lower-machine/` | [电控 README](lower-machine/README.md)。Keil 打开 `gimbal_project/MDK-ARM/standard_robot.uvprojx`，Target 为 `standard_robot`，只处理云台板 |
+| Windows 客户端：`luojiamaster/` | [使用说明](luojiamaster/使用说明.md)、[源码编译](luojiamaster/完整复现指南.md)、[能力基线](luojiamaster/客户端能力基线.md) |
+| 压片仿真：`compression-war/` | [仿真 README](compression-war/README.md)。独立运行，保留原始对照和真实传输预算 |
+
+只维护需要改动的部分。改 Jetson 前先核对服务、现役目录、配置、模型和依赖；文件仍通过 ToDesk 手动传输。只编译 `standard_mpc`、`video_sender_test`。电控烧录由 CH 确认，GitHub 提交和推送由 CH 在 Windows 执行。
+
+本轮不需要重编客户端。以后修改客户端源码时，先确认 `C:\rm26build` 指向 `luojiamaster/源码`；编译通过后同步唯一交付 EXE，并核对两台客户端 MD5。仿真编译使用 `C:\rm26cw`，按其 README 核对链接。
+
+## 仓库里保留什么
+
+保留现役源码、正式运行与仿真入口、必要回归、小份精选证据，以及各子系统 `档案/` 中有价值的历史经验。旧的灌包、串口回环和宽松校验脚本已退役；重复试跑、完整抓包、临时测试工程、传输 ZIP 和“给电控”临时说明不入库。
+
+下一阶段处理 CH 新反馈的客户端使用问题，等具体现象后再定位。当前已成功的视频链路和 B 参数保持为对照。
+
+自瞄基于 [同济大学 SuperPower 战队](https://github.com/TongjiSuperPower)，客户端基于 ACE，沿用原项目许可。

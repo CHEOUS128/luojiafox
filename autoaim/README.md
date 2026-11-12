@@ -1,90 +1,33 @@
-# 自瞄算法（autoaim）
+# 自瞄：Jetson 完整程序与 B 档视频
 
-> 珞珈狐战队 · RM26 赛季自瞄算法
->
-> **本自瞄目前针对 26 赛季全向轮步兵调校。**
-> 其他兵种（英雄、哨兵、空中、工程）的配置与参数未做针对性适配，直接套用需重新标定。
+**当前版本为 2026-11-12 实车成功组合。** 本车运行完整自瞄程序，同时用 B 档发送彩色工业相机画面；云台板改为 DMA 转发后，用户已确认官方图传到自定义客户端正常出画。
 
----
+日常开机和维护统一看 [实车成功版本](../docs/2026-11-12-实车成功版本.md)。本轮不改变自瞄算法、模型和标定，不需要重复部署。
 
-## 目录
+## 源码和本车实际目录
 
-```
-autoaim/
-├── my_lf_INF_20261025/          ← 当前版本（含图传发送端，实车在跑）
-├── my_lf_INF_20261013/          ← 上一版（一字节未动，回滚用）
-└── 档案/                        ← 探索过程：图传 v2/v3、单包模式、主循环卡顿、电控改造说明
-```
+| 项目 | 当前值 |
+| --- | --- |
+| 仓库源码 | `my_lf_INF_20261025/`，包括 `cw-trial-20261109-r2` 视频入口 |
+| 本车现役目录 | `/home/nvidia4/my_lf_INF_20261025_cwtrial` |
+| 自启动 | `autoaim-20261025.service`，覆盖配置 `40-cw-trial.conf` 选择现役目录 |
+| 启动参数 | `build_cw/standard_mpc configs/standard3.yaml --cw-profile=quality` |
+| 当前视频 | B 档：彩色、全视野、320×256、目标20 fps、H.264、GOP20 |
+| 固定预算 | 300 B数据段/309 B外层，最多2包/592 B H.264，最高50包/秒，逐包至少20 ms |
+| 保留的旧版 | 车上 `my_lf_INF_20261025` 原目录及 `my_lf_INF_20261013`；仓库旧版本不修改 |
 
-**当前状态（2026-10-28）**：工业相机画面已经能在自定义客户端显示。
-发送端稳定 20 fps 出帧、令牌桶用 88.8%、SSIM-Y 0.9853；
-客户端实际出画帧率明显低于 20，**怀疑在 VT03→VT13 那一跳（未证实）**。
-全过程结论见 [`档案/README.md`](档案/README.md)。
+`quality` 会覆盖视频尺寸、颜色、GOP和包数等参数；YAML里仍保留的灰度、8包参数属于未选择试验档时的旧流程，不能把它当作本车现在的画面设置。仿真对应配置为 `compression-war/profiles/one-320-gop20.ini`，原始对照仍为 `baseline.ini`。
 
-## 版本说明
+现役服务保留本车 `configs/standard3.yaml`、模型和标定。`my_sp_main/io/daheng/lib/armv8` 提供仍被依赖的 `liblog4cplus_gx.so`，这个旧目录不能清掉。
 
-| 版本 | 日期 | 说明 |
-|---|---|---|
-| `my_lf_INF_20261025` | 2026-10-20 | **当前版本**：新增双摄像头图传发送端（工业相机画面 → 自定义客户端）；10-28 改 I+P 大帧 + 令牌桶 85% + 灰度 |
-| `my_lf_INF_20261013` | 2026-10-13 | 基于 10.04 版本逐行审核后的修复与增强版（回滚用，未改动） |
+## 视频链路
 
-> **版本规则**：每个版本一个独立目录，老版本不做任何修改，用于回滚。
-
-完整更新内容见 `my_lf_INF_20261025/更新日志.md`。
-
----
-
-## 本版新增：双摄像头图传
-
-**做什么**：把自瞄工业相机的画面送到自定义客户端的第二视角（客户端按 `H` 键切换）。
-
-```
-大恒相机 → 自瞄程序 → 整幅等比缩放 192×152 → 转灰度 → H.264（I+P，GOP10，独立线程）
-    → 按客户端格式封装 → 0x0310 帧（309 字节，一帧拆 1~6 包）→ USB CDC（与云台控制共用）
-    → STM32 主控（电控按帧头分流 + 原样转发）
-    → VT03 图传发送端 → 无线 → VT13 → 选手端 → 自定义客户端
+```text
+相机 → 完整自瞄程序取图、B档编码 → 0x0310 / USB CDC
+→ 云台C板校验与TX DMA → VT03 → VT13 → 官方选手端 → 自定义客户端
 ```
 
-**当前状态**：视觉端已完成并实车验证；电控侧接收转发已烧录；客户端已能显示。
-
-**关键参数**（`my_lf_INF_20261025/configs/standard3.yaml`，**实车在用的值**）：
-
-| 项 | 值 |
-|---|---|
-| 取景 | 整幅等比缩放到 192×152（`keep_aspect: true`，**不裁切**，全视野） |
-| 帧率 | 20 fps 编码 |
-| 码率 | **59.6 kbps**（自动，`video_bitrate_kbps: 0`；= 令牌桶 40×85% ÷ 实测系数 1.35） |
-| 编码 | H.264 **High 4:0:0**（灰度），preset=slow，tune=zerolatency，slices=4，无 B 帧 |
-| GOP | **10**（I 帧 + 9 个 P 帧；丢 I 帧最长花屏 0.5 s） |
-| 单包载荷上限 | **296 B**（= 300 − 2B 内层长度 − 2B 内层序号） |
-| 单帧上限 | **8 包 × 296 B = 2368 B**；VBV = 8×296×8 = 18944 bit |
-| 发送节拍 | 40 包/秒令牌桶，取 85% 作预算；实测落 35.5 包/秒（88.8%） |
-
-**画质**：SSIM-Y **0.9853**（300 帧真实赛场画面，对比同一编码器输入）。
-同一个 `档案/` 里还记了：160×128 灰度 70kbps 是 0.9898、
-224×176 灰度 70kbps 是 0.9886 但最好一帧要 13 包（超 8 包上限）。
-
-**想调的话**（每改一项只看 `出包丢包` 是否还是 0）：
-
-| 想要 | 改什么 | 代价 |
-|---|---|---|
-| 更清楚 | `video_width/height` 提到 224×176 | 需同时把 `video_max_frame_packets` 提到 14 |
-| 更多比特 | `video_send_rate_hz` 40 → 50 | 协议上限 50；通道吃不吃得下未测 |
-| 恢复更快 | `video_gop` 10 → 5 | 每帧字节多约 10% |
-| 有颜色 | `video_gray: false` | 亮度 SSIM 掉约 0.001 |
-
-**相关文档**：
-
-| 文件 | 给谁看 | 内容 |
-|---|---|---|
-| [`档案/README.md`](档案/README.md) | 全员 | ★ 图传 v2/v3、单包模式、I+P、包率 85%、主循环卡顿——**含被推翻的结论** |
-| [`档案/包率85%+灰度版-部署与回退-2026-10-28.md`](档案/包率85%+灰度版-部署与回退-2026-10-28.md) | 视觉/部署 | **当前版本**：为什么 60kbps、灰度值多少、三层回退 |
-| [`档案/I+P大帧版-部署与回退-2026-10-28.md`](档案/I+P大帧版-部署与回退-2026-10-28.md) | 视觉/部署 | I+P 拆包怎么来的（上午那版，已被上面取代） |
-| [`档案/双摄像头-电控改造说明.md`](档案/双摄像头-电控改造说明.md) | **电控** | 0x0310 帧格式、接入点、CRC 表 |
-| [`档案/主循环卡顿诊断-2026-10-23.md`](档案/主循环卡顿诊断-2026-10-23.md) | 视觉/部署 | `成帧` 不涨、`Current FPS: 0.0` 时看这份 |
-| [`my_lf_INF_20261025/更新日志.md`](my_lf_INF_20261025/更新日志.md) | 全员 | 本版全部改动与技术细节 |
-
----
+32 B自瞄控制和309 B视频继续共用USB，串口互斥、短写续传和控制帧边界保留。C板本轮修改见 [电控 README](../lower-machine/README.md)。早期单包、灰度和多包方案的参数、经验留在 [档案](档案/README.md)，旧“怀疑无线链路”的判断不再作为本次故障结论。
 
 ## 换车必须重做的标定（★ 最重要）
 
@@ -208,7 +151,9 @@ cd my_lf_INF_20261025
 
 ---
 
-## 已知未处理项
+## 既有算法维护记录
+
+以下算法事项保留原审核记录，本轮没有修改算法或重新评估这些事项。旧 V1/V3 视频项已由 B 彩色档和 C 板 DMA 修复接替，见当前版本说明。
 
 | 编号 | 问题 | 影响 |
 |---|---|---|
@@ -217,95 +162,31 @@ cd my_lf_INF_20261025
 | W2 | `use_phase_jump_guard` 默认 false 且配置中缺失 | 换板保护从未生效 |
 | W3 | 三阶指令的 vel/acc 未过滤波限速 | 下位机前馈可能过冲 |
 | W4 | 双模型是「注入速度」的混合做法，非完整版 | r 可能漂移 |
-| V1 | **客户端实际出画帧率明显低于 20 fps** | **怀疑在 VT03→VT13 那一跳，未证实**；固件里 `VideoForward_Debug` 是唯一的区分测量 |
 | V2 | 弹速写死 27.0 m/s，planner 钳 22 | 换发射机构必须改源码重编 |
-| V3 | 灰度模式无颜色 | 红蓝灯条只剩亮度差，`video_gray: false` 可退 |
 
 ---
 
-## 编译
+## 编译和运行维护
 
-### 环境
-
-- Ubuntu 22.04
-- OpenVINO / TensorRT（按实际部署）
-- Ceres（优化）
-- FFmpeg 开发库（图传用：`libavcodec-dev libswscale-dev libavutil-dev libx264-dev`）
-- 相机 SDK（大恒 / 海康 / MindVision，按实际相机选装）
-
-### 步骤
+现役机器已经配置开机自启动。先用以下只读命令确认状态，不要再启动第二个进程抢相机、串口：
 
 ```bash
-cd my_lf_INF_20261025
-mkdir -p build && cd build
-cmake ..
-make standard_mpc video_sender_test -j$(nproc)
+systemctl show autoaim-20261025 -p ActiveState -p ExecStart -p WorkingDirectory -p DropInPaths
+tail -n 30 /home/nvidia4/my_lf_INF_20261025_cwtrial/logs/autostart.log
 ```
 
-> ⚠️ 不要跑全量 `make`：`fire_test.cpp` 是项目遗留问题，会编译失败。
-> 生产目标为 `standard_mpc`；验证程序为 `video_sender_test`。
+维护或换电脑时先核对配置、模型、相机SDK、CUDA/OpenCV和共享库，具体成功配置及“传什么→传到哪→怎么验证”集中在 [统一维护说明](../docs/2026-11-12-实车成功版本.md)。只编 `standard_mpc` 和 `video_sender_test`，不跑全量 `make`。
 
-### 运行
+`video_sender_test` 是本地编码检查，不向C板串口发送；合成模式不需要接车。在已编好的现役目录可执行：
 
 ```bash
-./standard_mpc ../configs/standard3.yaml
+cd /home/nvidia4/my_lf_INF_20261025_cwtrial
+./build_cw/video_sender_test /tmp/cw-quality-check --cw-profile quality --seconds 15
+python3 tests/verify_frames.py /tmp/cw-quality-check/video_test_frames.bin tools/crc.cpp
 ```
 
-### 图传验证（不接主控）
-
-`video_sender_test` 只依赖相机和编码器——**不碰 YOLO、不碰 CAN、不碰云台串口**，
-是这套代码里最干净的「相机是否出图」体检。没装模型、没接 C 板也能跑。
-
-```bash
-# 合成图模式（连相机都不用，先确认编译和编码链路没问题）
-./build/video_sender_test /tmp
-
-# 真实相机 + 取景对比图（必须 sudo，logs/ 是 root 的）
-sudo ./build/video_sender_test /tmp -c configs/standard3.yaml --compare
-#   → /tmp/video_test_view.png   取景+锐化后的画面
-#   → /tmp/video_test_stream.h264 纯码流，可以 ffplay 看
-#   → /tmp/video_test_frames.bin  完整 0x0310 帧序列
-
-# 帧格式校验（CRC / 长度 / 序号）
-python3 tests/verify_frames.py /tmp/video_test_frames.bin tools/crc.cpp
-```
-
-可以临时覆盖参数做 A/B，不用改 yaml：
-
-```bash
-./build/video_sender_test /tmp -c configs/standard3.yaml \
-  --fps 20 --kbps 80 --gray 0 --gop 5 --large-frame 0
-```
-
----
-
-## 部署（Jetson）
-
-| 项目 | 配置 |
-|---|---|
-| 代码目录 | `/home/nvidia4/my_lf_INF_20261025` |
-| 自启动 | systemd 服务 **`autoaim-20261025`**（`scripts/enable_video_service.sh` 创建，开机 15 秒后启动） |
-| 配置文件 | `configs/standard3.yaml`（**改完不用重编**，`systemctl restart` 即可） |
-| 日志 | `logs/autostart.log`（含二进制字节，grep 要加 `-a`） |
-| 传文件 | ToDesk（Jetson 直连 GitHub 会超时，必须选覆盖并 grep 校验） |
-
-常用命令：
-
-```bash
-systemctl status autoaim-20261025 --no-pager | head -8
-sudo systemctl restart autoaim-20261025
-tail -f logs/autostart.log | grep -a --line-buffered "VideoSender"
-sudo bash scripts/rollback_to_20261013.sh     # 回滚到无图传的上一版
-```
-
-> 早期文档里写的服务名 `autoaim` 指的是 20261013 那一版；现在两版并存，
-> 20261025 用 `autoaim-20261025`。回滚脚本会切回去。
-
-详细步骤见 [`档案/图传v2-部署与验证手册.md`](档案/图传v2-部署与验证手册.md)。
-
----
+真实相机检查需要相机可用，维护时避免与现役程序同时占用。源码文件继续通过 ToDesk 手动传输；原有 `scripts/enable_video_service.sh` 属于旧服务部署入口，当前维护不重跑它。切换现役或回退需核对实际服务覆盖配置，避免只改base service却没有切换生效。
 
 ## 许可与来源
 
-本项目基于 [同济大学 SuperPower 战队 25 赛季自瞄算法](https://github.com/TongjiSuperPower) 二次开发，
-沿用原项目 LICENSE。仅用于技术交流。
+本项目基于 [同济大学 SuperPower 战队 25 赛季自瞄算法](https://github.com/TongjiSuperPower) 二次开发，沿用原项目 LICENSE。当前调校针对26赛季全向轮步兵，换兵种必须重新适配和标定。

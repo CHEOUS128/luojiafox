@@ -26,6 +26,7 @@
 #include "string.h"
 
 #include "detect_task.h"
+#include "video_forward.h"
 
 
 
@@ -231,6 +232,9 @@ void USART6_IRQHandler(void)
         }
     }
 
+    /* TX completion is independent of the RXNE/IDLE branches above.
+     * The video handler checks TC/TCIE and never dispatches RX errors. */
+    VideoForward_TxCompleteFromISR();
 }
 
 //È¡Õýº¯Êý
