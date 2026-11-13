@@ -3,6 +3,7 @@
 namespace RoboGo::video {
 
     VideoShardsManager::~VideoShardsManager() {
+        stop();
         reset_stream_state();
         drain_packet_queue();
     }
@@ -13,39 +14,56 @@ namespace RoboGo::video {
     }
 
     void VideoShardsManager::on_receive_shard(const uint8_t *data, size_t size) {
-        auto *packet = new uint8_t[size];
-        memcpy(packet, data, size);
-        packet_queue.emplace(packet, size);
+        if (data == nullptr || size <= 8 || size > 65535) return;
+        std::vector<uint8_t> packet(data, data + size);
+        std::deque<std::vector<uint8_t>> discarded;
+        {
+            std::lock_guard lock(packet_mutex);
+            if (!accepting) return;
+            if (packet_queue.size() >= max_queued_packets || queued_bytes + size > max_queued_bytes) {
+                discarded.swap(packet_queue);
+                queued_bytes = 0;
+                reset_pending = true;
+            }
+            queued_bytes += size;
+            packet_queue.push_back(std::move(packet));
+        }
+        packet_ready.notify_one();
     }
 
     void VideoShardsManager::handle_once() {
-        // 如果数据包过多导致阻塞，就丢弃旧的数据包
-        if (packet_queue.size_approx() >= 512) {
-            std::size_t trimmed_count = 0;
-            std::pair<uint8_t *, size_t> stale_packet;
-            while (packet_queue.size_approx() > 256 && packet_queue.try_dequeue(stale_packet)) {
-                delete[] stale_packet.first;
-                ++trimmed_count;
-            }
-            if (trimmed_count > 0) {
-                SPDLOG_WARN("UDP 视频分片队列堆积，已丢弃旧 {} 个分片", trimmed_count);
-            }
+        std::vector<uint8_t> packet;
+        bool needs_reset = false;
+        {
+            std::unique_lock lock(packet_mutex);
+            packet_ready.wait_for(lock, std::chrono::milliseconds(5), [this]() {
+                return !accepting || !packet_queue.empty();
+            });
+            if (!accepting || packet_queue.empty()) return;
+            needs_reset = reset_pending;
+            reset_pending = false;
+            packet = std::move(packet_queue.front());
+            queued_bytes -= packet.size();
+            packet_queue.pop_front();
         }
-        // 获取一个数据包
-        std::pair<uint8_t *, size_t> packet;
-        if (!packet_queue.wait_dequeue_timed(packet, std::chrono::microseconds(1))) {
-            return;
+        if (needs_reset) {
+            reset_stream_state();
+            if (reset_callback) reset_callback();
         }
-        auto [data, size] = packet;
+        const auto *data = packet.data();
+        const auto size = packet.size();
         // 解析包头
         if (size <= 8) [[unlikely]] {
             SPDLOG_WARN("收到无效视频分片 bytes={}", size);
-            delete[] data;
             return;
         }
         uint16_t frame_id = ntohs(*reinterpret_cast<const uint16_t *>(data));
         uint16_t shard_id = ntohs(*reinterpret_cast<const uint16_t *>(data + 2));
         uint32_t frame_bytes = ntohl(*reinterpret_cast<const uint32_t *>(data + 4));
+        if (frame_bytes == 0 || frame_bytes > max_frame_bytes || size - 8 > frame_bytes) {
+            SPDLOG_WARN("Invalid UDP video frame size bytes={} shard_bytes={}", frame_bytes, size);
+            return;
+        }
 
         // 处理帧 ID 溢出问题
         if (!is_current_frame_id_valid) {
@@ -77,7 +95,6 @@ namespace RoboGo::video {
             } else {
                 SPDLOG_WARN("丢弃过期视频分片 frame_id={} shard_id={} current_frame_id={}",
                             fixed_frame_id, shard_id, current_frame_id);
-                delete[] data;
                 return;
             }
         }
@@ -114,13 +131,16 @@ namespace RoboGo::video {
             SPDLOG_WARN("收到重复视频分片 frame_id={} shard_id={} old_size={} new_size={}",
                         fixed_frame_id,
                         shard_id,
-                        iter->second.second,
+                        iter->second.size(),
                         size);
-            delete[] iter->second.first;
-            current_frame_shards.collected_frame_bytes -= static_cast<uint32_t>(iter->second.second - 8);
+            current_frame_shards.collected_frame_bytes -= static_cast<uint32_t>(iter->second.size() - 8);
+        }
+        if (current_frame_shards.collected_frame_bytes + size - 8 > max_frame_bytes) {
+            reset_frame_shards(current_frame_shards);
+            return;
         }
         current_frame_shards.collected_frame_bytes += size - 8;
-        current_frame_shards.shards[shard_id] = {data, size};
+        current_frame_shards.shards[shard_id] = std::move(packet);
 
         // 处理完整帧
         auto &first_frame_shards = cache_frames[0];
@@ -141,8 +161,8 @@ namespace RoboGo::video {
                     SPDLOG_ERROR("分片ID错误");
                     break;
                 }
-                auto &[shard_buffer, shard_size] = iter->second;
-                full_frame.insert(full_frame.end(), shard_buffer + 8, shard_buffer + shard_size);
+                const auto &shard = iter->second;
+                full_frame.insert(full_frame.end(), shard.begin() + 8, shard.end());
             }
             if (is_success) [[likely]] {
                 if (frame_callback) {
@@ -173,16 +193,31 @@ namespace RoboGo::video {
     }
 
     void VideoShardsManager::drain_packet_queue() {
-        std::pair<uint8_t *, size_t> packet;
-        while (packet_queue.try_dequeue(packet)) {
-            delete[] packet.first;
+        std::deque<std::vector<uint8_t>> discarded;
+        {
+            std::lock_guard lock(packet_mutex);
+            discarded.swap(packet_queue);
+            queued_bytes = 0;
         }
     }
 
-    void VideoShardsManager::reset_frame_shards(FrameShards &frame_shards) {
-        for (const auto &item: frame_shards.shards | std::views::values) {
-            delete[] item.first;
+    void VideoShardsManager::stop() {
+        {
+            std::lock_guard lock(packet_mutex);
+            accepting = false;
         }
+        packet_ready.notify_all();
+        drain_packet_queue();
+    }
+
+    void VideoShardsManager::reset_stream() {
+        drain_packet_queue();
+        reset_stream_state();
+        std::lock_guard lock(packet_mutex);
+        reset_pending = false;
+    }
+
+    void VideoShardsManager::reset_frame_shards(FrameShards &frame_shards) {
         frame_shards.is_valid = false;
         frame_shards.frame_id = 0;
         frame_shards.frame_bytes = 0;

@@ -1,6 +1,7 @@
 #include "logging.h"
 #include "embedded_messages_proto.h"
 #include "network_capture_format.h"
+#include "platform/platform_util.h"
 
 namespace RoboGo::logging {
 
@@ -23,10 +24,16 @@ std::string g_session_id;
 std::ofstream g_network_capture_stream;
 std::thread g_network_capture_thread;
 constexpr std::size_t kNetworkCaptureQueueSize = 8192;
-moodycamel::BlockingReaderWriterQueue<NetworkCaptureRecord> g_network_capture_queue{kNetworkCaptureQueueSize};
+// Network RX and UI TX can call this concurrently: this must be an MPSC queue.
+std::deque<NetworkCaptureRecord> g_network_capture_queue;
+std::mutex g_network_capture_mutex;
+std::condition_variable g_network_capture_ready;
+constexpr std::size_t kMaxNetworkCaptureBytes = 64U * 1024U * 1024U;
+std::size_t g_network_capture_bytes = 0;
+std::atomic<std::uint64_t> g_network_capture_dropped = 0;
 std::size_t g_records_since_flush = 0;
 std::atomic<bool> g_network_stop_requested = false;
-bool g_is_initialized = false;
+std::atomic<bool> g_is_initialized = false;
 
 constexpr std::array<char, 8> kCaptureMagic = {'R', 'B', 'N', 'C', 'A', 'P', '1', '\n'};
 constexpr std::array<char, 4> kRecordMagic = {'R', 'E', 'C', '2'};
@@ -66,9 +73,15 @@ std::string make_session_id() {
 }
 
 std::filesystem::path resolve_log_root_directory() {
+#ifdef _WIN32
+    if (const wchar_t *env_value = _wgetenv(L"ROBOGO_LOG_ROOT"); env_value != nullptr && env_value[0] != L'\0') {
+        return std::filesystem::path(env_value);
+    }
+#else
     if (const char *env_value = std::getenv("ROBOGO_LOG_ROOT"); env_value != nullptr && env_value[0] != '\0') {
         return std::filesystem::path(env_value);
     }
+#endif
     return std::filesystem::path(kDefaultLogRootDirectory);
 }
 
@@ -179,22 +192,23 @@ void flush_capture_stream(bool force_flush) {
 void network_capture_loop() {
     SPDLOG_INFO("网络抓包线程已启动");
 
-    NetworkCaptureRecord record;
     for (;;) {
-        if (!g_network_capture_queue.wait_dequeue_timed(record, kNetworkCaptureWaitTimeout)) {
-            if (g_network_stop_requested.load(std::memory_order_acquire)) {
-                break;
+        NetworkCaptureRecord record;
+        {
+            std::unique_lock lock(g_network_capture_mutex);
+            g_network_capture_ready.wait_for(lock, kNetworkCaptureWaitTimeout, [] {
+                return !g_network_capture_queue.empty() || g_network_stop_requested.load(std::memory_order_acquire);
+            });
+            if (g_network_capture_queue.empty()) {
+                if (g_network_stop_requested.load(std::memory_order_acquire)) break;
+                continue;
             }
-            continue;
+            record = std::move(g_network_capture_queue.front());
+            g_network_capture_queue.pop_front();
+            g_network_capture_bytes -= record.payload.size() + record.channel.size() + record.peer.size() + sizeof(record);
         }
-
         write_record(g_network_capture_stream, record);
         g_records_since_flush += 1;
-
-        while (g_network_capture_queue.try_dequeue(record)) {
-            write_record(g_network_capture_stream, record);
-            g_records_since_flush += 1;
-        }
         flush_capture_stream(false);
     }
 
@@ -202,7 +216,8 @@ void network_capture_loop() {
     if (g_network_capture_stream.is_open()) {
         g_network_capture_stream.close();
     }
-    SPDLOG_INFO("网络抓包线程已退出");
+    SPDLOG_INFO("网络抓包线程已退出 dropped_records={} (nonzero means capture is incomplete)",
+                g_network_capture_dropped.load());
 }
 
 }// namespace
@@ -223,7 +238,7 @@ void initialize(std::string_view application_name, const bool invert_udp_video) 
         // 即使 proto 文件后续变更，旧日志仍可基于保存的 proto 进行解析
         {
             const auto proto_path = g_log_directory / "messages.proto";
-            std::ofstream proto_stream(proto_path, std::ios::binary | std::ios::trunc);
+            auto proto_stream = platform_util::OpenUtf8Output(platform_util::PathToUtf8(proto_path));
             if (proto_stream.is_open()) {
                 proto_stream.write(reinterpret_cast<const char *>(embedded_messages_proto_data),
                                    static_cast<std::streamsize>(embedded_messages_proto_data_len));
@@ -249,12 +264,13 @@ void initialize(std::string_view application_name, const bool invert_udp_video) 
                 sinks.begin(),
                 sinks.end(),
                 spdlog::thread_pool(),
-                spdlog::async_overflow_policy::block);
+                spdlog::async_overflow_policy::overrun_oldest);
         app_logger->set_level(spdlog::level::trace);
-        app_logger->flush_on(spdlog::level::info);
+        app_logger->flush_on(spdlog::level::warn);
         spdlog::set_default_logger(app_logger);
+        spdlog::flush_every(std::chrono::seconds(1));
 
-        g_network_capture_stream.open(g_network_capture_path, std::ios::binary | std::ios::trunc);
+        g_network_capture_stream = platform_util::OpenUtf8Output(platform_util::PathToUtf8(g_network_capture_path));
         if (!g_network_capture_stream.is_open()) {
             throw std::runtime_error("无法打开网络抓包文件");
         }
@@ -288,6 +304,7 @@ void shutdown() {
     }
     SPDLOG_INFO("日志系统准备关闭 session={}", g_session_id);
     g_network_stop_requested.store(true, std::memory_order_release);
+    g_network_capture_ready.notify_all();
     if (g_network_capture_thread.joinable()) {
         g_network_capture_thread.join();
     }
@@ -343,12 +360,24 @@ void log_network_payload(std::string_view transport,
     record.peer.assign(peer);
     record.payload.assign(payload.begin(), payload.end());
 
-    if (!g_network_capture_queue.emplace(std::move(record))) {
-        SPDLOG_WARN("网络抓包队列已满，丢弃记录 channel={} peer={} bytes={}",
-                    channel,
-                    peer,
-                    payload.size());
+    const auto record_bytes = record.payload.size() + record.channel.size() + record.peer.size() + sizeof(record);
+    bool dropped = false;
+    {
+        std::lock_guard lock(g_network_capture_mutex);
+        if (g_network_stop_requested.load(std::memory_order_acquire)) return;
+        if (g_network_capture_queue.size() >= kNetworkCaptureQueueSize
+            || record_bytes > kMaxNetworkCaptureBytes - g_network_capture_bytes) {
+            dropped = true;
+        } else {
+            g_network_capture_queue.push_back(std::move(record));
+            g_network_capture_bytes += record_bytes;
+        }
     }
+    if (dropped) {
+        const auto count = g_network_capture_dropped.fetch_add(1) + 1;
+        if (count == 1 || count % 1024 == 0)
+            SPDLOG_WARN("网络抓包过载，记录已丢弃 total={}; capture is incomplete", count);
+    } else g_network_capture_ready.notify_one();
 }
 
 }// namespace RoboGo::logging

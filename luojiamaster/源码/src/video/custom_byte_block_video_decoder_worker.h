@@ -41,6 +41,13 @@ public:
     std::uint64_t bytes_received() const {
         return bytes_received_.load(std::memory_order_relaxed);
     }
+    std::uint64_t packets_dropped() const {
+        return packets_dropped_.load(std::memory_order_relaxed);
+    }
+    std::size_t queued_packets() const {
+        std::lock_guard lock(queue_mutex_);
+        return packet_queue_.size();
+    }
 
 private:
     void run();
@@ -48,7 +55,11 @@ private:
     void handle_decode_error(const std::string &message);
 
     CustomByteBlockVideoDecoderConfig config_;
-    moodycamel::BlockingReaderWriterQueue<std::vector<std::uint8_t>> packet_queue_{256};
+    static constexpr std::size_t kMaxQueuedPackets = 128;
+    mutable std::mutex queue_mutex_;
+    std::condition_variable queue_cv_;
+    std::deque<std::vector<std::uint8_t>> packet_queue_;
+    bool reset_requested_ = false;
     FrameHandler frame_handler_;
     LogHandler log_handler_;
     std::atomic<bool> stop_requested_{false};
@@ -61,6 +72,7 @@ private:
     std::atomic<std::uint64_t> packets_dequeued_{0};
     std::atomic<std::uint64_t> frames_output_{0};
     std::atomic<std::uint64_t> bytes_received_{0};
+    std::atomic<std::uint64_t> packets_dropped_{0};
 };
 
 }// namespace RoboGo::video

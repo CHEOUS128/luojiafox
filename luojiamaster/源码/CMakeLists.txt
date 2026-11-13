@@ -124,7 +124,7 @@ target_compile_definitions(imgui PUBLIC
 )
 if(WIN32)
     target_sources(imgui PRIVATE
-        ${CMAKE_CURRENT_SOURCE_DIR}/3rdparty_downloads/imgui/backends/imgui_impl_dx12.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/platform/imgui_dx12_backend.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/3rdparty_downloads/imgui/backends/imgui_impl_win32.cpp
     )
 else()
@@ -208,6 +208,7 @@ add_embedded_resource("proto/messages.proto" "embedded_messages_proto")
 add_executable(luojiamaster WIN32
     src/main.cpp
     src/app/application.cpp
+    src/app/video_stability_test.cpp
     src/app/imgui_setup.cpp
     src/custom_control_payload.cpp
     src/main_window.cpp
@@ -283,6 +284,35 @@ if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" OR CMAKE_CXX_COMPILER_ID STREQUAL "Clang
         COMPILE_FLAGS -g0
     )
 elseif(MSVC)
-    target_compile_options(luojiamaster PRIVATE /bigobj /W4)
-    target_link_options(luojiamaster PRIVATE /MAP)
+    target_compile_options(luojiamaster PRIVATE /bigobj /W4 /Z7)
+    target_link_options(luojiamaster PRIVATE /MAP /DEBUG:FULL /OPT:REF /OPT:ICF)
+endif()
+
+include(CTest)
+if(BUILD_TESTING)
+    add_executable(latest_video_frame_test tests/latest_video_frame_test.cpp)
+    target_include_directories(latest_video_frame_test PRIVATE src)
+    if(MSVC)
+        target_compile_options(latest_video_frame_test PRIVATE /utf-8 /W4)
+    endif()
+    add_test(NAME latest_video_frame_test COMMAND latest_video_frame_test)
+    set_tests_properties(latest_video_frame_test PROPERTIES TIMEOUT 15)
+    add_executable(video_worker_test
+        tests/video_worker_test.cpp
+        src/video/custom_byte_block_video_decoder.cpp
+        src/video/custom_byte_block_video_decoder_worker.cpp)
+    target_include_directories(video_worker_test PRIVATE include gen src)
+    target_precompile_headers(video_worker_test PRIVATE include/pch.h)
+    target_link_libraries(video_worker_test PRIVATE
+        spdlog::spdlog utf8_validity protobuf::libprotobuf-lite async_mqtt_asio_bind
+        ffmpeg imgui readerwriterqueue stb)
+    target_compile_definitions(video_worker_test PRIVATE SPDLOG_ACTIVE_LEVEL=SPDLOG_LEVEL_TRACE)
+    if(WIN32)
+        target_compile_definitions(video_worker_test PRIVATE _WIN32_WINNT=0x0601)
+    endif()
+    if(MSVC)
+        target_compile_options(video_worker_test PRIVATE /utf-8 /bigobj /W4)
+    endif()
+    add_test(NAME video_worker_test COMMAND video_worker_test)
+    set_tests_properties(video_worker_test PROPERTIES TIMEOUT 20)
 endif()

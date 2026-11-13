@@ -1,4 +1,5 @@
 #include "app/application.h"
+#include "app/video_stability_test.h"
 #include "logging/logging.h"
 #include "platform/platform_backend.h"
 
@@ -36,6 +37,19 @@ std::vector<std::string> CollectCommandLineArgs(const int argc, char *argv[]) {
 
 int RunMain(const std::vector<std::string> &args) {
     auto platform_backend = RoboGo::platform::CreatePlatformBackend();
+    if (std::find(args.begin(), args.end(), "--offline-video-test") != args.end()) {
+        // Branch before normal options, services, sockets, MQTT and keyboard/mouse state.
+        RoboGo::logging::initialize(platform_backend->application_name(), false);
+        int result = 1;
+        try {
+            result = RoboGo::app::RunVideoStabilityTest(*platform_backend, args);
+        } catch (const std::exception &error) {
+            SPDLOG_ERROR("Offline video test failed: {}", error.what());
+            platform_backend->Shutdown();
+        }
+        RoboGo::logging::shutdown();
+        return result;
+    }
     const RoboGo::app::LaunchOptions options = RoboGo::app::ParseLaunchOptions(args);
     RoboGo::logging::initialize(platform_backend->application_name(), options.invert_udp_video);
     const int result = RoboGo::app::RunApplication(*platform_backend, options);

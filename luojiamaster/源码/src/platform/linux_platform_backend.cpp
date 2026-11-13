@@ -173,9 +173,9 @@ public:
         return true;
     }
 
-    void RenderFrame(ImDrawData *draw_data) override {
+    [[nodiscard]] bool RenderFrame(ImDrawData *draw_data) override {
         if (draw_data->DisplaySize.x <= 0.0f || draw_data->DisplaySize.y <= 0.0f) {
-            return;
+            return false;
         }
 
         main_window_data_.ClearValue.color.float32[0] = 0.0f;
@@ -183,7 +183,9 @@ public:
         main_window_data_.ClearValue.color.float32[2] = 0.0f;
         main_window_data_.ClearValue.color.float32[3] = 1.0f;
         FrameRender(draw_data);
+        if (swap_chain_rebuild_) return false;
         FramePresent();
+        return !swap_chain_rebuild_;
     }
 
     void SetGameInputCapture(const bool enabled) override {

@@ -9,13 +9,22 @@ namespace RoboGo::video {
         uint32_t frame_id = 0;
         uint32_t frame_bytes = 0;
         uint32_t collected_frame_bytes = 0;
-        std::map<uint16_t, std::pair<uint8_t *, size_t>> shards;
+        std::map<uint16_t, std::vector<uint8_t>> shards;
     };
 
     class VideoShardsManager {
     private:
         // 缓存数据包相关
-        moodycamel::BlockingReaderWriterQueue<std::pair<uint8_t *, size_t>> packet_queue;
+        std::mutex packet_mutex;
+        std::condition_variable packet_ready;
+        std::deque<std::vector<uint8_t>> packet_queue;
+        std::size_t queued_bytes = 0;
+        bool accepting = true;
+        bool reset_pending = false;
+        std::function<void()> reset_callback;
+        static constexpr std::size_t max_queued_packets = 512;
+        static constexpr std::size_t max_queued_bytes = 4U * 1024U * 1024U;
+        static constexpr std::uint32_t max_frame_bytes = 8U * 1024U * 1024U;
         // 帧 ID 相关
         uint32_t fixed_frame_id_start = 0;
         uint32_t max_frame_id = 0;
@@ -37,6 +46,10 @@ namespace RoboGo::video {
         void on_receive_shard(const uint8_t *data, size_t size);
 
         void handle_once();
+        void stop();
+        // Consumer-thread reconnect/replay reset; does not restart a stopped source.
+        void reset_stream();
+        void set_reset_callback(std::function<void()> callback) { reset_callback = std::move(callback); }
 
     private:
         void reset_stream_state();

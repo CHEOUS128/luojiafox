@@ -36,6 +36,8 @@ public:
 
     std::vector<CustomByteBlockDecodedFrame> push_packet_bytes(std::span<const std::uint8_t> wire_bytes);
     std::vector<CustomByteBlockDecodedFrame> flush();
+    // Local overload/reconnect recovery; no transport bytes are added.
+    void reset_stream();
 
 private:
     CustomByteBlockVideoDecoderConfig config_;

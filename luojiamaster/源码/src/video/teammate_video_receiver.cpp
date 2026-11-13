@@ -16,7 +16,6 @@ struct DecodeSession {
     int source_width = 0;
     int source_height = 0;
     AVPixelFormat source_format = AV_PIX_FMT_NONE;
-    std::vector<std::uint8_t> rgba;
     bool configured = false;
 
     ~DecodeSession() {
@@ -180,7 +179,7 @@ bool ConvertToRgba(DecodeSession &session,
 
     const std::size_t width = static_cast<std::size_t>(frame->width);
     const std::size_t height = static_cast<std::size_t>(frame->height);
-    session.rgba.resize(width * height * 4u);
+    out.buffer.resize(width * height * 4u);
 
     // sws_scale 内部可能用 SIMD 写，目标缓冲按 FFmpeg 对齐要求分配再拷回来最稳。
     std::uint8_t *dst_slices[4] = {nullptr, nullptr, nullptr, nullptr};
@@ -201,12 +200,11 @@ bool ConvertToRgba(DecodeSession &session,
     }
     for (int y = 0; y < frame->height; ++y) {
         const auto *src_row = dst_slices[0] + static_cast<std::ptrdiff_t>(y) * dst_stride[0];
-        auto *dst_row = session.rgba.data() + static_cast<std::size_t>(y) * width * 4u;
+        auto *dst_row = out.buffer.data() + static_cast<std::size_t>(y) * width * 4u;
         std::memcpy(dst_row, src_row, width * 4u);
     }
     av_freep(&dst_slices[0]);
 
-    out.buffer = session.rgba;// 后面交给主循环上传纹理，拷一份避免被下一帧覆盖
     out.width = frame->width;
     out.height = frame->height;
     return true;
@@ -235,9 +233,19 @@ struct TeammateVideoReceiver::Shared {
 TeammateVideoReceiver::TeammateVideoReceiver(TeammateVideoConfig config, app::VideoFrameHandler on_frame)
     : shared_(std::make_shared<Shared>()) {
     shared_->config = config;
+    shared_->config.input_queue_capacity = std::clamp<std::size_t>(config.input_queue_capacity, 1, 16);
+    shared_->config.max_dimension = std::clamp(config.max_dimension, 1, 4096);
     shared_->on_frame = std::move(on_frame);
-    worker_thread_ = std::thread([this]() { run(); });
     SPDLOG_INFO("队友画面解码器已启动");
+    worker_thread_ = std::thread([this]() {
+        try { run(); }
+        catch (const std::exception &error) {
+            try { SPDLOG_ERROR("队友视频解码线程已停止 message={}", error.what()); } catch (...) {}
+        } catch (...) {
+            try { SPDLOG_ERROR("队友视频解码线程出现未知异常，已停止"); } catch (...) {}
+        }
+        shared_->running.store(false, std::memory_order_release);
+    });
 }
 
 TeammateVideoReceiver::~TeammateVideoReceiver() {
@@ -245,11 +253,12 @@ TeammateVideoReceiver::~TeammateVideoReceiver() {
 }
 
 void TeammateVideoReceiver::submit_frame(std::vector<std::uint8_t> &&frame) {
-    if (frame.empty() || !shared_->running.load(std::memory_order_relaxed)) {
+    if (frame.empty() || frame.size() > 8U * 1024U * 1024U || !shared_->running.load(std::memory_order_relaxed)) {
         return;
     }
     {
         std::lock_guard lock(shared_->queue_mutex);
+        if (!shared_->running.load(std::memory_order_acquire)) return;
         while (shared_->input_queue.size() >= shared_->config.input_queue_capacity) {
             shared_->input_queue.pop_front();
             shared_->frames_dropped.fetch_add(1, std::memory_order_relaxed);
@@ -278,6 +287,11 @@ void TeammateVideoReceiver::stop() {
     }
     stopped_ = true;
     shared_->running.store(false, std::memory_order_relaxed);
+    std::deque<std::vector<std::uint8_t>> discarded;
+    {
+        std::lock_guard lock(shared_->queue_mutex);
+        discarded.swap(shared_->input_queue);
+    }
     shared_->queue_cv.notify_all();
     if (worker_thread_.joinable()) {
         worker_thread_.join();
@@ -313,6 +327,7 @@ void TeammateVideoReceiver::run() {
                 return !shared_->input_queue.empty()
                        || !shared_->running.load(std::memory_order_relaxed);
             });
+            if (!shared_->running.load(std::memory_order_acquire)) break;
             if (shared_->input_queue.empty()) {
                 continue;
             }
@@ -346,20 +361,31 @@ void TeammateVideoReceiver::run() {
         }
 
         // send_packet 之后一定要 drain：HEVC 的 P 帧可能被压在解码器里，不 drain 就永远出不来画面。
-        session->packet->data = frame_bytes.data();
-        session->packet->size = static_cast<int>(frame_bytes.size());
+        av_packet_unref(session->packet);
+        if (av_new_packet(session->packet, static_cast<int>(frame_bytes.size())) < 0) {
+            report_error("分配队友解码包失败");
+            continue;
+        }
+        std::memcpy(session->packet->data, frame_bytes.data(), frame_bytes.size());
         int ret = avcodec_send_packet(session->codec_context, session->packet);
-        session->packet->data = nullptr;
-        session->packet->size = 0;
+        bool packet_needs_retry = ret == AVERROR(EAGAIN);
         if (ret < 0 && ret != AVERROR(EAGAIN)) {
+            av_packet_unref(session->packet);
             // 丢一帧不影响后面的 P 帧，只记一次。
             report_error("送包失败 ret=" + std::to_string(ret));
             continue;
         }
 
-        while (true) {
+        while (shared_->running.load(std::memory_order_acquire)) {
             ret = avcodec_receive_frame(session->codec_context, session->frame);
             if (ret == AVERROR(EAGAIN)) {
+                if (packet_needs_retry) {
+                    packet_needs_retry = false;
+                    const int retry_status = avcodec_send_packet(session->codec_context, session->packet);
+                    av_packet_unref(session->packet);
+                    if (retry_status >= 0) continue;
+                    report_error("重送队友解码包失败 ret=" + std::to_string(retry_status));
+                }
                 // EAGAIN 是正常的：说明解码器要等下一个包
                 break;
             }
@@ -383,13 +409,14 @@ void TeammateVideoReceiver::run() {
             shared_->width.store(video_frame.width, std::memory_order_relaxed);
             shared_->height.store(video_frame.height, std::memory_order_relaxed);
             if (shared_->on_frame) {
-                shared_->on_frame(std::move(video_frame));
+                if (shared_->running.load(std::memory_order_acquire)) shared_->on_frame(std::move(video_frame));
             }
             if (!stream_started_logged) {
                 stream_started_logged = true;
                 SPDLOG_INFO("队友画面已开始");
             }
         }
+        av_packet_unref(session->packet);
     }
 
     SPDLOG_INFO("队友画面解码线程已退出");

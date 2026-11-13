@@ -6,15 +6,18 @@ namespace RoboGo::video {
                                            boost::asio::ip::udp::endpoint endpoint,
                                            const std::function<void(const AVFrame *frame)> &frame_callback,
                                            std::function<void(const std::vector<uint8_t> &frame)> raw_frame_handler)
-        : video_stream_receiver(io_context, endpoint, [this](const uint8_t *data, size_t size) {
+        : raw_frame_callback(std::move(raw_frame_handler)),
+          video_stream_receiver(io_context, endpoint, [this](const uint8_t *data, size_t size) {
               // 接收到数据包之后送入分片管理
-              video_shards_manager.on_receive_shard(data, size);
-          }),
-          video_decoder(frame_callback),
-          raw_frame_callback(std::move(raw_frame_handler)) {
+              if (is_running.load(std::memory_order_acquire)) video_shards_manager.on_receive_shard(data, size);
+          }) {
         SPDLOG_INFO("创建视频流管理器 endpoint={}:{}",
                     endpoint.address().to_string(),
                     endpoint.port());
+        video_shards_manager.set_reset_callback([this]() {
+            stream_ready = false;
+            if (video_decoder != nullptr) video_decoder->reset();
+        });
         // 接收到完整的视频帧之后去解码
         video_shards_manager.set_frame_callback([this](const std::vector<uint8_t> &frame) {
             // 队友画面旁路：把官方图传的原始 HEVC 字节原样交给上层转发。
@@ -41,25 +44,42 @@ namespace RoboGo::video {
 
             // 解码
             if (stream_ready) {
-                video_decoder.decode_frame(frame);
+                video_decoder->decode_frame(frame);
             } else {
                 SPDLOG_DEBUG("视频流尚未就绪，丢弃帧 bytes={}", frame.size());
             }
         });
         // 为视频解码单独创建一个线程
-        decode_thread = std::thread([this]() {
-            SPDLOG_INFO("视频解码线程已启动");
-            while (is_running.load(std::memory_order_relaxed)) {
-                video_shards_manager.handle_once();
+        decode_thread = std::thread([this, frame_callback]() {
+            try {
+                video_decoder = std::make_unique<VideoDecoder>(frame_callback);
+                SPDLOG_INFO("视频解码线程已启动");
+                while (is_running.load(std::memory_order_acquire)) {
+                    try {
+                        video_shards_manager.handle_once();
+                    } catch (const std::exception &error) {
+                        stream_ready = false;
+                        SPDLOG_WARN("官方视频帧处理失败，等待流恢复 message={}", error.what());
+                        video_decoder->reset();
+                    }
+                }
+                SPDLOG_INFO("视频解码线程已退出");
+            } catch (const std::exception &error) {
+                try { SPDLOG_ERROR("官方视频解码线程已停止 message={}", error.what()); } catch (...) {}
+            } catch (...) {
+                try { SPDLOG_ERROR("官方视频解码线程出现未知异常，已停止"); } catch (...) {}
             }
-            SPDLOG_INFO("视频解码线程已退出");
+            is_running.store(false, std::memory_order_release);
         });
     }
+
+    VideoStreamManager::~VideoStreamManager() { stop(); }
 
     void VideoStreamManager::stop() {
         SPDLOG_INFO("收到视频流管理器停止请求");
         video_stream_receiver.stop();
         is_running.store(false, std::memory_order_relaxed);
+        video_shards_manager.stop();
         if (decode_thread.joinable()) {
             decode_thread.join();
         }

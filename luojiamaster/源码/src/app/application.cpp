@@ -1,4 +1,5 @@
 #include "application.h"
+#include "app/latest_video_frame.h"
 
 #include <cctype>
 
@@ -228,6 +229,8 @@ class AvFrameRgbaConverter {
 public:
     explicit AvFrameRgbaConverter(const bool invert_udp_video)
         : invert_udp_video_(invert_udp_video) {
+        rgba_frame_ = av_frame_alloc();
+        if (rgba_frame_ == nullptr) throw std::runtime_error("Unable to allocate RGBA conversion frame");
     }
 
     ~AvFrameRgbaConverter() {
@@ -235,10 +238,14 @@ public:
             sws_freeContext(sws_context_);
             sws_context_ = nullptr;
         }
+        av_frame_free(&rgba_frame_);
     }
 
     std::optional<VideoFrame> convert(const AVFrame *frame) {
         if (frame == nullptr) {
+            return std::nullopt;
+        }
+        if (frame->width <= 0 || frame->height <= 0 || frame->width > 4096 || frame->height > 4096) {
             return std::nullopt;
         }
 
@@ -259,14 +266,28 @@ public:
         video_frame.buffer.resize(static_cast<size_t>(frame->width) * static_cast<size_t>(frame->height) * 4u);
         video_frame.width = frame->width;
         video_frame.height = frame->height;
-        uint8_t *dest_data[1] = {video_frame.buffer.data()};
-        int dest_linesize[1] = {frame->width * 4};
+        if (rgba_frame_->width != frame->width || rgba_frame_->height != frame->height) {
+            av_frame_unref(rgba_frame_);
+            rgba_frame_->format = AV_PIX_FMT_RGBA;
+            rgba_frame_->width = frame->width;
+            rgba_frame_->height = frame->height;
+            if (av_frame_get_buffer(rgba_frame_, 32) < 0) {
+                av_frame_unref(rgba_frame_);
+                return std::nullopt;
+            }
+        }
+        if (av_frame_make_writable(rgba_frame_) < 0) return std::nullopt;
         const int scaled_height = sws_scale(sws_context_,
                                             frame->data, frame->linesize,
                                             0, frame->height,
-                                            dest_data, dest_linesize);
+                                            rgba_frame_->data, rgba_frame_->linesize);
         if (scaled_height != frame->height) {
             return std::nullopt;
+        }
+        for (int y = 0; y < frame->height; ++y) {
+            std::memcpy(video_frame.buffer.data() + static_cast<std::size_t>(y) * frame->width * 4u,
+                        rgba_frame_->data[0] + static_cast<std::ptrdiff_t>(y) * rgba_frame_->linesize[0],
+                        static_cast<std::size_t>(frame->width) * 4u);
         }
         // 180° 旋转已改到渲染阶段用 GPU 的 UV 翻转完成（见 main_window.cpp），
         // 不再在这里用 CPU 逐像素交换整帧 1080p 数据——那是操作延迟的主要来源之一。
@@ -283,6 +304,7 @@ public:
 
 private:
     SwsContext *sws_context_ = nullptr;
+    AVFrame *rgba_frame_ = nullptr;
     std::atomic<bool> invert_udp_video_ = false;
 };
 
@@ -296,21 +318,34 @@ public:
                       custom_video_frame.buffer = std::move(decoded_frame.rgba);
                       custom_video_frame.width = decoded_frame.width;
                       custom_video_frame.height = decoded_frame.height;
-                      custom_video_frame_queue_.emplace(std::move(custom_video_frame));
+                      custom_video_frame_queue_.Push(std::move(custom_video_frame));
                   },
                   [this](const int type, const std::string &text) {
                       UiLogMessage log_message;
                       log_message.type = type;
                       log_message.text = text;
-                      custom_video_log_queue_.emplace(std::move(log_message));
+                      std::lock_guard lock(custom_video_log_mutex_);
+                      if (custom_video_log_queue_.size() >= 128) custom_video_log_queue_.pop_front();
+                      custom_video_log_queue_.push_back(std::move(log_message));
                   }),
           mqtt_client_(io_context_, options.mqtt_host, options.mqtt_port, [this](const std::string &topic, const std::string &payload) {
-              message_queue_.emplace(topic, payload);
+              if (topic == "CustomByteBlock") {
+                  CustomByteBlock message;
+                  if (message.ParseFromString(payload)) {
+                      const auto &bytes = message.data();
+                      custom_byte_block_decoder_worker_.enqueue_packet_bytes(std::span<const std::uint8_t>(
+                              reinterpret_cast<const std::uint8_t *>(bytes.data()), bytes.size()));
+                  } else {
+                      SPDLOG_WARN("CustomByteBlock protobuf parse failed bytes={}", payload.size());
+                  }
+              } else if (!message_queue_.try_emplace(topic, payload)) {
+                  messages_dropped_.fetch_add(1, std::memory_order_relaxed);
+              }
           }),
           video_stream_manager_(io_context_, boost::asio::ip::udp::endpoint(boost::asio::ip::udp::v4(), options.parsed_video_port), [this](const AVFrame *frame) {
-              const auto video_frame = udp_frame_converter_.convert(frame);
+              auto video_frame = udp_frame_converter_.convert(frame);
               if (video_frame.has_value()) {
-                  video_frame_queue_.emplace(video_frame.value());
+                  video_frame_queue_.Push(std::move(*video_frame));
               } else if (frame == nullptr) {
                   SPDLOG_ERROR("收到空视频帧指针，已丢弃");
               } else {
@@ -325,11 +360,6 @@ public:
               if (teammate_link_ != nullptr) {
                   teammate_link_->push_frame(frame);
               }
-          }),
-          io_thread_([this]() {
-              SPDLOG_INFO("IO线程已启动");
-              io_context_.run();
-              SPDLOG_INFO("IO线程已退出");
           }) {
         // 队友链路放在最后初始化：没启用（既无 --teammate-* 也无 队友视角.ini）就完全不建，原有逻辑一行都不变。
         // 收到对方的码流 → 交给解码器 → 解出来的 RGBA 进队列，由主循环上传纹理。
@@ -362,7 +392,7 @@ public:
                 teammate_video_receiver_ = std::make_unique<RoboGo::video::TeammateVideoReceiver>(
                         RoboGo::video::TeammateVideoConfig{},
                         [this](VideoFrame &&video_frame) {
-                            teammate_video_frame_queue_.emplace(std::move(video_frame));
+                            teammate_video_frame_queue_.Push(std::move(video_frame));
                         });
                 teammate_link_ = std::make_unique<RoboGo::net::TeammateLink>(
                         link_config,
@@ -378,6 +408,19 @@ public:
                 SPDLOG_WARN("队友画面链路未启用：peer / listen 都没解析出有效值（--teammate-* 或 队友视角.ini）");
             }
         }
+        // Every object captured by an IO/decode callback is fully constructed
+        // before the IO context can deliver the first network packet.
+        io_thread_ = std::thread([this]() {
+            SPDLOG_INFO("IO线程已启动");
+            try {
+                io_context_.run();
+            } catch (const std::exception &error) {
+                SPDLOG_ERROR("IO线程异常，网络接收已停止 message={}", error.what());
+            } catch (...) {
+                SPDLOG_ERROR("IO线程出现未知异常，网络接收已停止");
+            }
+            SPDLOG_INFO("IO线程已退出");
+        });
     }
 
     ~BackgroundServices() {
@@ -432,30 +475,49 @@ public:
 
     void ProcessMessages(State &state) {
         std::pair<std::string, std::string> message;
-        while (message_queue_.try_dequeue(message)) {
-            HandleMqttMessage(state, mqtt_client_, message.first, message.second, [this](std::span<const uint8_t> packet_bytes) {
-                custom_byte_block_decoder_worker_.enqueue_packet_bytes(packet_bytes);
-            });
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(2);
+        for (std::size_t handled = 0; handled < 128 && std::chrono::steady_clock::now() < deadline
+                                      && message_queue_.try_dequeue(message); ++handled) {
+            HandleMqttMessage(state, mqtt_client_, message.first, message.second);
         }
     }
 
     void DrainCustomVideoLogs(State &state) {
-        UiLogMessage log_message;
-        while (custom_video_log_queue_.try_dequeue(log_message)) {
-            AppendVehicleLog(state, log_message.type, log_message.text);
+        std::deque<UiLogMessage> messages;
+        {
+            std::lock_guard lock(custom_video_log_mutex_);
+            for (std::size_t count = 0; count < 32 && !custom_video_log_queue_.empty(); ++count) {
+                messages.push_back(std::move(custom_video_log_queue_.front()));
+                custom_video_log_queue_.pop_front();
+            }
+        }
+        for (const auto &message : messages) {
+            AppendVehicleLog(state, message.type, message.text);
         }
     }
 
+    void LogVideoQueueStats() const {
+        const auto udp = video_frame_queue_.Stats();
+        const auto custom = custom_video_frame_queue_.Stats();
+        const auto teammate = teammate_video_frame_queue_.Stats();
+        SPDLOG_INFO("视频缓冲 pending={}/{}/{} covered={}/{}/{} mqtt_dropped={} cbb_queued={} cbb_dropped={}",
+                    udp.pending, custom.pending, teammate.pending,
+                    udp.overwritten, custom.overwritten, teammate.overwritten,
+                    messages_dropped_.load(std::memory_order_relaxed),
+                    custom_byte_block_decoder_worker_.queued_packets(),
+                    custom_byte_block_decoder_worker_.packets_dropped());
+    }
+
     std::optional<VideoFrame> TakeLatestVideoFrame() {
-        return TakeLatestFrame(video_frame_queue_);
+        return video_frame_queue_.Take();
     }
 
     std::optional<VideoFrame> TakeLatestCustomVideoFrame() {
-        return TakeLatestFrame(custom_video_frame_queue_);
+        return custom_video_frame_queue_.Take();
     }
 
     std::optional<VideoFrame> TakeLatestTeammateVideoFrame() {
-        return TakeLatestFrame(teammate_video_frame_queue_);
+        return teammate_video_frame_queue_.Take();
     }
 
     // 给主循环的观测探针用：只读计数，不改任何状态。
@@ -482,24 +544,20 @@ public:
             teammate_video_receiver_->stop();
         }
         custom_byte_block_decoder_worker_.stop();
+        video_frame_queue_.Clear();
+        custom_video_frame_queue_.Clear();
+        teammate_video_frame_queue_.Clear();
     }
 
 private:
-    static std::optional<VideoFrame> TakeLatestFrame(moodycamel::ReaderWriterQueue<VideoFrame> &queue) {
-        std::optional<VideoFrame> latest_frame;
-        VideoFrame video_frame;
-        while (queue.try_dequeue(video_frame)) {
-            latest_frame = std::move(video_frame);
-        }
-        return latest_frame;
-    }
-
     boost::asio::io_context io_context_;
-    moodycamel::ReaderWriterQueue<std::pair<std::string, std::string>> message_queue_;
-    moodycamel::ReaderWriterQueue<VideoFrame> video_frame_queue_;
-    moodycamel::ReaderWriterQueue<VideoFrame> custom_video_frame_queue_;
-    moodycamel::ReaderWriterQueue<VideoFrame> teammate_video_frame_queue_;
-    moodycamel::ReaderWriterQueue<UiLogMessage> custom_video_log_queue_;
+    moodycamel::ReaderWriterQueue<std::pair<std::string, std::string>> message_queue_{2048};
+    std::atomic<std::uint64_t> messages_dropped_{0};
+    RoboGo::app::LatestVideoFrameMailbox<VideoFrame> video_frame_queue_;
+    RoboGo::app::LatestVideoFrameMailbox<VideoFrame> custom_video_frame_queue_;
+    RoboGo::app::LatestVideoFrameMailbox<VideoFrame> teammate_video_frame_queue_;
+    std::mutex custom_video_log_mutex_;
+    std::deque<UiLogMessage> custom_video_log_queue_;
     AvFrameRgbaConverter udp_frame_converter_;
     RoboGo::video::CustomByteBlockVideoDecoderWorker custom_byte_block_decoder_worker_;
     RoboGo::io::MqttClient mqtt_client_;
@@ -512,44 +570,49 @@ private:
     bool stopped_ = false;
 };
 
-void UploadLatestVideoFrames(RoboGo::platform::PlatformBackend &platform_backend,
-                             BackgroundServices &background_services,
+struct PendingVideoPresentation {
+    bool udp = false;
+    bool custom = false;
+    bool teammate = false;
+};
+
+PendingVideoPresentation UploadLatestVideoFrames(RoboGo::platform::PlatformBackend &platform_backend,
+                                                 BackgroundServices &background_services) {
+    PendingVideoPresentation pending;
+    const auto video_frame = background_services.TakeLatestVideoFrame();
+    if (video_frame.has_value()) {
+        pending.udp = platform_backend.UploadTexture(TextureSlot::UdpVideo, *video_frame);
+    }
+    const auto custom_video_frame = background_services.TakeLatestCustomVideoFrame();
+    if (custom_video_frame.has_value()) {
+        pending.custom = platform_backend.UploadTexture(TextureSlot::CustomVideo, *custom_video_frame);
+    }
+    const auto teammate_video_frame = background_services.TakeLatestTeammateVideoFrame();
+    if (teammate_video_frame.has_value()) {
+        pending.teammate = platform_backend.UploadTexture(TextureSlot::TeammateVideo, *teammate_video_frame);
+    }
+    return pending;
+}
+
+void CommitVideoPresentation(const PendingVideoPresentation &pending,
                              std::chrono::steady_clock::time_point &last_udp_frame_time,
                              std::chrono::steady_clock::time_point &last_custom_frame_time,
                              std::chrono::steady_clock::time_point &last_teammate_frame_time,
                              std::uint64_t &udp_frame_count,
                              std::uint64_t &custom_frame_count,
                              std::uint64_t &teammate_frame_count) {
-    const auto video_frame = background_services.TakeLatestVideoFrame();
-    if (video_frame.has_value()) {
-        last_udp_frame_time = std::chrono::steady_clock::now();
+    const auto now = std::chrono::steady_clock::now();
+    if (pending.udp) {
+        last_udp_frame_time = now;
         ++udp_frame_count;
-        if (!platform_backend.UploadTexture(TextureSlot::UdpVideo, *video_frame)) {
-            SPDLOG_ERROR("创建UDP视频纹理失败 width={} height={}", video_frame->width, video_frame->height);
-        }
     }
-
-    const auto custom_video_frame = background_services.TakeLatestCustomVideoFrame();
-    if (custom_video_frame.has_value()) {
-        last_custom_frame_time = std::chrono::steady_clock::now();
+    if (pending.custom) {
+        last_custom_frame_time = now;
         ++custom_frame_count;
-        if (!platform_backend.UploadTexture(TextureSlot::CustomVideo, *custom_video_frame)) {
-            SPDLOG_ERROR("创建 CustomByteBlock 视频纹理失败 width={} height={}",
-                         custom_video_frame->width,
-                         custom_video_frame->height);
-        }
     }
-
-    // 队友画面：没启用链路时队列永远是空的，这里不会付出任何代价。
-    const auto teammate_video_frame = background_services.TakeLatestTeammateVideoFrame();
-    if (teammate_video_frame.has_value()) {
-        last_teammate_frame_time = std::chrono::steady_clock::now();
+    if (pending.teammate) {
+        last_teammate_frame_time = now;
         ++teammate_frame_count;
-        if (!platform_backend.UploadTexture(TextureSlot::TeammateVideo, *teammate_video_frame)) {
-            SPDLOG_ERROR("创建队友画面纹理失败 width={} height={}",
-                         teammate_video_frame->width,
-                         teammate_video_frame->height);
-        }
     }
 }
 
@@ -829,37 +892,31 @@ int RunApplication(platform::PlatformBackend &platform_backend, const LaunchOpti
             background_services.DrainCustomVideoLogs(state);
             UpdateState(state);
             PublishCustomControlIfDue(state, background_services.mqtt_client());
-            UploadLatestVideoFrames(platform_backend,
-                                    background_services,
-                                    last_udp_frame_time,
-                                    last_custom_frame_time,
-                                    last_teammate_frame_time,
-                                    udp_frame_count,
-                                    custom_frame_count,
-                                    teammate_frame_count);
+            if (!platform_backend.BeginFrame()) continue;
+            const auto pending_video_presentation = UploadLatestVideoFrames(platform_backend, background_services);
 
-            // 视频探针：每秒一行，只读不干预。
-            // 两路的「解出帧数」和「距上一帧多久」都打出来，用来区分三种情况：
-            //   1) udp_custom_in 不涨 + custom_ago 一直涨  → 客户端根本没收到/没解出自定义流，问题在推流端或 MQTT 投递
-            //   2) udp_custom_in 在涨 + custom_ago 很短     → 解码正常，问题在渲染/显示
-            //   3) 两条一起崩                              → GPU 侧拖垮了整个循环
-            // 注意 udp_ago / custom_ago 在从未收到过帧时是 -9223... 这种巨大的负数，表示“还没开始”，不是延迟。
+            // Video probe counts successfully presented new textures. Compare
+            // frames_out and queue counters to distinguish decode/display stalls.
+            // -1 means this stream has not submitted an image yet.
             ++probe_loop_count;
             const auto probe_now = std::chrono::steady_clock::now();
             if (probe_now - last_probe_time >= std::chrono::seconds(1)) {
+                background_services.LogVideoQueueStats();
                 const auto &decoder = background_services.custom_video_decoder();
                 const std::uint64_t packets_total = decoder.packets_received();
                 const std::uint64_t frames_out_total = decoder.frames_output();
                 const std::uint64_t bytes_total = decoder.bytes_received();
-                SPDLOG_INFO("视频探针 udp_in=+{} custom_in=+{} udp_total={} custom_total={} udp_ago={}ms custom_ago={}ms loop={}/s | cbb pkt_in=+{} pkt_taken_total={} frames_out=+{} bytes_in=+{}",
+                const auto presented_age_ms = [probe_now](const auto time) -> std::int64_t {
+                    if (time == std::chrono::steady_clock::time_point::min()) return -1;
+                    return std::chrono::duration_cast<std::chrono::milliseconds>(probe_now - time).count();
+                };
+                SPDLOG_INFO("视频探针 udp_in=+{} custom_in=+{} udp_total={} custom_total={} udp_ago={}ms custom_ago={}ms loop={}/s | cbb pkt_in=+{} pkt_taken_total={} frames_out=+{} bytes_in=+{} displayed_only=1",
                             udp_frame_count - last_probe_udp_frames,
                             custom_frame_count - last_probe_custom_frames,
                             udp_frame_count,
                             custom_frame_count,
-                            std::chrono::duration_cast<std::chrono::milliseconds>(
-                                    probe_now - last_udp_frame_time).count(),
-                            std::chrono::duration_cast<std::chrono::milliseconds>(
-                                    probe_now - last_custom_frame_time).count(),
+                            presented_age_ms(last_udp_frame_time),
+                            presented_age_ms(last_custom_frame_time),
                             probe_loop_count,
                             packets_total - last_probe_packets,
                             decoder.packets_dequeued(),
@@ -893,10 +950,6 @@ int RunApplication(platform::PlatformBackend &platform_backend, const LaunchOpti
                                 video.height,
                                 link.peer_address.empty() ? "-" : link.peer_address);
                 }
-            }
-
-            if (!platform_backend.BeginFrame()) {
-                continue;
             }
 
             const TextureView udp_video_texture = platform_backend.GetTextureView(TextureSlot::UdpVideo);
@@ -1043,15 +1096,18 @@ int RunApplication(platform::PlatformBackend &platform_backend, const LaunchOpti
             update_keyboard_mouse_state(background_services.mqtt_client());
 
             ImGui::Render();
-            platform_backend.RenderFrame(ImGui::GetDrawData());
+            if (platform_backend.RenderFrame(ImGui::GetDrawData())) {
+                CommitVideoPresentation(pending_video_presentation,
+                                        last_udp_frame_time, last_custom_frame_time, last_teammate_frame_time,
+                                        udp_frame_count, custom_frame_count, teammate_frame_count);
+            }
         }
-
-        SPDLOG_INFO("开始执行图形资源清理");
-        platform_backend.Shutdown();
 
         SPDLOG_INFO("开始关闭网络与后台线程");
         background_services.Stop();
         background_services.DrainCustomVideoLogs(state);
+        SPDLOG_INFO("开始执行图形资源清理");
+        platform_backend.Shutdown();
         SPDLOG_INFO("程序退出完成");
     }
 

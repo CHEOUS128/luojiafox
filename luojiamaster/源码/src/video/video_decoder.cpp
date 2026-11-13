@@ -3,84 +3,127 @@
 
 namespace RoboGo::video {
 
-    VideoDecoder::VideoDecoder(const std::function<void(const AVFrame *frame)> &frame_callback)
-        : frame_callback(frame_callback) {
-        // 查找HEVC解码器
-        const AVCodec *codecs[] = {
-                avcodec_find_decoder_by_name("hevc_cuvid"),// Nvidia 硬件加速
-                avcodec_find_decoder_by_name("hevc"),      // CPU 软解码
-        };
-        assert(codecs[0] != nullptr);
-        assert(codecs[1] != nullptr);
-        const AVCodec *codec = nullptr;
-        for (const auto &item: codecs) {
-            codec = item;
-
-            // 创建解码器上下文
+VideoDecoder::VideoDecoder(const std::function<void(const AVFrame *frame)> &callback)
+    : frame_callback(callback) {
+    try {
+        const AVCodec *candidates[] = {avcodec_find_decoder_by_name("hevc_cuvid"),
+                                      avcodec_find_decoder_by_name("hevc")};
+        for (const auto *codec : candidates) {
+            if (codec == nullptr) continue;
             av_codec_context = avcodec_alloc_context3(codec);
-            if (!av_codec_context) {
-                codec = nullptr;
-                continue;
-            }
-
-            // 配置低延迟参数
+            if (av_codec_context == nullptr) continue;
             av_codec_context->flags |= AV_CODEC_FLAG_LOW_DELAY;
             av_codec_context->flags2 |= AV_CODEC_FLAG2_FAST;
-
-            if (avcodec_open2(av_codec_context, codec, nullptr) < 0) {
-                SPDLOG_WARN("打开HEVC解码器失败 codec={}", codec->name);
-                avcodec_free_context(&av_codec_context);
-                codec = nullptr;
-                av_codec_context = nullptr;
-                continue;
+            if (avcodec_open2(av_codec_context, codec, nullptr) >= 0) {
+                SPDLOG_INFO("HEVC decoder enabled codec={}", codec->name);
+                break;
             }
-
-            SPDLOG_INFO("HEVC解码器已启用 codec={}", codec->name);
-            break;
-        }
-        if (codec == nullptr) {
-            SPDLOG_CRITICAL("Failed to find HEVC decoder");
-            std::terminate();
-        }
-
-        // 创建解析器
-        av_parser_context = av_parser_init(AV_CODEC_ID_HEVC);
-        if (!av_parser_context) {
-            SPDLOG_CRITICAL("Failed to find HEVC parser");
-            std::terminate();
-        }
-        SPDLOG_INFO("HEVC解析器已初始化");
-
-        // 缓存数据包
-        packet = av_packet_alloc();
-        if (!packet) {
-            SPDLOG_ERROR("分配AVPacket失败");
-            std::terminate();
-        }
-
-        // 缓存视频帧
-        decoded_frame = av_frame_alloc();
-        if (!decoded_frame) {
-            SPDLOG_ERROR("分配AVFrame失败");
-            std::terminate();
-        }
-    }
-
-    VideoDecoder::~VideoDecoder() {
-        SPDLOG_INFO("销毁视频解码器");
-        if (av_parser_context) {
-            av_parser_close(av_parser_context);
-        }
-        if (av_codec_context) {
+            SPDLOG_WARN("HEVC decoder open failed codec={}", codec->name);
             avcodec_free_context(&av_codec_context);
         }
-        if (packet) {
-            av_packet_free(&packet);
-        }
-        if (decoded_frame) {
-            av_frame_free(&decoded_frame);
-        }
+        if (av_codec_context == nullptr) throw std::runtime_error("Unable to open HEVC decoder");
+        av_parser_context = av_parser_init(AV_CODEC_ID_HEVC);
+        packet = av_packet_alloc();
+        decoded_frame = av_frame_alloc();
+        if (av_parser_context == nullptr || packet == nullptr || decoded_frame == nullptr)
+            throw std::runtime_error("Unable to allocate HEVC parser/frame/packet");
+    } catch (...) {
+        release_resources();
+        throw;
     }
+}
+
+VideoDecoder::~VideoDecoder() { release_resources(); }
+
+void VideoDecoder::release_resources() noexcept {
+    if (av_parser_context != nullptr) {
+        av_parser_close(av_parser_context);
+        av_parser_context = nullptr;
+    }
+    avcodec_free_context(&av_codec_context);
+    av_packet_free(&packet);
+    av_frame_free(&decoded_frame);
+}
+
+void VideoDecoder::reset() {
+    avcodec_flush_buffers(av_codec_context);
+    av_packet_unref(packet);
+    av_frame_unref(decoded_frame);
+    if (av_parser_context != nullptr) av_parser_close(av_parser_context);
+    av_parser_context = av_parser_init(AV_CODEC_ID_HEVC);
+    if (av_parser_context == nullptr) throw std::runtime_error("Unable to reset HEVC parser");
+}
+
+int VideoDecoder::drain_frames() const {
+    int count = 0;
+    for (; count < 256; ++count) {
+        const int status = avcodec_receive_frame(av_codec_context, decoded_frame);
+        if (status == AVERROR(EAGAIN) || status == AVERROR_EOF) return count;
+        if (status < 0) {
+            SPDLOG_WARN("HEVC receive_frame failed status={}", status);
+            return count;
+        }
+        try {
+            if (frame_callback) frame_callback(decoded_frame);
+        } catch (...) {
+            av_frame_unref(decoded_frame);
+            throw;
+        }
+        av_frame_unref(decoded_frame);
+    }
+    throw std::runtime_error("HEVC decoder exceeded bounded output work");
+}
+
+void VideoDecoder::decode_frame(const std::vector<uint8_t> &frame) {
+    constexpr std::size_t kMaximumFrameBytes = 8U * 1024U * 1024U;
+    if (frame.empty()) return;
+    if (frame.size() > kMaximumFrameBytes || av_codec_context == nullptr || av_parser_context == nullptr) {
+        throw std::runtime_error("Invalid/uninitialized HEVC decoder input");
+    }
+    padded_input.resize(frame.size() + AV_INPUT_BUFFER_PADDING_SIZE);
+    std::memcpy(padded_input.data(), frame.data(), frame.size());
+    std::fill(padded_input.begin() + static_cast<std::ptrdiff_t>(frame.size()), padded_input.end(), 0);
+    const uint8_t *data = padded_input.data();
+    int remaining = static_cast<int>(frame.size());
+    unsigned no_progress = 0;
+    while (remaining > 0) {
+        uint8_t *parsed_data = nullptr;
+        int parsed_size = 0;
+        const int consumed = av_parser_parse2(av_parser_context, av_codec_context,
+                                             &parsed_data, &parsed_size, data, remaining,
+                                             AV_NOPTS_VALUE, AV_NOPTS_VALUE, 0);
+        if (consumed < 0 || consumed > remaining) {
+            reset();
+            throw std::runtime_error("HEVC parser rejected input/progress");
+        }
+        if (consumed == 0 && (++no_progress > 8 || parsed_size == 0)) {
+            reset();
+            throw std::runtime_error("HEVC parser made no progress");
+        }
+        if (consumed != 0) no_progress = 0;
+        data += consumed;
+        remaining -= consumed;
+        if (parsed_size <= 0) continue;
+        if (static_cast<std::size_t>(parsed_size) > kMaximumFrameBytes) {
+            reset();
+            throw std::runtime_error("HEVC access unit exceeds size limit");
+        }
+        av_packet_unref(packet);
+        if (av_new_packet(packet, parsed_size) < 0) throw std::runtime_error("HEVC packet allocation failed");
+        std::memcpy(packet->data, parsed_data, static_cast<std::size_t>(parsed_size));
+        int sent = avcodec_send_packet(av_codec_context, packet);
+        if (sent == AVERROR(EAGAIN)) {
+            drain_frames();
+            sent = avcodec_send_packet(av_codec_context, packet);
+        }
+        av_packet_unref(packet);
+        if (sent < 0) {
+            SPDLOG_WARN("HEVC send_packet failed status={}", sent);
+            continue;
+        }
+        drain_frames();
+    }
+}
 
     int VideoDecoder::get_nal_type(const std::vector<uint8_t> &payload) {
         if (payload.size() < 4) {
@@ -106,48 +149,5 @@ namespace RoboGo::video {
         return nal_type;
     }
 
-    void VideoDecoder::decode_frame(const std::vector<uint8_t> &frame) const {
-        if (!av_codec_context || !av_parser_context) {
-            SPDLOG_ERROR("视频解码器未完成初始化，无法解码 frame_bytes={}", frame.size());
-            return;
-        }
 
-        const uint8_t *data = frame.data();
-        int size = static_cast<int>(frame.size());
-
-        while (size > 0) {
-            int ret = av_parser_parse2(av_parser_context, av_codec_context,
-                                       &packet->data, &packet->size,
-                                       data, size,
-                                       AV_NOPTS_VALUE, AV_NOPTS_VALUE, 0);
-            if (ret < 0) {
-                SPDLOG_ERROR("视频码流解析错误 ret={} remaining_bytes={}", ret, size);
-                break;
-            }
-            data += ret;
-            size -= ret;
-            if (packet->size > 0) {
-                // 发送到解码器
-                ret = avcodec_send_packet(av_codec_context, packet);
-                if (ret < 0 && ret != AVERROR(EAGAIN)) {
-                    SPDLOG_ERROR("发送包到解码器失败: {}", ret);
-                    continue;
-                }
-                // 接收解码后的帧
-                while (ret >= 0) {
-                    ret = avcodec_receive_frame(av_codec_context, decoded_frame);
-                    if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF) {
-                        break;
-                    }
-                    if (ret < 0) {
-                        SPDLOG_ERROR("解码错误: {}", ret);
-                        break;
-                    }
-                    frame_callback(decoded_frame);
-                    av_frame_unref(decoded_frame);
-                }
-            }
-        }
-    }
-
-}// namespace RoboGo::video
+} // namespace RoboGo::video

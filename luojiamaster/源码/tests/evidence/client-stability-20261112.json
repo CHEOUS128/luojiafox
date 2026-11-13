@@ -1,0 +1,1842 @@
+{
+  "client": {
+    "md5": "009264c1dd23b49af8d069fafff54876",
+    "sha256": "5f97eb91999701eff5af9af7c8b58563bfc69f065ac8c5dd4adad4b839e8d837",
+    "bytes": 10948096,
+    "file_time": "2026-11-12T21:05:17.928637+08:00"
+  },
+  "source_base_commit": "4a639d3",
+  "commit_status": "uncommitted; CH performs git commit/push",
+  "normal": {
+    "elapsed_seconds": 1800.08,
+    "udp_new_frames": 66744,
+    "cbb_new_frames": 33960,
+    "window_actions": 121,
+    "menu_requests": 253,
+    "gpu_errors": 0,
+    "gpu_recoveries": 0,
+    "platform_objects_created": 19,
+    "packet_dropped": [
+      4106,
+      0
+    ],
+    "decoded_age_definition": "Time since the decoded frame currently committed by a successful Present; not end-to-end camera latency.",
+    "private_mib_last_sample": 452.796875,
+    "handles_last_sample": 448,
+    "audit": {
+      "acceptance_passed": true,
+      "thresholds": {
+        "minimum_seconds": 1800.0,
+        "min_udp_fps": 15.0,
+        "min_cbb_fps": 15.0,
+        "max_age_ms": 2000,
+        "memory_warmup_seconds": 20,
+        "max_private_growth_mib": 128,
+        "max_private_slope_mib_per_minute": 4,
+        "max_handle_growth": 32,
+        "max_resources_per_present": 0.02,
+        "minimum_eligible_fraction": 0.5,
+        "max_deferred": 64,
+        "minimum_eligible_intervals": 5
+      },
+      "total_samples": 1786,
+      "eligible_intervals": 1458,
+      "excluded_intervals": [
+        {
+          "seconds": 2.00953,
+          "reason": "window_action_recovery"
+        },
+        {
+          "seconds": 5.02244,
+          "reason": "window_action_recovery"
+        },
+        {
+          "seconds": 6.03452,
+          "reason": "window_action_recovery"
+        },
+        {
+          "seconds": 10.0578,
+          "reason": "window_action_recovery"
+        },
+        {
+          "seconds": 11.0631,
+          "reason": "window_action_recovery"
+        },
+        {
+          "seconds": 15.0957,
+          "reason": "minimized"
+        },
+        {
+          "seconds": 16.1114,
+          "reason": "minimized"
+        },
+        {
+          "seconds": 17.1125,
+          "reason": "window_action_recovery"
+        },
+        {
+          "seconds": 18.1132,
+          "reason": "window_action_recovery"
+        },
+        {
+          "seconds": 35.2498,
+          "reason": "loop_parameter_recovery"
+        },
+        {
+          "seconds": 36.2584,
+          "reason": "loop_parameter_recovery"
+        },
+        {
+          "seconds": 65.4566,
+          "reason": "window_action_recovery"
+        },
+        {
+          "seconds": 66.4685,
+          "reason": "window_action_recovery"
+        },
+        {
+          "seconds": 70.493,
+          "reason": "loop_parameter_recovery"
+        },
+        {
+          "seconds": 71.5045,
+          "reason": "loop_parameter_recovery"
+        },
+        {
+          "seconds": 75.5182,
+          "reason": "minimized"
+        },
+        {
+          "seconds": 76.5337,
+          "reason": "minimized"
+        },
+        {
+          "seconds": 77.5507,
+          "reason": "window_action_recovery"
+        },
+        {
+          "seconds": 78.5557,
+          "reason": "window_action_recovery"
+        },
+        {
+          "seconds": 105.725,
+          "reason": "loop_parameter_recovery"
+        },
+        {
+          "seconds": 106.727,
+          "reason": "loop_parameter_recovery"
+        },
+        {
+          "seconds": 125.823,
+          "reason": "window_action_recovery"
+        },
+        {
+          "seconds": 126.84,
+          "reason": "window_action_recovery"
+        },
+        {
+          "seconds": 130.876,
+          "reason": "window_action_recovery"
+        },
+        {
+          "seconds": 131.888,
+          "reason": "window_action_recovery"
+        },
+        {
+          "seconds": 135.97,
+          "reason": "minimized"
+        },
+        {
+          "seconds": 136.997,
+          "reason": "minimized"
+        },
+        {
+          "seconds": 138.006,
+          "reason": "window_action_recovery"
+        },
+        {
+          "seconds": 139.008,
+          "reason": "window_action_recovery"
+        },
+        {
+          "seconds": 141.021,
+          "reason": "loop_parameter_recovery"
+        },
+        {
+          "seconds": 142.028,
+          "reason": "loop_parameter_recovery"
+        },
+        {
+          "seconds": 175.223,
+          "reason": "loop_parameter_recovery"
+        },
+        {
+          "seconds": 176.228,
+          "reason": "loop_parameter_recovery"
+        },
+        {
+          "seconds": 185.283,
+          "reason": "window_action_recovery"
+        },
+        {
+          "seconds": 186.285,
+          "reason": "window_action_recovery"
+        },
+        {
+          "seconds": 190.316,
+          "reason": "window_action_recovery"
+        },
+        {
+          "seconds": 191.325,
+          "reason": "window_action_recovery"
+        },
+        {
+          "seconds": 195.376,
+          "reason": "minimized"
+        },
+        {
+          "seconds": 196.402,
+          "reason": "minimized"
+        },
+        {
+          "seconds": 197.412,
+          "reason": "window_action_recovery"
+        },
+        {
+          "seconds": 198.415,
+          "reason": "window_action_recovery"
+        },
+        {
+          "seconds": 210.481,
+          "reason": "loop_parameter_recovery"
+        },
+        {
+          "seconds": 211.483,
+          "reason": "loop_parameter_recovery"
+        },
+        {
+          "seconds": 245.748,
+          "reason": "loop_parameter_recovery"
+        },
+        {
+          "seconds": 246.748,
+          "reason": "loop_parameter_recovery"
+        },
+        {
+          "seconds": 250.781,
+          "reason": "window_action_recovery"
+        },
+        {
+          "seconds": 251.79,
+          "reason": "window_action_recovery"
+        },
+        {
+          "seconds": 255.823,
+          "reason": "minimized"
+        },
+        {
+          "seconds": 256.845,
+          "reason": "minimized"
+        },
+        {
+          "seconds": 257.853,
+          "reason": "window_action_recovery"
+        },
+        {
+          "seconds": 258.857,
+          "reason": "window_action_recovery"
+        },
+        {
+          "seconds": 280.991,
+          "reason": "loop_parameter_recovery"
+        },
+        {
+          "seconds": 281.994,
+          "reason": "loop_parameter_recovery"
+        },
+        {
+          "seconds": 305.135,
+          "reason": "window_action_recovery"
+        },
+        {
+          "seconds": 306.155,
+          "reason": "window_action_recovery"
+        },
+        {
+          "seconds": 310.191,
+          "reason": "window_action_recovery"
+        },
+        {
+          "seconds": 311.196,
+          "reason": "window_action_recovery"
+        },
+        {
+          "seconds": 315.244,
+          "reason": "minimized"
+        },
+        {
+          "seconds": 316.264,
+          "reason": "minimized"
+        },
+        {
+          "seconds": 317.266,
+          "reason": "window_action_recovery"
+        },
+        {
+          "seconds": 318.283,
+          "reason": "window_action_recovery"
+        },
+        {
+          "seconds": 350.575,
+          "reason": "loop_parameter_recovery"
+        },
+        {
+          "seconds": 351.584,
+          "reason": "loop_parameter_recovery"
+        },
+        {
+          "seconds": 365.698,
+          "reason": "window_action_recovery"
+        },
+        {
+          "seconds": 366.72,
+          "reason": "window_action_recovery"
+        },
+        {
+          "seconds": 370.751,
+          "reason": "window_action_recovery"
+        },
+        {
+          "seconds": 371.753,
+          "reason": "window_action_recovery"
+        },
+        {
+          "seconds": 375.81,
+          "reason": "minimized"
+        },
+        {
+          "seconds": 376.834,
+          "reason": "minimized"
+        },
+        {
+          "seconds": 377.838,
+          "reason": "window_action_recovery"
+        },
+        {
+          "seconds": 378.841,
+          "reason": "window_action_recovery"
+        },
+        {
+          "seconds": 385.903,
+          "reason": "loop_parameter_recovery"
+        },
+        {
+          "seconds": 386.908,
+          "reason": "loop_parameter_recovery"
+        },
+        {
+          "seconds": 421.143,
+          "reason": "loop_parameter_recovery"
+        },
+        {
+          "seconds": 422.153,
+          "reason": "loop_parameter_recovery"
+        },
+        {
+          "seconds": 425.174,
+          "reason": "window_action_recovery"
+        },
+        {
+          "seconds": 426.182,
+          "reason": "window_action_recovery"
+        },
+        {
+          "seconds": 430.239,
+          "reason": "window_action_recovery"
+        },
+        {
+          "seconds": 431.241,
+          "reason": "window_action_recovery"
+        },
+        {
+          "seconds": 435.271,
+          "reason": "minimized"
+        },
+        {
+          "seconds": 436.291,
+          "reason": "minimized"
+        },
+        {
+          "seconds": 437.292,
+          "reason": "window_action_recovery"
+        },
+        {
+          "seconds": 438.293,
+          "reason": "window_action_recovery"
+        },
+        {
+          "seconds": 456.419,
+          "reason": "loop_parameter_recovery"
+        },
+        {
+          "seconds": 457.42,
+          "reason": "loop_parameter_recovery"
+        },
+        {
+          "seconds": 485.602,
+          "reason": "window_action_recovery"
+        },
+        {
+          "seconds": 486.611,
+          "reason": "window_action_recovery"
+        },
+        {
+          "seconds": 490.638,
+          "reason": "window_action_recovery"
+        },
+        {
+          "seconds": 491.64,
+          "reason": "loop_parameter_recovery"
+        },
+        {
+          "seconds": 492.651,
+          "reason": "loop_parameter_recovery"
+        },
+        {
+          "seconds": 495.689,
+          "reason": "minimized"
+        },
+        {
+          "seconds": 496.713,
+          "reason": "minimized"
+        },
+        {
+          "seconds": 497.713,
+          "reason": "window_action_recovery"
+        },
+        {
+          "seconds": 498.715,
+          "reason": "window_action_recovery"
+        },
+        {
+          "seconds": 525.945,
+          "reason": "loop_parameter_recovery"
+        },
+        {
+          "seconds": 526.951,
+          "reason": "loop_parameter_recovery"
+        },
+        {
+          "seconds": 545.099,
+          "reason": "window_action_recovery"
+        },
+        {
+          "seconds": 546.114,
+          "reason": "window_action_recovery"
+        },
+        {
+          "seconds": 550.144,
+          "reason": "window_action_recovery"
+        },
+        {
+          "seconds": 551.156,
+          "reason": "window_action_recovery"
+        },
+        {
+          "seconds": 555.173,
+          "reason": "minimized"
+        },
+        {
+          "seconds": 556.182,
+          "reason": "minimized"
+        },
+        {
+          "seconds": 557.183,
+          "reason": "window_action_recovery"
+        },
+        {
+          "seconds": 558.205,
+          "reason": "window_action_recovery"
+        },
+        {
+          "seconds": 561.224,
+          "reason": "loop_parameter_recovery"
+        },
+        {
+          "seconds": 562.234,
+          "reason": "loop_parameter_recovery"
+        },
+        {
+          "seconds": 596.439,
+          "reason": "loop_parameter_recovery"
+        },
+        {
+          "seconds": 597.441,
+          "reason": "loop_parameter_recovery"
+        },
+        {
+          "seconds": 605.508,
+          "reason": "window_action_recovery"
+        },
+        {
+          "seconds": 606.514,
+          "reason": "window_action_recovery"
+        },
+        {
+          "seconds": 610.543,
+          "reason": "window_action_recovery"
+        },
+        {
+          "seconds": 611.549,
+          "reason": "window_action_recovery"
+        },
+        {
+          "seconds": 615.597,
+          "reason": "minimized"
+        },
+        {
+          "seconds": 616.615,
+          "reason": "minimized"
+        },
+        {
+          "seconds": 617.62,
+          "reason": "window_action_recovery"
+        },
+        {
+          "seconds": 618.622,
+          "reason": "window_action_recovery"
+        },
+        {
+          "seconds": 631.718,
+          "reason": "loop_parameter_recovery"
+        },
+        {
+          "seconds": 632.729,
+          "reason": "loop_parameter_recovery"
+        },
+        {
+          "seconds": 665.987,
+          "reason": "loop_parameter_recovery"
+        },
+        {
+          "seconds": 666.999,
+          "reason": "loop_parameter_recovery"
+        },
+        {
+          "seconds": 670.021,
+          "reason": "window_action_recovery"
+        },
+        {
+          "seconds": 671.025,
+          "reason": "window_action_recovery"
+        },
+        {
+          "seconds": 675.059,
+          "reason": "minimized"
+        },
+        {
+          "seconds": 676.066,
+          "reason": "minimized"
+        },
+        {
+          "seconds": 677.078,
+          "reason": "window_action_recovery"
+        },
+        {
+          "seconds": 678.079,
+          "reason": "window_action_recovery"
+        },
+        {
+          "seconds": 701.211,
+          "reason": "loop_parameter_recovery"
+        },
+        {
+          "seconds": 702.214,
+          "reason": "loop_parameter_recovery"
+        },
+        {
+          "seconds": 725.369,
+          "reason": "window_action_recovery"
+        },
+        {
+          "seconds": 726.374,
+          "reason": "window_action_recovery"
+        },
+        {
+          "seconds": 730.394,
+          "reason": "window_action_recovery"
+        },
+        {
+          "seconds": 731.404,
+          "reason": "window_action_recovery"
+        },
+        {
+          "seconds": 735.424,
+          "reason": "minimized"
+        },
+        {
+          "seconds": 736.439,
+          "reason": "minimized"
+        },
+        {
+          "seconds": 737.449,
+          "reason": "window_action_recovery"
+        },
+        {
+          "seconds": 738.464,
+          "reason": "window_action_recovery"
+        },
+        {
+          "seconds": 771.692,
+          "reason": "loop_parameter_recovery"
+        },
+        {
+          "seconds": 772.702,
+          "reason": "loop_parameter_recovery"
+        },
+        {
+          "seconds": 785.773,
+          "reason": "window_action_recovery"
+        },
+        {
+          "seconds": 786.777,
+          "reason": "window_action_recovery"
+        },
+        {
+          "seconds": 790.82,
+          "reason": "window_action_recovery"
+        },
+        {
+          "seconds": 791.827,
+          "reason": "window_action_recovery"
+        },
+        {
+          "seconds": 795.872,
+          "reason": "minimized"
+        },
+        {
+          "seconds": 796.89,
+          "reason": "minimized"
+        },
+        {
+          "seconds": 797.899,
+          "reason": "window_action_recovery"
+        },
+        {
+          "seconds": 798.911,
+          "reason": "window_action_recovery"
+        },
+        {
+          "seconds": 806.942,
+          "reason": "loop_parameter_recovery"
+        },
+        {
+          "seconds": 807.959,
+          "reason": "loop_parameter_recovery"
+        },
+        {
+          "seconds": 841.261,
+          "reason": "loop_parameter_recovery"
+        },
+        {
+          "seconds": 842.265,
+          "reason": "loop_parameter_recovery"
+        },
+        {
+          "seconds": 845.29,
+          "reason": "window_action_recovery"
+        },
+        {
+          "seconds": 846.298,
+          "reason": "window_action_recovery"
+        },
+        {
+          "seconds": 850.334,
+          "reason": "window_action_recovery"
+        },
+        {
+          "seconds": 851.346,
+          "reason": "window_action_recovery"
+        },
+        {
+          "seconds": 855.396,
+          "reason": "minimized"
+        },
+        {
+          "seconds": 856.426,
+          "reason": "minimized"
+        },
+        {
+          "seconds": 857.433,
+          "reason": "window_action_recovery"
+        },
+        {
+          "seconds": 858.443,
+          "reason": "window_action_recovery"
+        },
+        {
+          "seconds": 876.609,
+          "reason": "loop_parameter_recovery"
+        },
+        {
+          "seconds": 877.614,
+          "reason": "loop_parameter_recovery"
+        },
+        {
+          "seconds": 905.837,
+          "reason": "window_action_recovery"
+        },
+        {
+          "seconds": 906.84,
+          "reason": "window_action_recovery"
+        },
+        {
+          "seconds": 910.89,
+          "reason": "window_action_recovery"
+        },
+        {
+          "seconds": 911.891,
+          "reason": "loop_parameter_recovery"
+        },
+        {
+          "seconds": 912.913,
+          "reason": "loop_parameter_recovery"
+        },
+        {
+          "seconds": 915.928,
+          "reason": "minimized"
+        },
+        {
+          "seconds": 916.94,
+          "reason": "minimized"
+        },
+        {
+          "seconds": 917.945,
+          "reason": "window_action_recovery"
+        },
+        {
+          "seconds": 918.949,
+          "reason": "window_action_recovery"
+        },
+        {
+          "seconds": 947.146,
+          "reason": "loop_parameter_recovery"
+        },
+        {
+          "seconds": 948.158,
+          "reason": "loop_parameter_recovery"
+        },
+        {
+          "seconds": 965.275,
+          "reason": "window_action_recovery"
+        },
+        {
+          "seconds": 966.277,
+          "reason": "window_action_recovery"
+        },
+        {
+          "seconds": 970.298,
+          "reason": "window_action_recovery"
+        },
+        {
+          "seconds": 971.303,
+          "reason": "window_action_recovery"
+        },
+        {
+          "seconds": 975.341,
+          "reason": "minimized"
+        },
+        {
+          "seconds": 976.358,
+          "reason": "minimized"
+        },
+        {
+          "seconds": 977.362,
+          "reason": "window_action_recovery"
+        },
+        {
+          "seconds": 978.363,
+          "reason": "window_action_recovery"
+        },
+        {
+          "seconds": 981.378,
+          "reason": "loop_parameter_recovery"
+        },
+        {
+          "seconds": 982.387,
+          "reason": "loop_parameter_recovery"
+        },
+        {
+          "seconds": 1016.64,
+          "reason": "loop_parameter_recovery"
+        },
+        {
+          "seconds": 1017.65,
+          "reason": "loop_parameter_recovery"
+        },
+        {
+          "seconds": 1025.71,
+          "reason": "window_action_recovery"
+        },
+        {
+          "seconds": 1026.71,
+          "reason": "window_action_recovery"
+        },
+        {
+          "seconds": 1030.75,
+          "reason": "window_action_recovery"
+        },
+        {
+          "seconds": 1031.75,
+          "reason": "window_action_recovery"
+        },
+        {
+          "seconds": 1035.79,
+          "reason": "minimized"
+        },
+        {
+          "seconds": 1036.81,
+          "reason": "minimized"
+        },
+        {
+          "seconds": 1037.81,
+          "reason": "window_action_recovery"
+        },
+        {
+          "seconds": 1038.82,
+          "reason": "window_action_recovery"
+        },
+        {
+          "seconds": 1051.93,
+          "reason": "loop_parameter_recovery"
+        },
+        {
+          "seconds": 1052.93,
+          "reason": "loop_parameter_recovery"
+        },
+        {
+          "seconds": 1085.13,
+          "reason": "window_action_recovery"
+        },
+        {
+          "seconds": 1086.14,
+          "reason": "window_action_recovery"
+        },
+        {
+          "seconds": 1087.15,
+          "reason": "loop_parameter_recovery"
+        },
+        {
+          "seconds": 1088.16,
+          "reason": "loop_parameter_recovery"
+        },
+        {
+          "seconds": 1090.16,
+          "reason": "window_action_recovery"
+        },
+        {
+          "seconds": 1091.17,
+          "reason": "window_action_recovery"
+        },
+        {
+          "seconds": 1095.21,
+          "reason": "minimized"
+        },
+        {
+          "seconds": 1096.21,
+          "reason": "minimized"
+        },
+        {
+          "seconds": 1097.22,
+          "reason": "window_action_recovery"
+        },
+        {
+          "seconds": 1098.23,
+          "reason": "window_action_recovery"
+        },
+        {
+          "seconds": 1122.39,
+          "reason": "loop_parameter_recovery"
+        },
+        {
+          "seconds": 1123.39,
+          "reason": "loop_parameter_recovery"
+        },
+        {
+          "seconds": 1145.58,
+          "reason": "window_action_recovery"
+        },
+        {
+          "seconds": 1146.59,
+          "reason": "window_action_recovery"
+        },
+        {
+          "seconds": 1150.63,
+          "reason": "window_action_recovery"
+        },
+        {
+          "seconds": 1151.63,
+          "reason": "window_action_recovery"
+        },
+        {
+          "seconds": 1155.68,
+          "reason": "minimized"
+        },
+        {
+          "seconds": 1156.71,
+          "reason": "minimized"
+        },
+        {
+          "seconds": 1157.73,
+          "reason": "window_action_recovery"
+        },
+        {
+          "seconds": 1158.74,
+          "reason": "window_action_recovery"
+        },
+        {
+          "seconds": 1191.94,
+          "reason": "loop_parameter_recovery"
+        },
+        {
+          "seconds": 1192.95,
+          "reason": "loop_parameter_recovery"
+        },
+        {
+          "seconds": 1205.03,
+          "reason": "window_action_recovery"
+        },
+        {
+          "seconds": 1206.04,
+          "reason": "window_action_recovery"
+        },
+        {
+          "seconds": 1210.08,
+          "reason": "window_action_recovery"
+        },
+        {
+          "seconds": 1211.09,
+          "reason": "window_action_recovery"
+        },
+        {
+          "seconds": 1215.12,
+          "reason": "minimized"
+        },
+        {
+          "seconds": 1216.14,
+          "reason": "minimized"
+        },
+        {
+          "seconds": 1217.14,
+          "reason": "window_action_recovery"
+        },
+        {
+          "seconds": 1218.14,
+          "reason": "window_action_recovery"
+        },
+        {
+          "seconds": 1227.2,
+          "reason": "loop_parameter_recovery"
+        },
+        {
+          "seconds": 1228.22,
+          "reason": "loop_parameter_recovery"
+        },
+        {
+          "seconds": 1262.55,
+          "reason": "loop_parameter_recovery"
+        },
+        {
+          "seconds": 1263.56,
+          "reason": "loop_parameter_recovery"
+        },
+        {
+          "seconds": 1265.56,
+          "reason": "window_action_recovery"
+        },
+        {
+          "seconds": 1266.58,
+          "reason": "window_action_recovery"
+        },
+        {
+          "seconds": 1270.59,
+          "reason": "window_action_recovery"
+        },
+        {
+          "seconds": 1271.6,
+          "reason": "window_action_recovery"
+        },
+        {
+          "seconds": 1275.63,
+          "reason": "minimized"
+        },
+        {
+          "seconds": 1276.66,
+          "reason": "minimized"
+        },
+        {
+          "seconds": 1277.66,
+          "reason": "window_action_recovery"
+        },
+        {
+          "seconds": 1278.67,
+          "reason": "window_action_recovery"
+        },
+        {
+          "seconds": 1297.79,
+          "reason": "loop_parameter_recovery"
+        },
+        {
+          "seconds": 1298.8,
+          "reason": "loop_parameter_recovery"
+        },
+        {
+          "seconds": 1325.99,
+          "reason": "window_action_recovery"
+        },
+        {
+          "seconds": 1327.0,
+          "reason": "window_action_recovery"
+        },
+        {
+          "seconds": 1330.02,
+          "reason": "window_action_recovery"
+        },
+        {
+          "seconds": 1331.03,
+          "reason": "window_action_recovery"
+        },
+        {
+          "seconds": 1332.04,
+          "reason": "loop_parameter_recovery"
+        },
+        {
+          "seconds": 1333.04,
+          "reason": "loop_parameter_recovery"
+        },
+        {
+          "seconds": 1335.06,
+          "reason": "minimized"
+        },
+        {
+          "seconds": 1336.08,
+          "reason": "minimized"
+        },
+        {
+          "seconds": 1337.08,
+          "reason": "window_action_recovery"
+        },
+        {
+          "seconds": 1338.08,
+          "reason": "window_action_recovery"
+        },
+        {
+          "seconds": 1367.27,
+          "reason": "loop_parameter_recovery"
+        },
+        {
+          "seconds": 1368.28,
+          "reason": "loop_parameter_recovery"
+        },
+        {
+          "seconds": 1385.4,
+          "reason": "window_action_recovery"
+        },
+        {
+          "seconds": 1386.41,
+          "reason": "window_action_recovery"
+        },
+        {
+          "seconds": 1390.43,
+          "reason": "window_action_recovery"
+        },
+        {
+          "seconds": 1391.44,
+          "reason": "window_action_recovery"
+        },
+        {
+          "seconds": 1395.48,
+          "reason": "minimized"
+        },
+        {
+          "seconds": 1396.51,
+          "reason": "minimized"
+        },
+        {
+          "seconds": 1397.51,
+          "reason": "window_action_recovery"
+        },
+        {
+          "seconds": 1398.52,
+          "reason": "window_action_recovery"
+        },
+        {
+          "seconds": 1402.53,
+          "reason": "loop_parameter_recovery"
+        },
+        {
+          "seconds": 1403.54,
+          "reason": "loop_parameter_recovery"
+        },
+        {
+          "seconds": 1437.8,
+          "reason": "loop_parameter_recovery"
+        },
+        {
+          "seconds": 1438.81,
+          "reason": "loop_parameter_recovery"
+        },
+        {
+          "seconds": 1445.88,
+          "reason": "window_action_recovery"
+        },
+        {
+          "seconds": 1446.91,
+          "reason": "window_action_recovery"
+        },
+        {
+          "seconds": 1450.93,
+          "reason": "window_action_recovery"
+        },
+        {
+          "seconds": 1451.93,
+          "reason": "window_action_recovery"
+        },
+        {
+          "seconds": 1455.97,
+          "reason": "minimized"
+        },
+        {
+          "seconds": 1456.99,
+          "reason": "minimized"
+        },
+        {
+          "seconds": 1458.0,
+          "reason": "window_action_recovery"
+        },
+        {
+          "seconds": 1459.0,
+          "reason": "window_action_recovery"
+        },
+        {
+          "seconds": 1472.08,
+          "reason": "loop_parameter_recovery"
+        },
+        {
+          "seconds": 1473.09,
+          "reason": "loop_parameter_recovery"
+        },
+        {
+          "seconds": 1505.37,
+          "reason": "window_action_recovery"
+        },
+        {
+          "seconds": 1506.38,
+          "reason": "window_action_recovery"
+        },
+        {
+          "seconds": 1507.38,
+          "reason": "loop_parameter_recovery"
+        },
+        {
+          "seconds": 1508.39,
+          "reason": "loop_parameter_recovery"
+        },
+        {
+          "seconds": 1510.4,
+          "reason": "window_action_recovery"
+        },
+        {
+          "seconds": 1511.42,
+          "reason": "window_action_recovery"
+        },
+        {
+          "seconds": 1515.44,
+          "reason": "minimized"
+        },
+        {
+          "seconds": 1516.46,
+          "reason": "minimized"
+        },
+        {
+          "seconds": 1517.46,
+          "reason": "window_action_recovery"
+        },
+        {
+          "seconds": 1518.46,
+          "reason": "window_action_recovery"
+        },
+        {
+          "seconds": 1542.69,
+          "reason": "loop_parameter_recovery"
+        },
+        {
+          "seconds": 1543.7,
+          "reason": "loop_parameter_recovery"
+        },
+        {
+          "seconds": 1565.88,
+          "reason": "window_action_recovery"
+        },
+        {
+          "seconds": 1566.9,
+          "reason": "window_action_recovery"
+        },
+        {
+          "seconds": 1570.94,
+          "reason": "window_action_recovery"
+        },
+        {
+          "seconds": 1571.94,
+          "reason": "window_action_recovery"
+        },
+        {
+          "seconds": 1575.98,
+          "reason": "minimized"
+        },
+        {
+          "seconds": 1577.0,
+          "reason": "minimized"
+        },
+        {
+          "seconds": 1578.01,
+          "reason": "loop_parameter_recovery"
+        },
+        {
+          "seconds": 1579.02,
+          "reason": "loop_parameter_recovery"
+        },
+        {
+          "seconds": 1613.23,
+          "reason": "loop_parameter_recovery"
+        },
+        {
+          "seconds": 1614.23,
+          "reason": "loop_parameter_recovery"
+        },
+        {
+          "seconds": 1625.32,
+          "reason": "window_action_recovery"
+        },
+        {
+          "seconds": 1626.32,
+          "reason": "window_action_recovery"
+        },
+        {
+          "seconds": 1630.35,
+          "reason": "window_action_recovery"
+        },
+        {
+          "seconds": 1631.36,
+          "reason": "window_action_recovery"
+        },
+        {
+          "seconds": 1635.4,
+          "reason": "minimized"
+        },
+        {
+          "seconds": 1636.42,
+          "reason": "minimized"
+        },
+        {
+          "seconds": 1637.42,
+          "reason": "window_action_recovery"
+        },
+        {
+          "seconds": 1638.43,
+          "reason": "window_action_recovery"
+        },
+        {
+          "seconds": 1647.49,
+          "reason": "loop_parameter_recovery"
+        },
+        {
+          "seconds": 1648.5,
+          "reason": "loop_parameter_recovery"
+        },
+        {
+          "seconds": 1682.76,
+          "reason": "loop_parameter_recovery"
+        },
+        {
+          "seconds": 1683.77,
+          "reason": "loop_parameter_recovery"
+        },
+        {
+          "seconds": 1685.79,
+          "reason": "window_action_recovery"
+        },
+        {
+          "seconds": 1686.79,
+          "reason": "window_action_recovery"
+        },
+        {
+          "seconds": 1690.82,
+          "reason": "window_action_recovery"
+        },
+        {
+          "seconds": 1691.82,
+          "reason": "window_action_recovery"
+        },
+        {
+          "seconds": 1695.87,
+          "reason": "minimized"
+        },
+        {
+          "seconds": 1696.89,
+          "reason": "minimized"
+        },
+        {
+          "seconds": 1697.9,
+          "reason": "window_action_recovery"
+        },
+        {
+          "seconds": 1698.9,
+          "reason": "window_action_recovery"
+        },
+        {
+          "seconds": 1718.04,
+          "reason": "loop_parameter_recovery"
+        },
+        {
+          "seconds": 1719.06,
+          "reason": "loop_parameter_recovery"
+        },
+        {
+          "seconds": 1745.27,
+          "reason": "window_action_recovery"
+        },
+        {
+          "seconds": 1746.27,
+          "reason": "window_action_recovery"
+        },
+        {
+          "seconds": 1750.31,
+          "reason": "window_action_recovery"
+        },
+        {
+          "seconds": 1751.32,
+          "reason": "window_action_recovery"
+        },
+        {
+          "seconds": 1753.34,
+          "reason": "loop_parameter_recovery"
+        },
+        {
+          "seconds": 1754.34,
+          "reason": "loop_parameter_recovery"
+        },
+        {
+          "seconds": 1755.34,
+          "reason": "minimized"
+        },
+        {
+          "seconds": 1756.37,
+          "reason": "minimized"
+        },
+        {
+          "seconds": 1757.39,
+          "reason": "window_action_recovery"
+        },
+        {
+          "seconds": 1758.39,
+          "reason": "window_action_recovery"
+        },
+        {
+          "seconds": 1787.59,
+          "reason": "loop_parameter_recovery"
+        },
+        {
+          "seconds": 1788.6,
+          "reason": "loop_parameter_recovery"
+        }
+      ],
+      "failures": [],
+      "visible_steady": {
+        "udp_min_fps": 25.71711177052362,
+        "cbb_min_fps": 15.841584158415984,
+        "udp_mean_fps": 39.842182396193806,
+        "cbb_mean_fps": 19.923707829175918
+      },
+      "memory": {
+        "evaluated": true,
+        "private_growth_mib": 2.9999114229024713,
+        "handle_growth": -2.1133786848072305,
+        "last_half_private_slope_mib_per_minute": 0.09251029173136015,
+        "resources_per_present": 0.0
+      },
+      "scope": "Recorded real encoded data + actual decoders + GPU uploads/presents. No camera end-to-end latency measurement."
+    }
+  },
+  "faults": [
+    {
+      "Name": "final-fault-create_queue",
+      "ExitCode": 0,
+      "Completed": true,
+      "Smoke": true,
+      "Observed": true,
+      "Recovered": true,
+      "NewUDP": 528,
+      "NewCBB": 183,
+      "FirstStage": "create_queue",
+      "HRESULT": 2147500037,
+      "Resources": 47,
+      "Passed": true
+    },
+    {
+      "Name": "final-fault-create_allocator",
+      "ExitCode": 0,
+      "Completed": true,
+      "Smoke": true,
+      "Observed": true,
+      "Recovered": true,
+      "NewUDP": 526,
+      "NewCBB": 182,
+      "FirstStage": "create_allocator",
+      "HRESULT": 2147500037,
+      "Resources": 50,
+      "Passed": true
+    },
+    {
+      "Name": "final-fault-create_list",
+      "ExitCode": 0,
+      "Completed": true,
+      "Smoke": true,
+      "Observed": true,
+      "Recovered": true,
+      "NewUDP": 525,
+      "NewCBB": 183,
+      "FirstStage": "create_list",
+      "HRESULT": 2147500037,
+      "Resources": 53,
+      "Passed": true
+    },
+    {
+      "Name": "final-fault-map",
+      "ExitCode": 0,
+      "Completed": true,
+      "Smoke": true,
+      "Observed": true,
+      "Recovered": true,
+      "NewUDP": 542,
+      "NewCBB": 187,
+      "FirstStage": "map",
+      "HRESULT": 2147500037,
+      "Resources": 19,
+      "Passed": true
+    },
+    {
+      "Name": "final-fault-wait",
+      "ExitCode": 0,
+      "Completed": true,
+      "Smoke": true,
+      "Observed": true,
+      "Recovered": true,
+      "NewUDP": 534,
+      "NewCBB": 187,
+      "FirstStage": "",
+      "HRESULT": 0,
+      "Resources": 19,
+      "Passed": true
+    },
+    {
+      "Name": "final-fault-close",
+      "ExitCode": 0,
+      "Completed": true,
+      "Smoke": true,
+      "Observed": true,
+      "Recovered": true,
+      "NewUDP": 526,
+      "NewCBB": 182,
+      "FirstStage": "close",
+      "HRESULT": 2147500037,
+      "Resources": 188,
+      "Passed": true
+    },
+    {
+      "Name": "final-fault-signal",
+      "ExitCode": 0,
+      "Completed": true,
+      "Smoke": true,
+      "Observed": true,
+      "Recovered": true,
+      "NewUDP": 527,
+      "NewCBB": 183,
+      "FirstStage": "signal",
+      "HRESULT": 2147500037,
+      "Resources": 188,
+      "Passed": true
+    },
+    {
+      "Name": "final-fault-present",
+      "ExitCode": 0,
+      "Completed": true,
+      "Smoke": true,
+      "Observed": true,
+      "Recovered": true,
+      "NewUDP": 524,
+      "NewCBB": 183,
+      "FirstStage": "present",
+      "HRESULT": 2147500037,
+      "Resources": 188,
+      "Passed": true
+    },
+    {
+      "Name": "final-fault-resize",
+      "ExitCode": 0,
+      "Completed": true,
+      "Smoke": true,
+      "Observed": true,
+      "Recovered": true,
+      "NewUDP": 713,
+      "NewCBB": 247,
+      "FirstStage": "resize",
+      "HRESULT": 2147942487,
+      "Resources": 19,
+      "Passed": true
+    },
+    {
+      "Name": "final-fault-get_buffer",
+      "ExitCode": 0,
+      "Completed": true,
+      "Smoke": true,
+      "Observed": true,
+      "Recovered": true,
+      "NewUDP": 647,
+      "NewCBB": 223,
+      "FirstStage": "get_buffer",
+      "HRESULT": 2147500037,
+      "Resources": 47,
+      "Passed": true
+    },
+    {
+      "Name": "final-fault-reset_allocator",
+      "ExitCode": 0,
+      "Completed": true,
+      "Smoke": true,
+      "Observed": true,
+      "Recovered": true,
+      "NewUDP": 532,
+      "NewCBB": 184,
+      "FirstStage": "reset_allocator",
+      "HRESULT": 2147500037,
+      "Resources": 128,
+      "Passed": true
+    },
+    {
+      "Name": "final-fault-reset_list",
+      "ExitCode": 0,
+      "Completed": true,
+      "Smoke": true,
+      "Observed": true,
+      "Recovered": true,
+      "NewUDP": 528,
+      "NewCBB": 184,
+      "FirstStage": "reset_list",
+      "HRESULT": 2147500037,
+      "Resources": 128,
+      "Passed": true
+    },
+    {
+      "Name": "final-fault-font_create_allocator",
+      "ExitCode": 0,
+      "Completed": true,
+      "Smoke": true,
+      "Observed": true,
+      "Recovered": true,
+      "NewUDP": 527,
+      "NewCBB": 184,
+      "FirstStage": "font_create_allocator",
+      "HRESULT": 2147500037,
+      "Resources": 148,
+      "Passed": true
+    },
+    {
+      "Name": "final-fault-font_create_list",
+      "ExitCode": 0,
+      "Completed": true,
+      "Smoke": true,
+      "Observed": true,
+      "Recovered": true,
+      "NewUDP": 528,
+      "NewCBB": 181,
+      "FirstStage": "font_create_list",
+      "HRESULT": 2147500037,
+      "Resources": 148,
+      "Passed": true
+    },
+    {
+      "Name": "final-fault-font_create_fence",
+      "ExitCode": 0,
+      "Completed": true,
+      "Smoke": true,
+      "Observed": true,
+      "Recovered": true,
+      "NewUDP": 518,
+      "NewCBB": 182,
+      "FirstStage": "font_create_fence",
+      "HRESULT": 2147500037,
+      "Resources": 148,
+      "Passed": true
+    },
+    {
+      "Name": "final-fault-font_create_texture",
+      "ExitCode": 0,
+      "Completed": true,
+      "Smoke": true,
+      "Observed": true,
+      "Recovered": true,
+      "NewUDP": 527,
+      "NewCBB": 184,
+      "FirstStage": "font_create_texture",
+      "HRESULT": 2147500037,
+      "Resources": 188,
+      "Passed": true
+    },
+    {
+      "Name": "final-fault-font_create_upload",
+      "ExitCode": 0,
+      "Completed": true,
+      "Smoke": true,
+      "Observed": true,
+      "Recovered": true,
+      "NewUDP": 522,
+      "NewCBB": 183,
+      "FirstStage": "font_create_upload",
+      "HRESULT": 2147500037,
+      "Resources": 188,
+      "Passed": true
+    },
+    {
+      "Name": "final-fault-font_map",
+      "ExitCode": 0,
+      "Completed": true,
+      "Smoke": true,
+      "Observed": true,
+      "Recovered": true,
+      "NewUDP": 526,
+      "NewCBB": 183,
+      "FirstStage": "font_map",
+      "HRESULT": 2147500037,
+      "Resources": 188,
+      "Passed": true
+    },
+    {
+      "Name": "final-fault-font_wait",
+      "ExitCode": 0,
+      "Completed": true,
+      "Smoke": true,
+      "Observed": true,
+      "Recovered": true,
+      "NewUDP": 531,
+      "NewCBB": 184,
+      "FirstStage": "font_wait",
+      "HRESULT": 2147500037,
+      "Resources": 188,
+      "Passed": true
+    },
+    {
+      "Name": "final-fault-imgui_vertex_map",
+      "ExitCode": 0,
+      "Completed": true,
+      "Smoke": true,
+      "Observed": true,
+      "Recovered": true,
+      "NewUDP": 526,
+      "NewCBB": 183,
+      "FirstStage": "imgui_vertex_map",
+      "HRESULT": 2147500037,
+      "Resources": 188,
+      "Passed": true
+    }
+  ],
+  "full_recording": {
+    "offline_no_network": true,
+    "capture": "C:\\Users\\CH\\Desktop\\robot记录\\luojiafox\\luojiamaster\\程序\\logs\\20261112_173547_006\\network_capture.bin",
+    "requested_seconds": 90,
+    "elapsed_seconds": 90.0673,
+    "completed": true,
+    "dual_stream_smoke_ok": true,
+    "acceptance_evaluated": false,
+    "acceptance": "PENDING_STRICT_CSV_AUDIT",
+    "raw_source_sha256": "68b2ef566aae34a347e32f76da390035e7d4f6477b00d2ffc081ce65ba386716",
+    "source_original_packets": 49880,
+    "source_original_lane_packets": [
+      47224,
+      2656
+    ],
+    "source_original_span_us": 67165359,
+    "replay_window_seconds": 0,
+    "selected_source_begin_us": 0,
+    "selected_source_end_us": 67165359,
+    "selected_source_packets": 49880,
+    "replay_tail_padding_us": 50000,
+    "replay_period_us": 67215359,
+    "input_records": 55062,
+    "input_udp_packets": 47224,
+    "input_cbb_packets": 2656,
+    "ignored_control_and_other_records": 5182,
+    "capture_partial_tail": true,
+    "source_loops": 2,
+    "input_lateness_max_us": 171891,
+    "udp_decoded": 4884,
+    "cbb_decoded": 1750,
+    "udp_upload_accepted": 4251,
+    "cbb_upload_accepted": 1549,
+    "udp_new_presented": 4251,
+    "cbb_new_presented": 1549,
+    "successful_present_calls": 11776,
+    "ui_iterations": 11776,
+    "udp_decoded_dimensions": [
+      1920,
+      1080
+    ],
+    "cbb_decoded_dimensions": [
+      320,
+      256
+    ],
+    "udp_displayed_dimensions": [
+      1920,
+      1080
+    ],
+    "cbb_displayed_dimensions": [
+      320,
+      256
+    ],
+    "udp_final_age_ms": 87.4845,
+    "cbb_final_age_ms": 99.4592,
+    "minimap_required": true,
+    "minimap_source_dimensions": [
+      1285,
+      711
+    ],
+    "minimap_initial_upload_accepted": false,
+    "minimap_ready": true,
+    "minimap_final_dimensions": [
+      1285,
+      711
+    ],
+    "minimap_presented": 11776,
+    "minimap_presented_after_fault_clear": 0,
+    "window_actions": 9,
+    "menu_exercises": 29,
+    "packet_queue_capacity_each": 256,
+    "packet_queue_max": [
+      256,
+      232
+    ],
+    "packet_dropped": [
+      1325,
+      0
+    ],
+    "mailbox_capacity_each": 1,
+    "mailbox_pending_at_stop": [
+      1,
+      0
+    ],
+    "mailbox_overwritten": [
+      632,
+      201
+    ],
+    "private_bytes_start": 120418304,
+    "private_bytes_after_warmup": 491048960,
+    "private_bytes_last": 386502656,
+    "private_bytes_peak": 538750976,
+    "handles_start": 363,
+    "handles_last": 434,
+    "handles_peak": 456,
+    "backend_frames_submitted": 11776,
+    "backend_uploads_succeeded": 5801,
+    "backend_upload_failures": 0,
+    "backend_recoveries": 0,
+    "backend_resource_creations": 19,
+    "backend_deferred_max": 0,
+    "first_failure_stage": "",
+    "first_hresult": 0,
+    "fault_stage": "",
+    "fault_observed": false,
+    "fault_cleared": false,
+    "fault_recovered": true,
+    "worker_error": "",
+    "age_definition": "Time since the decoded frame currently committed by a successful Present; not end-to-end camera latency.",
+    "present_definition": "Only RenderFrame=true; accepted uploads and UI iterations are counted separately."
+  },
+  "pixel_regression": {
+    "packets": 2656,
+    "live_frames_each": 1307,
+    "flushed_frames_each": 1,
+    "rgba_bytes_compared": 428605440,
+    "pixel_mismatches": 0,
+    "sha256": "ace3444c9c767120fae0983ce1ecdbf111a26d7debe1ba5d7afa0914fda6de9e"
+  },
+  "source_sha256": {
+    "luojiamaster/源码/src/app/application.cpp": "0342fd21816008e5e58b6a4e22f3358b9021a359e2318ee514c2616e96dbc26f",
+    "luojiamaster/源码/src/app/application.h": "040d23ea8165352a510350d3163b955ac71bd0bbd9ef1ac1e498e56d496ce3b6",
+    "luojiamaster/源码/src/app/application_types.h": "92c6baa32a3a41128b9fbadadb3b9d4360c4ee73eab53c88e50571234ed8450f",
+    "luojiamaster/源码/src/app/imgui_setup.cpp": "332539b906c3f35f1cb2c9842b9d605e15e293153254c4bfea751d0e54e37fb0",
+    "luojiamaster/源码/src/app/imgui_setup.h": "a3ae772d31d0470698c6027eb3d8c9bbe7056dd380f784852cadf56b1b8071fe",
+    "luojiamaster/源码/src/app/latest_video_frame.h": "3bce13f642f24bf2ec79a894a168713a0e137554a7e702548b7838a2074559a3",
+    "luojiamaster/源码/src/app/video_stability_test.cpp": "7eaa66b8da0e38295e34f74c28d974e02e0ec9a8261344e272840f3e980b26a3",
+    "luojiamaster/源码/src/app/video_stability_test.h": "b0837e69cb2551667305c634b5465512db1ddf464240b7feac693fc448cda660",
+    "luojiamaster/源码/src/custom_control_payload.cpp": "11bb45b6e83e84f6d39558918273cbbbf697fb840ded784821fce2765dcc381a",
+    "luojiamaster/源码/src/custom_control_payload.h": "57e0a66fa43e90b7ae4a906c2e29b6894319af5221f34cef8608cbde1ab48cef",
+    "luojiamaster/源码/src/io/mqtt_client.cpp": "933caaaba7d6ccaa16f26eb162956bda6acf77377ac4f46e8fc5b75ad2532d08",
+    "luojiamaster/源码/src/io/mqtt_client.h": "6f48667c35a2e5ab39b5518699b275cb44dacce6569568edaff8cef083fa311f",
+    "luojiamaster/源码/src/io/video_stream_receiver.cpp": "6613e7c185479b07d7aae2468ce51ec75c46a38658826d2eac8e78c3aa63e358",
+    "luojiamaster/源码/src/io/video_stream_receiver.h": "1055052842866b86cbc19cebbe053c5c64551de65191cda682db898086d927ac",
+    "luojiamaster/源码/src/keyboard_mouse_state_manager.cpp": "6a7c6bec4b31477bc92427289a6ad57cc1cc6eb113064178efc28a9ddaf1a5af",
+    "luojiamaster/源码/src/keyboard_mouse_state_manager.h": "5d075e8ef2fcc43cd0f1390a46f45d9342a0f698982780c8ebc10671789d951f",
+    "luojiamaster/源码/src/logging/logging.cpp": "7b55b63daa0e7027fbe65dc7a29fdaf6c7d91a14fc51ea10a80fd4fcce10865d",
+    "luojiamaster/源码/src/logging/logging.h": "cb57e1945611e9d18b54a824d432852c7a53a28473c6a42b5d051127667e6282",
+    "luojiamaster/源码/src/logging/network_capture_format.h": "670fc0c02cc95659e0c0af0c0ccb23986f06f67e9d9ad300796d33e34d231b1a",
+    "luojiamaster/源码/src/main.cpp": "c835cd1393179c2fbb2b3bdcd78ff3e17520d2fdfedcaa3972d0a92cb9fc5d4f",
+    "luojiamaster/源码/src/main_window.cpp": "7c866485423d55fe27fec0834944f3b384790f5ca506c97a5c94ffb43a2393a5",
+    "luojiamaster/源码/src/main_window.h": "cf9623ad064225b150c2a415819c79ff084a1206946a5544d5b584c177cb8bb2",
+    "luojiamaster/源码/src/net/teammate_link.cpp": "dc93a2ba7a6295df2a34905c80ce98877aee6fb8f3e2902fbb7f915d132d6da6",
+    "luojiamaster/源码/src/net/teammate_link.h": "8a08e02151f760c7ff798f8119eec63ade49dc1933190ebbe6eefec317d9347c",
+    "luojiamaster/源码/src/panel/bottom_panel.cpp": "b6b4263ae1a5c31eb6dff9765c7a82e5b8b45efec35aba422bad1ae1c0fe450a",
+    "luojiamaster/源码/src/panel/bottom_panel.h": "4e9a5fffc0144f400bb63c988aabd9578f205730d12bc10c23687e442ee3a771",
+    "luojiamaster/源码/src/panel/buff_panel.cpp": "6a3a31597d2e150d797a70d10436fa993af93354bac5f02311a7eec7e5ba4bdc",
+    "luojiamaster/源码/src/panel/buff_panel.h": "2ba49a3ff4f6fca5e1c9d0270ae1df0ec182a8e8cad8b4323b3cfa63c5d8122d",
+    "luojiamaster/源码/src/panel/crosshair.cpp": "54219112cf719a14831a9f5077095ec0628f9fddc74d629fb51dab195003a9dc",
+    "luojiamaster/源码/src/panel/crosshair.h": "a8e06d5763e19e37402bf44ef004319b0123194b448cbd507299ac71a948a023",
+    "luojiamaster/源码/src/panel/custom_video_panel.cpp": "70e171fa0194d2866cd709b05ce8e743491f62a180e2d08f0ea657e848edc85d",
+    "luojiamaster/源码/src/panel/custom_video_panel.h": "9aa0fd0317ecd0fb5be7c2909f1d2ccfc5dbef212e5d4770b496fd44e0689375",
+    "luojiamaster/源码/src/panel/header_panel.cpp": "e502bdd6cb04a41964732f94f3709c130167c6f5d56238a57b16893bcfc26296",
+    "luojiamaster/源码/src/panel/header_panel.h": "8edced968d26b4431e551ebc1245e21bfa75cc908c38209b8b378e42e447dc63",
+    "luojiamaster/源码/src/panel/log_panel.cpp": "b21889db53220b9f807c39e481079d9a06ee04eab9caf5ee4c9b9149b6b0c40e",
+    "luojiamaster/源码/src/panel/log_panel.h": "9291f8283fea9d12a9a50311910ad5242f49a528d9de66af4fc6d370f6d3166a",
+    "luojiamaster/源码/src/panel/mini_map.cpp": "3af80249116180d4a7b2b376f4f1c4d31a01f03d4a6098fd26e6160b7c405bd3",
+    "luojiamaster/源码/src/panel/mini_map.h": "90110b60b9ff0332f217a78f6102fa668e42efa52df5f91f621797c4a9c6d7f3",
+    "luojiamaster/源码/src/panel/panel_layout.cpp": "b7da760fd8b0a8c1f0afd697f6a43432019a0a5dca06b1cba724cf1a23f0b992",
+    "luojiamaster/源码/src/panel/panel_layout.h": "33bd33454ac9c755daedde5017d41667b06b3c27f72c6d4dc72317cb5be1d01c",
+    "luojiamaster/源码/src/panel/robot_status_panel.cpp": "618083056908b2c4b25ebe2b6c563d544ec0108d5e15c26677ca5bf05a7f8a90",
+    "luojiamaster/源码/src/panel/robot_status_panel.h": "c56eda0ee7b9d244fd10d2a4d7ff9f4fc27d5d864a460d550cd66c4d3398aec9",
+    "luojiamaster/源码/src/panel/start_panel.cpp": "64823d2361edfa06ab04f82866a2df3132da50a15ec7833112852d0d5d00bf45",
+    "luojiamaster/源码/src/panel/start_panel.h": "d76f68903e8c4e175f1919963fe6f9e68947cf5f30e3b1aee3a4055b09208b65",
+    "luojiamaster/源码/src/panel/teammate_panel.cpp": "f19ce30592d817839be1048bced60a628018934be523803a0cee912c404530d2",
+    "luojiamaster/源码/src/panel/teammate_panel.h": "69797aaa4145d37811a4f0e50f48526f7c8e507c154beab7c4ef39d62fddda0a",
+    "luojiamaster/源码/src/platform/imgui_dx12_backend.cpp": "e0dd991fabe374ea2d6ff5e40fb57090bb2ffcab69e631c8236f43caa3d24e86",
+    "luojiamaster/源码/src/platform/imgui_dx12_backend.h": "05cd4f413d915ac06d5c123d9952724818df50bf8155e460f4915f266bff40a7",
+    "luojiamaster/源码/src/platform/linux_platform_backend.cpp": "52e957bbbd04ea474c93e363668a32d0138b86d43f4f7b3e9a24c3d7b571ec2c",
+    "luojiamaster/源码/src/platform/platform_backend.h": "e98cea2296f656a2b6d9e186a61bdbb12bf45f033e1125163a5975395297cc04",
+    "luojiamaster/源码/src/platform/platform_util.h": "aa3dc6d06e824e7f8a81044a255577e4b240b9f239e22fecc12d3197ffae4b32",
+    "luojiamaster/源码/src/platform/windows_platform_backend.cpp": "312b7affea72c816d4150627d6f0a1fe40be01d1c111297f4b32200c1eff4ceb",
+    "luojiamaster/源码/src/resource/resources.cpp": "c2357b7779a64aed95423f0220866f3914f536b922e1b0d29adba2aac15e76a0",
+    "luojiamaster/源码/src/resource/resources.h": "b26007205bcac090a719df50139f59966109453d0f34b26ff9a253c2aece3eb1",
+    "luojiamaster/源码/src/video/custom_byte_block_video_decoder.cpp": "223fdb1f9746a829654c41414d655ff03b7931e2dd36c54da228e6c50b77aba7",
+    "luojiamaster/源码/src/video/custom_byte_block_video_decoder.h": "7b0bdfcc50e5f9eba67281d93c9f9d2c472d6fed8f897d347c0299d381d2b778",
+    "luojiamaster/源码/src/video/custom_byte_block_video_decoder_worker.cpp": "d0ae9d77f2a3ea41d2e22fd4d9d890f5db339fd280803c986b130edfd5dce7ee",
+    "luojiamaster/源码/src/video/custom_byte_block_video_decoder_worker.h": "7dffa498bf535d3b402cfd781693d2c6bb8e83c3f8f2acb4e4037967a2a00cd9",
+    "luojiamaster/源码/src/video/rgba_image_transform.cpp": "7eb9cb5ca4c0f612c67f9fa3fb1f89fff52f7effe1cdc874475801ae6d0c6db8",
+    "luojiamaster/源码/src/video/rgba_image_transform.h": "233bc6996063ff8d0c7a976835c5acef0033ea1a589bd6cd0f25feaa01de6c8b",
+    "luojiamaster/源码/src/video/teammate_video_receiver.cpp": "dc8202e5e0a51af0b8015dc3e59370b1f3eab388d0300f45c637f3d389314ba9",
+    "luojiamaster/源码/src/video/teammate_video_receiver.h": "6966e404208f95bd3366457f8d6a3c6d6556d31d4e454904038bd8081aad6b3e",
+    "luojiamaster/源码/src/video/video_decoder.cpp": "039fbf1d31affdb9b9d90ab5e8b8f2fab066044a90a13ca5593f3dc119db1a65",
+    "luojiamaster/源码/src/video/video_decoder.h": "ab58a22a66ba03055f5f513fc2bac91abdf7004613ad1660305fd8a6f606cc23",
+    "luojiamaster/源码/src/video/video_shards_manager.cpp": "188de1d112b61f82c869e79d384aa29f29d467334a7c1ae09b9de01d4306072a",
+    "luojiamaster/源码/src/video/video_shards_manager.h": "feebb91c36bcfaa37d376d68413964a40dd3df5560be5e1f75b1b5c033fefd3e",
+    "luojiamaster/源码/src/video/video_stream_manager.cpp": "da5c1be0d6fc95e7ba104b5cc0fc108fa0175acc397949317f198534ad57fb60",
+    "luojiamaster/源码/src/video/video_stream_manager.h": "f76351b8bb90034fb68ac4440d53ff039b08e1cc14c5eae5857fee82845ccbdf"
+  }
+}

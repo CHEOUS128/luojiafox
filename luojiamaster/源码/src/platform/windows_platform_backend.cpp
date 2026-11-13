@@ -1,907 +1,756 @@
 #ifdef _WIN32
-
 #include "platform/platform_backend.h"
-
+#include "platform/imgui_dx12_backend.h"
 #include "app/imgui_setup.h"
 #include "keyboard_mouse_state_manager.h"
 #include "logging/logging.h"
 #include "resources.h"
+#include <wrl/client.h>
+#include <d3d12sdklayers.h>
 
-#ifdef _DEBUG
-#define DX12_ENABLE_DEBUG_LAYER
-#endif
-
-#ifdef DX12_ENABLE_DEBUG_LAYER
-#pragma comment(lib, "dxguid.lib")
-#endif
-
-extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
+extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND, UINT, WPARAM, LPARAM);
 
 namespace {
+using Microsoft::WRL::ComPtr;
+using Clock = std::chrono::steady_clock;
+constexpr unsigned kFrames = 2, kBackBuffers = 2, kDescriptors = 64;
 
-constexpr int kFramesInFlight = 2;
-constexpr int kBackBuffers = 2;
-constexpr int kSrvHeapSize = 64;
-
-struct WindowsFrameContext {
-    ID3D12CommandAllocator *command_allocator = nullptr;
-    UINT64 fence_value = 0;
+struct FrameContext {
+    ComPtr<ID3D12CommandAllocator> allocator;
+    ComPtr<ID3D12GraphicsCommandList> commands;
+    UINT64 fence = 0;
 };
 
-struct DescriptorHeapAllocator {
+struct DescriptorAllocator {
     ID3D12DescriptorHeap *heap = nullptr;
-    D3D12_DESCRIPTOR_HEAP_TYPE heap_type = D3D12_DESCRIPTOR_HEAP_TYPE_NUM_TYPES;
-    D3D12_CPU_DESCRIPTOR_HANDLE heap_start_cpu = {};
-    D3D12_GPU_DESCRIPTOR_HANDLE heap_start_gpu = {};
-    UINT heap_handle_increment = 0;
-    ImVector<int> free_indices;
-
-    void Create(ID3D12Device *device, ID3D12DescriptorHeap *descriptor_heap) {
-        IM_ASSERT(heap == nullptr && free_indices.empty());
-        heap = descriptor_heap;
-        const D3D12_DESCRIPTOR_HEAP_DESC desc = descriptor_heap->GetDesc();
-        heap_type = desc.Type;
-        heap_start_cpu = heap->GetCPUDescriptorHandleForHeapStart();
-        heap_start_gpu = heap->GetGPUDescriptorHandleForHeapStart();
-        heap_handle_increment = device->GetDescriptorHandleIncrementSize(heap_type);
-        free_indices.reserve(static_cast<int>(desc.NumDescriptors));
-        for (int n = static_cast<int>(desc.NumDescriptors); n > 0; --n) {
-            free_indices.push_back(n - 1);
+    D3D12_CPU_DESCRIPTOR_HANDLE cpu{};
+    D3D12_GPU_DESCRIPTOR_HANDLE gpu{};
+    UINT increment = 0;
+    std::vector<unsigned> free;
+    std::array<bool, kDescriptors> used{};
+    void Create(ID3D12Device *device, ID3D12DescriptorHeap *value) {
+        heap = value;
+        cpu = heap->GetCPUDescriptorHandleForHeapStart();
+        gpu = heap->GetGPUDescriptorHandleForHeapStart();
+        increment = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+        free.clear(); used.fill(false);
+        for (unsigned i = kDescriptors; i; --i) free.push_back(i - 1);
+    }
+    void Destroy() { heap = nullptr; free.clear(); used.fill(false); }
+    void Alloc(D3D12_CPU_DESCRIPTOR_HANDLE *out_cpu, D3D12_GPU_DESCRIPTOR_HANDLE *out_gpu) {
+        if (!heap || free.empty()) throw std::runtime_error("D3D12 descriptor heap exhausted");
+        const unsigned i = free.back(); free.pop_back(); used[i] = true;
+        out_cpu->ptr = cpu.ptr + static_cast<SIZE_T>(i) * increment;
+        out_gpu->ptr = gpu.ptr + static_cast<UINT64>(i) * increment;
+    }
+    void Free(D3D12_CPU_DESCRIPTOR_HANDLE value_cpu, D3D12_GPU_DESCRIPTOR_HANDLE value_gpu) {
+        if (!heap || value_cpu.ptr < cpu.ptr || value_gpu.ptr < gpu.ptr || !increment) return;
+        const auto i = (value_cpu.ptr - cpu.ptr) / increment;
+        if (i >= used.size() || !used[i] || (value_cpu.ptr - cpu.ptr) % increment ||
+            value_gpu.ptr != gpu.ptr + i * increment) {
+            SPDLOG_ERROR("GPU invalid/double descriptor free rejected"); return;
         }
-    }
-
-    void Destroy() {
-        heap = nullptr;
-        free_indices.clear();
-    }
-
-    void Alloc(D3D12_CPU_DESCRIPTOR_HANDLE *out_cpu_desc_handle, D3D12_GPU_DESCRIPTOR_HANDLE *out_gpu_desc_handle) {
-        IM_ASSERT(free_indices.Size > 0);
-        const int index = free_indices.back();
-        free_indices.pop_back();
-        out_cpu_desc_handle->ptr = heap_start_cpu.ptr + (static_cast<SIZE_T>(index) * heap_handle_increment);
-        out_gpu_desc_handle->ptr = heap_start_gpu.ptr + (static_cast<UINT64>(index) * heap_handle_increment);
-    }
-
-    void Free(const D3D12_CPU_DESCRIPTOR_HANDLE cpu_desc_handle, const D3D12_GPU_DESCRIPTOR_HANDLE gpu_desc_handle) {
-        const int cpu_index = static_cast<int>((cpu_desc_handle.ptr - heap_start_cpu.ptr) / heap_handle_increment);
-        const int gpu_index = static_cast<int>((gpu_desc_handle.ptr - heap_start_gpu.ptr) / heap_handle_increment);
-        IM_ASSERT(cpu_index == gpu_index);
-        free_indices.push_back(cpu_index);
+        used[i] = false; free.push_back(static_cast<unsigned>(i));
     }
 };
 
-struct WindowsVideoTexture {
-    ID3D12Resource *texture = nullptr;
-    D3D12_CPU_DESCRIPTOR_HANDLE cpu_handle = {};
-    D3D12_GPU_DESCRIPTOR_HANDLE gpu_handle = {};
-    int width = 0;
-    int height = 0;
-    bool ready = false;
-    bool descriptor_allocated = false;
+struct VideoTexture {
+    ComPtr<ID3D12Resource> texture, upload;
+    uint8_t *mapped = nullptr;
+    D3D12_CPU_DESCRIPTOR_HANDLE cpu{};
+    D3D12_GPU_DESCRIPTOR_HANDLE gpu{};
+    UINT pitch = 0;
+    int width = 0, height = 0;
+    UINT64 last_use = 0;
+    D3D12_RESOURCE_STATES state = D3D12_RESOURCE_STATE_COPY_DEST;
+    bool deferred = false;
+    void Release() {
+        if (mapped && upload) upload->Unmap(0, nullptr);
+        mapped = nullptr; texture.Reset(); upload.Reset();
+        pitch = 0; width = height = 0; last_use = 0;
+        state = D3D12_RESOURCE_STATE_COPY_DEST; deferred = false;
+    }
 };
-
-struct WindowsDynamicTextureSet {
-    std::array<WindowsVideoTexture, 2> textures;
-    int current_index = 0;
-    int next_index = 1;
+struct TextureSet {
+    std::array<VideoTexture, 2> slots;
+    int current = -1, pending = -1;
 };
 
 class WindowsPlatformBackend final : public RoboGo::platform::PlatformBackend {
 public:
-    [[nodiscard]] const char *application_name() const override {
-        return "luojiamaster-windows";
+    const char *application_name() const override { return "luojiamaster-windows"; }
+    void EnableOfflineTestMode(bool value) override {
+        offline_test_ = value;
+        if (value) {
+            wchar_t stage[128]{};
+            const DWORD n = GetEnvironmentVariableW(L"RM26_GPU_TEST_FAILURE", stage, 128);
+            if (n && n < 128) {
+                failure_stage_.assign(stage, stage + n); failure_remaining_ = 1;
+            }
+        } else { failure_stage_.clear(); failure_remaining_ = 0; }
     }
+    void SetTestFailure(std::string_view stage, int count) override {
+        if (!offline_test_) return;
+        failure_stage_ = stage; failure_remaining_ = count;
+        if (initialized_ && count && (stage == "create_queue" || stage == "create_allocator" ||
+                                      stage == "create_list" || stage == "create_fence" || stage.starts_with("font_"))) recovery_requested_ = true;
+        if (count && (stage == "create_texture" || stage == "create_upload")) recreate_texture_ = true;
+    }
+    void RequestTestWindowAction(int action) override {
+        if (offline_test_ && hwnd_) ShowWindow(hwnd_, action == 1 ? SW_MAXIMIZE : action == 2 ? SW_MINIMIZE : SW_RESTORE);
+    }
+    RoboGo::platform::RenderDiagnostics GetRenderDiagnostics() const override { return diagnostics_; }
 
     bool Initialize() override {
         ImGui_ImplWin32_EnableDpiAwareness();
-        main_scale_ = ImGui_ImplWin32_GetDpiScaleForMonitor(::MonitorFromPoint(POINT{0, 0}, MONITOR_DEFAULTTOPRIMARY));
-
-        window_class_ = {sizeof(window_class_),
-                         CS_CLASSDC,
-                         StaticWndProc,
-                         0L,
-                         0L,
-                         GetModuleHandleW(nullptr),
-                         LoadIcon(GetModuleHandleW(nullptr), MAKEINTRESOURCE(IDI_APP_ICON)),
-                         nullptr,
-                         nullptr,
-                         nullptr,
-                         L"luojiamaster",
-                         nullptr};
-        if (::RegisterClassExW(&window_class_) == 0) {
-            SPDLOG_CRITICAL("注册Windows窗口类失败");
-            return false;
-        }
+        main_scale_ = ImGui_ImplWin32_GetDpiScaleForMonitor(MonitorFromPoint(POINT{0, 0}, MONITOR_DEFAULTTOPRIMARY));
+        window_class_ = {sizeof(window_class_), CS_CLASSDC, StaticWndProc, 0L, 0L, GetModuleHandleW(nullptr),
+                         LoadIcon(GetModuleHandleW(nullptr), MAKEINTRESOURCE(IDI_APP_ICON)), nullptr, nullptr, nullptr,
+                         L"luojiamaster", nullptr};
+        if (!RegisterClassExW(&window_class_)) { RecordFailure("register_window", HRESULT_FROM_WIN32(GetLastError())); return false; }
         window_class_registered_ = true;
-
-        hwnd_ = ::CreateWindowW(window_class_.lpszClassName,
-                                L"luojiamaster",
-                                WS_OVERLAPPEDWINDOW,
-                                100,
-                                100,
-                                1280,
-                                800,
-                                nullptr,
-                                nullptr,
-                                window_class_.hInstance,
-                                this);
-        if (hwnd_ == nullptr) {
-            SPDLOG_CRITICAL("创建Windows窗口失败");
-            CleanupWindow();
-            return false;
-        }
-
-        if (!CreateDeviceD3D()) {
-            SPDLOG_CRITICAL("Direct3D初始化失败");
-            CleanupDeviceD3D();
-            CleanupWindow();
-            return false;
-        }
-        SPDLOG_INFO("Direct3D初始化成功");
-
-        ::ShowWindow(hwnd_, SW_SHOWDEFAULT);
-        ::UpdateWindow(hwnd_);
-
+        hwnd_ = CreateWindowW(window_class_.lpszClassName, L"luojiamaster", WS_OVERLAPPEDWINDOW,
+                              100, 100, 1280, 800, nullptr, nullptr, window_class_.hInstance, this);
+        if (!hwnd_) { RecordFailure("create_window", HRESULT_FROM_WIN32(GetLastError())); CleanupWindow(); return false; }
+        if (!CreateGpu()) { CleanupGpu(true); CleanupWindow(); return false; }
+        ShowWindow(hwnd_, SW_SHOWDEFAULT); UpdateWindow(hwnd_);
         RoboGo::app::InitializeCommonImGui(main_scale_);
-
-        ImGui_ImplWin32_Init(hwnd_);
-
-        ImGui_ImplDX12_InitInfo init_info = {};
-        init_info.Device = device_;
-        init_info.CommandQueue = command_queue_;
-        init_info.NumFramesInFlight = kFramesInFlight;
-        init_info.RTVFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
-        init_info.DSVFormat = DXGI_FORMAT_UNKNOWN;
-        init_info.SrvDescriptorHeap = srv_descriptor_heap_;
-        init_info.UserData = this;
-        init_info.SrvDescriptorAllocFn = [](ImGui_ImplDX12_InitInfo *info,
-                                            D3D12_CPU_DESCRIPTOR_HANDLE *out_cpu_handle,
-                                            D3D12_GPU_DESCRIPTOR_HANDLE *out_gpu_handle) {
-            auto *backend = static_cast<WindowsPlatformBackend *>(info->UserData);
-            backend->srv_descriptor_heap_allocator_.Alloc(out_cpu_handle, out_gpu_handle);
-        };
-        init_info.SrvDescriptorFreeFn = [](ImGui_ImplDX12_InitInfo *info,
-                                           const D3D12_CPU_DESCRIPTOR_HANDLE cpu_handle,
-                                           const D3D12_GPU_DESCRIPTOR_HANDLE gpu_handle) {
-            auto *backend = static_cast<WindowsPlatformBackend *>(info->UserData);
-            backend->srv_descriptor_heap_allocator_.Free(cpu_handle, gpu_handle);
-        };
-        ImGui_ImplDX12_Init(&init_info);
-
+        context_initialized_ = true;
+        if (!ImGui_ImplWin32_Init(hwnd_)) { RecordFailure("imgui_win32", E_FAIL); Shutdown(); return false; }
+        win32_initialized_ = true;
+        if (!InitializeRenderer()) { Shutdown(); return false; }
         RoboGo::app::LoadEmbeddedImGuiFont();
-        AllocateVideoTextureDescriptors();
         initialized_ = true;
+        SPDLOG_INFO("GPU persistent renderer ready: one queue, {} frame contexts, 2 slots/stream", kFrames);
         return true;
     }
 
     void Shutdown() override {
-        if (!initialized_) {
-            return;
-        }
-
-        SetGameInputCapture(false);
-        WaitForPendingOperations();
-
-        ReleaseDynamicTextureSet(udp_video_textures_, true);
-        ReleaseDynamicTextureSet(custom_video_textures_, true);
-        ReleaseDynamicTextureSet(teammate_video_textures_, true);
-        ReleaseTexture(mini_map_texture_, true);
-
-        ImGui_ImplDX12_Shutdown();
-        ImGui_ImplWin32_Shutdown();
-        ImGui::DestroyContext();
-
-        CleanupDeviceD3D();
-        CleanupWindow();
-        initialized_ = false;
+        if (!offline_test_) SetGameInputCapture(false);
+        AbortFrame();
+        const bool safe = DrainForShutdown();
+        if (renderer_initialized_ && safe) ImGui_ImplDX12_Shutdown();
+        // A live GPU timeout is NOT completion. In that exceptional shutdown path,
+        // keep its COM references alive until process teardown instead of freeing in-flight work.
+        renderer_initialized_ = false;
+        if (win32_initialized_) ImGui_ImplWin32_Shutdown();
+        win32_initialized_ = false;
+        if (context_initialized_ && safe) ImGui::DestroyContext();
+        context_initialized_ = false;
+        ImGuiDx12SetFailureHook(nullptr, nullptr);
+        CleanupGpu(safe); CleanupWindow(); initialized_ = false;
     }
 
-    [[nodiscard]] bool ProcessEvents() override {
-        MSG message;
-        while (::PeekMessage(&message, nullptr, 0U, 0U, PM_REMOVE)) {
-            ::TranslateMessage(&message);
-            ::DispatchMessage(&message);
-            if (message.message == WM_QUIT) {
-                should_close_ = true;
-            }
+    bool ProcessEvents() override {
+        MSG message{};
+        while (PeekMessageW(&message, nullptr, 0U, 0U, PM_REMOVE)) {
+            TranslateMessage(&message); DispatchMessageW(&message);
+            if (message.message == WM_QUIT) should_close_ = true;
         }
+        if (!should_close_) MaintainGpu();
         return !should_close_;
     }
 
-    [[nodiscard]] bool BeginFrame() override {
-        if ((swap_chain_occluded_ && swap_chain_->Present(0, DXGI_PRESENT_TEST) == DXGI_STATUS_OCCLUDED) || ::IsIconic(hwnd_)) {
-            ::Sleep(10);
-            return false;
-        }
-        swap_chain_occluded_ = false;
-
-        // 游戏模式：先读出“真实的”鼠标位移（因为上一帧我们可能把光标重置回中心），
-        // 再把光标拉回中心，保证下一帧总有移动空间。
-        // 顺序很关键：必须在 ImGui 采样之前、重置之前读取。
+    bool BeginFrame() override {
+        if (!PrepareFrame()) return false;
         if (game_input_captured_) {
             POINT cursor{};
-            if (::GetCursorPos(&cursor)) {
-                POINT center{};
-                RECT rect;
-                ::GetClientRect(hwnd_, &rect);
-                center.x = (rect.right - rect.left) / 2;
-                center.y = (rect.bottom - rect.top) / 2;
-                ::ClientToScreen(hwnd_, &center);
-
-                const float dx = static_cast<float>(cursor.x - center.x);
-                const float dy = static_cast<float>(cursor.y - center.y);
-                add_raw_mouse_delta(dx, dy);
-
-                ::SetCursorPos(center.x, center.y);
+            if (GetCursorPos(&cursor)) {
+                POINT center{}; RECT rect{}; GetClientRect(hwnd_, &rect);
+                center.x = (rect.right - rect.left) / 2; center.y = (rect.bottom - rect.top) / 2;
+                ClientToScreen(hwnd_, &center);
+                add_raw_mouse_delta(static_cast<float>(cursor.x - center.x), static_cast<float>(cursor.y - center.y));
+                SetCursorPos(center.x, center.y);
             }
         }
-
-        ImGui_ImplDX12_NewFrame();
-        ImGui_ImplWin32_NewFrame();
-        ImGui::NewFrame();
+        try { ImGui_ImplDX12_NewFrame(); ImGui_ImplWin32_NewFrame(); ImGui::NewFrame(); }
+        catch (const RoboGo::platform::GpuBackendError &e) { RecordFailure(e.stage(), static_cast<HRESULT>(e.hresult())); unfenced_work_ = true; AbortFrame(); recovery_requested_ = true; return false; }
+        catch (const std::exception &e) { SPDLOG_ERROR("GPU ImGui NewFrame exception: {}", e.what()); RecordFailure("imgui_new_frame", E_FAIL); unfenced_work_ = true; AbortFrame(); recovery_requested_ = true; return false; }
         return true;
     }
 
-    void RenderFrame(ImDrawData *draw_data) override {
-        WindowsFrameContext *frame_context = WaitForNextFrameContext();
-        const UINT back_buffer_index = swap_chain_->GetCurrentBackBufferIndex();
-        frame_context->command_allocator->Reset();
-
-        D3D12_RESOURCE_BARRIER barrier = {};
+    bool RenderFrame(ImDrawData *draw_data) override {
+        if (!prepared_ || !active_ || !draw_data || !back_buffers_valid_ ||
+            draw_data->DisplaySize.x <= 0 || draw_data->DisplaySize.y <= 0) { AbortFrame(); return false; }
+        const UINT back = swap_chain_->GetCurrentBackBufferIndex();
+        if (back >= kBackBuffers || !back_buffers_[back]) { RecordFailure("back_buffer_index", E_UNEXPECTED); AbortFrame(); recovery_requested_ = true; return false; }
+        auto *commands = active_->commands.Get();
+        D3D12_RESOURCE_BARRIER barrier{};
         barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-        barrier.Transition.pResource = main_render_target_resource_[back_buffer_index];
+        barrier.Transition.pResource = back_buffers_[back].Get();
         barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
         barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_PRESENT;
         barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
-
-        command_list_->Reset(frame_context->command_allocator, nullptr);
-        command_list_->ResourceBarrier(1, &barrier);
-
-        constexpr float clear_color_with_alpha[4] = {0.0f, 0.0f, 0.0f, 1.0f};
-        command_list_->ClearRenderTargetView(main_render_target_descriptor_[back_buffer_index], clear_color_with_alpha, 0, nullptr);
-        command_list_->OMSetRenderTargets(1, &main_render_target_descriptor_[back_buffer_index], FALSE, nullptr);
-        command_list_->SetDescriptorHeaps(1, &srv_descriptor_heap_);
-        ImGui_ImplDX12_RenderDrawData(draw_data, command_list_);
-
-        barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
-        barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_PRESENT;
-        command_list_->ResourceBarrier(1, &barrier);
-        command_list_->Close();
-
-        command_queue_->ExecuteCommandLists(1, reinterpret_cast<ID3D12CommandList *const *>(&command_list_));
-        command_queue_->Signal(fence_, ++fence_last_signaled_value_);
-        frame_context->fence_value = fence_last_signaled_value_;
-
-        const HRESULT present_result = swap_chain_->Present(1, 0);
-        swap_chain_occluded_ = (present_result == DXGI_STATUS_OCCLUDED);
-        ++frame_index_;
+        commands->ResourceBarrier(1, &barrier);
+        const float clear[4] = {0, 0, 0, 1};
+        commands->ClearRenderTargetView(rtv_handles_[back], clear, 0, nullptr);
+        commands->OMSetRenderTargets(1, &rtv_handles_[back], FALSE, nullptr);
+        auto *heap = srv_heap_.Get(); commands->SetDescriptorHeaps(1, &heap);
+        try { ImGui_ImplDX12_RenderDrawData(draw_data, commands); }
+        catch (const RoboGo::platform::GpuBackendError &e) { RecordFailure(e.stage(), static_cast<HRESULT>(e.hresult())); unfenced_work_ = true; AbortFrame(); recovery_requested_ = true; return false; }
+        catch (const std::exception &e) { SPDLOG_ERROR("GPU ImGui render exception: {}", e.what()); RecordFailure("imgui_render", E_FAIL); unfenced_work_ = true; AbortFrame(); recovery_requested_ = true; return false; }
+        std::swap(barrier.Transition.StateBefore, barrier.Transition.StateAfter);
+        commands->ResourceBarrier(1, &barrier);
+        if (!Check("close", Fail("close") ? E_FAIL : commands->Close())) { AbandonFrame(); recovery_requested_ = true; return false; }
+        // Inject BEFORE Execute: do not manufacture an unfenced real GPU submission.
+        if (Fail("signal")) { RecordFailure("signal", E_FAIL); AbandonFrame(); recovery_requested_ = true; return false; }
+        ID3D12CommandList *lists[] = {commands};
+        queue_->ExecuteCommandLists(1, lists);
+        unfenced_work_ = true;
+        const UINT64 fence_value = ++last_signal_;
+        if (!Check("signal", queue_->Signal(fence_.Get(), fence_value))) { AbandonFrame(); recovery_requested_ = true; return false; }
+        unfenced_work_ = false; last_submitted_ = fence_value; active_->fence = fence_value;
+        for (auto &set : textures_) {
+            if (set.pending >= 0) {
+                auto &slot = set.slots[set.pending];
+                slot.state = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+                set.current = set.pending; set.pending = -1;
+                ++diagnostics_.uploads_succeeded;
+            }
+            if (set.current >= 0) set.slots[set.current].last_use = fence_value;
+        }
+        prepared_ = false; active_ = nullptr; ++frame_index_;
+        HRESULT result = Fail("present") ? E_FAIL : swap_chain_->Present(1, 0);
+        latency_slot_acquired_ = false;
+        occluded_ = result == DXGI_STATUS_OCCLUDED;
+        if (occluded_) return false;
+        if (!Check("present", result)) { recovery_requested_ = true; return false; }
+        ++diagnostics_.frames_submitted;
+        return true;
     }
 
-    void SetGameInputCapture(const bool enabled) override {
-        if (hwnd_ == nullptr || game_input_captured_ == enabled) {
-            return;
-        }
-
+    void SetGameInputCapture(bool enabled) override {
+        if (!hwnd_ || game_input_captured_ == enabled) return;
         if (enabled) {
-            RECT rect;
-            GetClientRect(hwnd_, &rect);
-            POINT top_left = {rect.left, rect.top};
-            POINT bottom_right = {rect.right, rect.bottom};
-            ClientToScreen(hwnd_, &top_left);
-            ClientToScreen(hwnd_, &bottom_right);
-            rect.left = top_left.x;
-            rect.top = top_left.y;
-            rect.right = bottom_right.x;
-            rect.bottom = bottom_right.y;
-            ClipCursor(&rect);
-            ShowCursor(FALSE);
-            // 切换为“原始位移”模式：光标每帧会被重置到中心，ImGui 的增量不可用
+            RECT rect{}; GetClientRect(hwnd_, &rect);
+            POINT first{rect.left, rect.top}, last{rect.right, rect.bottom};
+            ClientToScreen(hwnd_, &first); ClientToScreen(hwnd_, &last);
+            rect = {first.x, first.y, last.x, last.y}; ClipCursor(&rect); ShowCursor(FALSE);
             set_use_raw_mouse(true);
-            SPDLOG_DEBUG("已锁定Windows鼠标光标区域 left={} top={} right={} bottom={}",
-                         rect.left,
-                         rect.top,
-                         rect.right,
-                         rect.bottom);
-        } else {
-            ClipCursor(nullptr);
-            ShowCursor(TRUE);
-            set_use_raw_mouse(false);
-            SPDLOG_DEBUG("已解除Windows鼠标光标锁定");
-        }
-
+        } else { ClipCursor(nullptr); ShowCursor(TRUE); set_use_raw_mouse(false); }
         game_input_captured_ = enabled;
     }
 
-    [[nodiscard]] bool UploadTexture(const RoboGo::app::TextureSlot slot, const RoboGo::app::VideoFrame &frame) override {
-        switch (slot) {
-            case RoboGo::app::TextureSlot::UdpVideo:
-                return UploadDynamicTexture(udp_video_textures_, frame);
-            case RoboGo::app::TextureSlot::CustomVideo:
-                return UploadDynamicTexture(custom_video_textures_, frame);
-            case RoboGo::app::TextureSlot::TeammateVideo:
-                return UploadDynamicTexture(teammate_video_textures_, frame);
-            case RoboGo::app::TextureSlot::MiniMap:
-                return UploadStaticTexture(mini_map_texture_, frame.buffer.data(), frame.width, frame.height);
-        }
-        return false;
+    bool UploadTexture(RoboGo::app::TextureSlot slot, const RoboGo::app::VideoFrame &frame) override {
+        return Upload(slot, frame.buffer.data(), frame.buffer.size(), frame.width, frame.height);
     }
-
-    [[nodiscard]] bool UploadTexture(const RoboGo::app::TextureSlot slot, const RoboGo::resource::DecodedImage &image) override {
-        if (slot != RoboGo::app::TextureSlot::MiniMap) {
-            return false;
-        }
-        return UploadStaticTexture(mini_map_texture_, image.pixels.data(), image.width, image.height);
+    bool UploadTexture(RoboGo::app::TextureSlot slot, const RoboGo::resource::DecodedImage &image) override {
+        if (slot != RoboGo::app::TextureSlot::MiniMap) return false;
+        return Upload(slot, image.pixels.data(), image.pixels.size(), image.width, image.height);
     }
-
-    [[nodiscard]] RoboGo::app::TextureView GetTextureView(const RoboGo::app::TextureSlot slot) const override {
-        switch (slot) {
-            case RoboGo::app::TextureSlot::UdpVideo:
-                return BuildTextureView(udp_video_textures_.textures[udp_video_textures_.current_index]);
-            case RoboGo::app::TextureSlot::CustomVideo:
-                return BuildTextureView(custom_video_textures_.textures[custom_video_textures_.current_index]);
-            case RoboGo::app::TextureSlot::TeammateVideo:
-                return BuildTextureView(teammate_video_textures_.textures[teammate_video_textures_.current_index]);
-            case RoboGo::app::TextureSlot::MiniMap:
-                return BuildTextureView(mini_map_texture_);
-        }
-        return {};
+    RoboGo::app::TextureView GetTextureView(RoboGo::app::TextureSlot slot) const override {
+        const auto &set = textures_[SlotIndex(slot)];
+        const int index = set.pending >= 0 ? set.pending : set.current;
+        if (index < 0 || !set.slots[index].texture) return {};
+        const auto &value = set.slots[index];
+        RoboGo::app::TextureView result;
+        result.texture_ref = ImTextureRef(static_cast<ImTextureID>(value.gpu.ptr));
+        result.size = ImVec2(static_cast<float>(value.width), static_cast<float>(value.height));
+        return result;
     }
 
 private:
-    bool CreateDeviceD3D() {
-        DXGI_SWAP_CHAIN_DESC1 swap_chain_desc = {};
-        swap_chain_desc.BufferCount = kBackBuffers;
-        swap_chain_desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
-        swap_chain_desc.Flags = DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
-        swap_chain_desc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
-        swap_chain_desc.SampleDesc.Count = 1;
-        swap_chain_desc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
-        swap_chain_desc.Scaling = DXGI_SCALING_STRETCH;
-
-#ifdef DX12_ENABLE_DEBUG_LAYER
-        ID3D12Debug *dx12_debug = nullptr;
-        if (SUCCEEDED(D3D12GetDebugInterface(IID_PPV_ARGS(&dx12_debug)))) {
-            dx12_debug->EnableDebugLayer();
+    static unsigned SlotIndex(RoboGo::app::TextureSlot slot) {
+        switch (slot) {
+            case RoboGo::app::TextureSlot::UdpVideo: return 0;
+            case RoboGo::app::TextureSlot::CustomVideo: return 1;
+            case RoboGo::app::TextureSlot::MiniMap: return 2;
+            case RoboGo::app::TextureSlot::TeammateVideo: return 3;
         }
-#endif
-
-        if (D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device_)) != S_OK) {
-            return false;
-        }
-
-#ifdef DX12_ENABLE_DEBUG_LAYER
-        if (dx12_debug != nullptr) {
-            ID3D12InfoQueue *info_queue = nullptr;
-            device_->QueryInterface(IID_PPV_ARGS(&info_queue));
-            info_queue->SetBreakOnSeverity(D3D12_MESSAGE_SEVERITY_ERROR, true);
-            info_queue->SetBreakOnSeverity(D3D12_MESSAGE_SEVERITY_CORRUPTION, true);
-            info_queue->SetBreakOnSeverity(D3D12_MESSAGE_SEVERITY_WARNING, true);
-
-            constexpr int D3D12_MESSAGE_ID_FENCE_ZERO_WAIT_ = 1424;
-            D3D12_MESSAGE_ID disabled_messages[] = {static_cast<D3D12_MESSAGE_ID>(D3D12_MESSAGE_ID_FENCE_ZERO_WAIT_)};
-            D3D12_INFO_QUEUE_FILTER filter = {};
-            filter.DenyList.NumIDs = 1;
-            filter.DenyList.pIDList = disabled_messages;
-            info_queue->AddStorageFilterEntries(&filter);
-
-            info_queue->Release();
-            dx12_debug->Release();
-        }
-#endif
-
-        D3D12_DESCRIPTOR_HEAP_DESC rtv_heap_desc = {};
-        rtv_heap_desc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
-        rtv_heap_desc.NumDescriptors = kBackBuffers;
-        if (device_->CreateDescriptorHeap(&rtv_heap_desc, IID_PPV_ARGS(&rtv_descriptor_heap_)) != S_OK) {
-            return false;
-        }
-
-        const SIZE_T rtv_descriptor_size = device_->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
-        D3D12_CPU_DESCRIPTOR_HANDLE rtv_handle = rtv_descriptor_heap_->GetCPUDescriptorHandleForHeapStart();
-        for (UINT i = 0; i < kBackBuffers; ++i) {
-            main_render_target_descriptor_[i] = rtv_handle;
-            rtv_handle.ptr += rtv_descriptor_size;
-        }
-
-        D3D12_DESCRIPTOR_HEAP_DESC srv_heap_desc = {};
-        srv_heap_desc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
-        srv_heap_desc.NumDescriptors = kSrvHeapSize;
-        srv_heap_desc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
-        if (device_->CreateDescriptorHeap(&srv_heap_desc, IID_PPV_ARGS(&srv_descriptor_heap_)) != S_OK) {
-            return false;
-        }
-        srv_descriptor_heap_allocator_.Create(device_, srv_descriptor_heap_);
-
-        D3D12_COMMAND_QUEUE_DESC command_queue_desc = {};
-        command_queue_desc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
-        if (device_->CreateCommandQueue(&command_queue_desc, IID_PPV_ARGS(&command_queue_)) != S_OK) {
-            return false;
-        }
-
-        for (UINT i = 0; i < kFramesInFlight; ++i) {
-            if (device_->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&frame_context_[i].command_allocator)) != S_OK) {
-                return false;
-            }
-        }
-
-        if (device_->CreateCommandList(0,
-                                       D3D12_COMMAND_LIST_TYPE_DIRECT,
-                                       frame_context_[0].command_allocator,
-                                       nullptr,
-                                       IID_PPV_ARGS(&command_list_)) != S_OK
-            || command_list_->Close() != S_OK) {
-            return false;
-        }
-
-        if (device_->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fence_)) != S_OK) {
-            return false;
-        }
-
-        fence_event_ = CreateEvent(nullptr, FALSE, FALSE, nullptr);
-        if (fence_event_ == nullptr) {
-            return false;
-        }
-
-        IDXGIFactory5 *dxgi_factory = nullptr;
-        IDXGISwapChain1 *swap_chain_1 = nullptr;
-        if (CreateDXGIFactory1(IID_PPV_ARGS(&dxgi_factory)) != S_OK) {
-            return false;
-        }
-
-        BOOL allow_tearing = FALSE;
-        dxgi_factory->CheckFeatureSupport(DXGI_FEATURE_PRESENT_ALLOW_TEARING, &allow_tearing, sizeof(allow_tearing));
-        swap_chain_tearing_support_ = (allow_tearing == TRUE);
-        if (swap_chain_tearing_support_) {
-            swap_chain_desc.Flags |= DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING;
-        }
-
-        if (dxgi_factory->CreateSwapChainForHwnd(command_queue_, hwnd_, &swap_chain_desc, nullptr, nullptr, &swap_chain_1) != S_OK) {
-            dxgi_factory->Release();
-            return false;
-        }
-        if (swap_chain_1->QueryInterface(IID_PPV_ARGS(&swap_chain_)) != S_OK) {
-            swap_chain_1->Release();
-            dxgi_factory->Release();
-            return false;
-        }
-        if (swap_chain_tearing_support_) {
-            dxgi_factory->MakeWindowAssociation(hwnd_, DXGI_MWA_NO_ALT_ENTER);
-        }
-        swap_chain_1->Release();
-        dxgi_factory->Release();
-
-        swap_chain_->SetMaximumFrameLatency(kBackBuffers);
-        swap_chain_waitable_object_ = swap_chain_->GetFrameLatencyWaitableObject();
-        CreateRenderTarget();
+        return 0;
+    }
+    bool Fail(std::string_view stage) {
+        if (!offline_test_ || !failure_remaining_ || failure_stage_ != stage) return false;
+        if (failure_remaining_ > 0) --failure_remaining_;
         return true;
     }
-
-    void CleanupDeviceD3D() {
-        CleanupRenderTarget();
-        if (swap_chain_ != nullptr) {
-            swap_chain_->SetFullscreenState(false, nullptr);
-            swap_chain_->Release();
-            swap_chain_ = nullptr;
-        }
-        if (swap_chain_waitable_object_ != nullptr) {
-            CloseHandle(swap_chain_waitable_object_);
-            swap_chain_waitable_object_ = nullptr;
-        }
-        for (auto &context: frame_context_) {
-            if (context.command_allocator != nullptr) {
-                context.command_allocator->Release();
-                context.command_allocator = nullptr;
-            }
-        }
-        if (command_queue_ != nullptr) {
-            command_queue_->Release();
-            command_queue_ = nullptr;
-        }
-        if (command_list_ != nullptr) {
-            command_list_->Release();
-            command_list_ = nullptr;
-        }
-        if (rtv_descriptor_heap_ != nullptr) {
-            rtv_descriptor_heap_->Release();
-            rtv_descriptor_heap_ = nullptr;
-        }
-        if (srv_descriptor_heap_ != nullptr) {
-            srv_descriptor_heap_->Release();
-            srv_descriptor_heap_ = nullptr;
-        }
-        srv_descriptor_heap_allocator_.Destroy();
-        if (fence_ != nullptr) {
-            fence_->Release();
-            fence_ = nullptr;
-        }
-        if (fence_event_ != nullptr) {
-            CloseHandle(fence_event_);
-            fence_event_ = nullptr;
-        }
-        if (device_ != nullptr) {
-            device_->Release();
-            device_ = nullptr;
-        }
-
-#ifdef DX12_ENABLE_DEBUG_LAYER
-        IDXGIDebug1 *debug = nullptr;
-        if (SUCCEEDED(DXGIGetDebugInterface1(0, IID_PPV_ARGS(&debug)))) {
-            debug->ReportLiveObjects(DXGI_DEBUG_ALL, DXGI_DEBUG_RLO_SUMMARY);
-            debug->Release();
-        }
-#endif
+    bool Check(std::string_view stage, HRESULT result) {
+        if (SUCCEEDED(result)) return true;
+        RecordFailure(stage, result); return false;
     }
-
-    void CleanupWindow() {
-        if (hwnd_ != nullptr) {
-            ::DestroyWindow(hwnd_);
-            hwnd_ = nullptr;
+    void RecordFailure(std::string_view stage, HRESULT result) {
+        const bool first = diagnostics_.first_failure_stage.empty();
+        if (first) {
+            diagnostics_.first_failure_stage = stage;
+            diagnostics_.first_hresult = static_cast<uint32_t>(result);
         }
-        if (window_class_registered_) {
-            ::UnregisterClassW(window_class_.lpszClassName, window_class_.hInstance);
-            window_class_registered_ = false;
+        const HRESULT removed = device_ ? device_->GetDeviceRemovedReason() : S_OK;
+        const auto now = Clock::now();
+        if (last_error_log_.time_since_epoch().count() == 0 || now - last_error_log_ > std::chrono::seconds(1)) {
+            SPDLOG_ERROR("GPU failure stage={} HRESULT=0x{:08X} device_removed=0x{:08X}; keeping last safe image", stage, static_cast<uint32_t>(result), static_cast<uint32_t>(removed));
+            last_error_log_ = now;
         }
-    }
-
-    void CreateRenderTarget() {
-        for (UINT i = 0; i < kBackBuffers; ++i) {
-            ID3D12Resource *back_buffer = nullptr;
-            swap_chain_->GetBuffer(i, IID_PPV_ARGS(&back_buffer));
-            device_->CreateRenderTargetView(back_buffer, nullptr, main_render_target_descriptor_[i]);
-            main_render_target_resource_[i] = back_buffer;
-        }
-    }
-
-    void CleanupRenderTarget() {
-        WaitForPendingOperations();
-        for (auto &resource: main_render_target_resource_) {
-            if (resource != nullptr) {
-                resource->Release();
-                resource = nullptr;
-            }
-        }
-    }
-
-    void WaitForPendingOperations() {
-        if (command_queue_ == nullptr || fence_ == nullptr || fence_event_ == nullptr) {
-            return;
-        }
-        command_queue_->Signal(fence_, ++fence_last_signaled_value_);
-        fence_->SetEventOnCompletion(fence_last_signaled_value_, fence_event_);
-        ::WaitForSingleObject(fence_event_, INFINITE);
-    }
-
-    WindowsFrameContext *WaitForNextFrameContext() {
-        WindowsFrameContext *frame_context = &frame_context_[frame_index_ % kFramesInFlight];
-        if (fence_->GetCompletedValue() < frame_context->fence_value) {
-            fence_->SetEventOnCompletion(frame_context->fence_value, fence_event_);
-            HANDLE waitable_objects[] = {swap_chain_waitable_object_, fence_event_};
-            ::WaitForMultipleObjects(2, waitable_objects, TRUE, INFINITE);
-        } else {
-            ::WaitForSingleObject(swap_chain_waitable_object_, INFINITE);
-        }
-        return frame_context;
-    }
-
-    [[nodiscard]] bool LoadTextureFromMemory(const uint8_t *data,
-                                             const int width,
-                                             const int height,
-                                             const D3D12_CPU_DESCRIPTOR_HANDLE srv_cpu_handle,
-                                             ID3D12Resource **out_texture_resource) const {
-        D3D12_HEAP_PROPERTIES props = {};
-        props.Type = D3D12_HEAP_TYPE_DEFAULT;
-
-        D3D12_RESOURCE_DESC desc = {};
-        desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
-        desc.Width = width;
-        desc.Height = height;
-        desc.DepthOrArraySize = 1;
-        desc.MipLevels = 1;
-        desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
-        desc.SampleDesc.Count = 1;
-        desc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
-
-        ID3D12Resource *texture = nullptr;
-        HRESULT hr = device_->CreateCommittedResource(&props,
-                                                      D3D12_HEAP_FLAG_NONE,
-                                                      &desc,
-                                                      D3D12_RESOURCE_STATE_COPY_DEST,
-                                                      nullptr,
-                                                      IID_PPV_ARGS(&texture));
-        if (FAILED(hr)) {
-            return false;
-        }
-
-        const UINT upload_pitch =
-                (static_cast<UINT>(width) * 4u + D3D12_TEXTURE_DATA_PITCH_ALIGNMENT - 1u)
-                & ~(D3D12_TEXTURE_DATA_PITCH_ALIGNMENT - 1u);
-        const UINT upload_size = static_cast<UINT>(height) * upload_pitch;
-
-        desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
-        desc.Width = upload_size;
-        desc.Height = 1;
-        desc.DepthOrArraySize = 1;
-        desc.MipLevels = 1;
-        desc.Format = DXGI_FORMAT_UNKNOWN;
-        desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
-
-        props.Type = D3D12_HEAP_TYPE_UPLOAD;
-
-        ID3D12Resource *upload_buffer = nullptr;
-        hr = device_->CreateCommittedResource(&props,
-                                              D3D12_HEAP_FLAG_NONE,
-                                              &desc,
-                                              D3D12_RESOURCE_STATE_GENERIC_READ,
-                                              nullptr,
-                                              IID_PPV_ARGS(&upload_buffer));
-        if (FAILED(hr)) {
-            texture->Release();
-            return false;
-        }
-
-        void *mapped = nullptr;
-        D3D12_RANGE range = {0, upload_size};
-        hr = upload_buffer->Map(0, &range, &mapped);
-        if (FAILED(hr)) {
-            upload_buffer->Release();
-            texture->Release();
-            return false;
-        }
-        auto *mapped_bytes = static_cast<uint8_t *>(mapped);
-        const size_t row_bytes = static_cast<size_t>(width) * 4u;
-        for (int y = 0; y < height; ++y) {
-            memcpy(mapped_bytes + static_cast<size_t>(y) * upload_pitch,
-                   data + static_cast<size_t>(y) * row_bytes,
-                   row_bytes);
-        }
-        D3D12_RANGE written_range = {0, upload_size};
-        upload_buffer->Unmap(0, &written_range);
-
-        D3D12_TEXTURE_COPY_LOCATION src_location = {};
-        src_location.pResource = upload_buffer;
-        src_location.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
-        src_location.PlacedFootprint.Footprint.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
-        src_location.PlacedFootprint.Footprint.Width = width;
-        src_location.PlacedFootprint.Footprint.Height = height;
-        src_location.PlacedFootprint.Footprint.Depth = 1;
-        src_location.PlacedFootprint.Footprint.RowPitch = upload_pitch;
-
-        D3D12_TEXTURE_COPY_LOCATION dst_location = {};
-        dst_location.pResource = texture;
-        dst_location.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
-        dst_location.SubresourceIndex = 0;
-
-        D3D12_RESOURCE_BARRIER barrier = {};
-        barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-        barrier.Transition.pResource = texture;
-        barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-        barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
-        barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
-
-        ID3D12Fence *fence = nullptr;
-        hr = device_->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fence));
-        IM_ASSERT(SUCCEEDED(hr));
-
-        HANDLE event = CreateEvent(nullptr, FALSE, FALSE, nullptr);
-        IM_ASSERT(event != nullptr);
-
-        D3D12_COMMAND_QUEUE_DESC queue_desc = {};
-        queue_desc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
-
-        ID3D12CommandQueue *command_queue = nullptr;
-        hr = device_->CreateCommandQueue(&queue_desc, IID_PPV_ARGS(&command_queue));
-        IM_ASSERT(SUCCEEDED(hr));
-
-        ID3D12CommandAllocator *command_allocator = nullptr;
-        hr = device_->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&command_allocator));
-        IM_ASSERT(SUCCEEDED(hr));
-
-        ID3D12GraphicsCommandList *command_list = nullptr;
-        hr = device_->CreateCommandList(0,
-                                        D3D12_COMMAND_LIST_TYPE_DIRECT,
-                                        command_allocator,
-                                        nullptr,
-                                        IID_PPV_ARGS(&command_list));
-        IM_ASSERT(SUCCEEDED(hr));
-
-        command_list->CopyTextureRegion(&dst_location, 0, 0, 0, &src_location, nullptr);
-        command_list->ResourceBarrier(1, &barrier);
-        hr = command_list->Close();
-        IM_ASSERT(SUCCEEDED(hr));
-
-        command_queue->ExecuteCommandLists(1, reinterpret_cast<ID3D12CommandList *const *>(&command_list));
-        hr = command_queue->Signal(fence, 1);
-        IM_ASSERT(SUCCEEDED(hr));
-        fence->SetEventOnCompletion(1, event);
-        WaitForSingleObject(event, INFINITE);
-
-        command_list->Release();
-        command_allocator->Release();
-        command_queue->Release();
-        CloseHandle(event);
-        fence->Release();
-        upload_buffer->Release();
-
-        D3D12_SHADER_RESOURCE_VIEW_DESC srv_desc = {};
-        srv_desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
-        srv_desc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
-        srv_desc.Texture2D.MipLevels = desc.MipLevels;
-        srv_desc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-        device_->CreateShaderResourceView(texture, &srv_desc, srv_cpu_handle);
-
-        *out_texture_resource = texture;
-        return true;
-    }
-
-    void AllocateVideoTextureDescriptors() {
-        for (auto &texture: udp_video_textures_.textures) {
-            srv_descriptor_heap_allocator_.Alloc(&texture.cpu_handle, &texture.gpu_handle);
-            texture.descriptor_allocated = true;
-        }
-        for (auto &texture: custom_video_textures_.textures) {
-            srv_descriptor_heap_allocator_.Alloc(&texture.cpu_handle, &texture.gpu_handle);
-            texture.descriptor_allocated = true;
-        }
-        for (auto &texture: teammate_video_textures_.textures) {
-            srv_descriptor_heap_allocator_.Alloc(&texture.cpu_handle, &texture.gpu_handle);
-            texture.descriptor_allocated = true;
-        }
-        srv_descriptor_heap_allocator_.Alloc(&mini_map_texture_.cpu_handle, &mini_map_texture_.gpu_handle);
-        mini_map_texture_.descriptor_allocated = true;
-    }
-
-    [[nodiscard]] bool UploadDynamicTexture(WindowsDynamicTextureSet &texture_set, const RoboGo::app::VideoFrame &frame) const {
-        WindowsVideoTexture &next_texture = texture_set.textures[texture_set.next_index];
-        if (next_texture.texture != nullptr) {
-            next_texture.texture->Release();
-            next_texture.texture = nullptr;
-        }
-        if (!LoadTextureFromMemory(frame.buffer.data(), frame.width, frame.height, next_texture.cpu_handle, &next_texture.texture)) {
-            return false;
-        }
-        next_texture.width = frame.width;
-        next_texture.height = frame.height;
-        next_texture.ready = true;
-        texture_set.current_index = texture_set.next_index;
-        texture_set.next_index = (texture_set.next_index + 1) % 2;
-        next_texture.ready = false;
-        return true;
-    }
-
-    [[nodiscard]] bool UploadStaticTexture(WindowsVideoTexture &texture,
-                                           const uint8_t *data,
-                                           const int width,
-                                           const int height) const {
-        if (texture.texture != nullptr) {
-            texture.texture->Release();
-            texture.texture = nullptr;
-        }
-        if (!LoadTextureFromMemory(data, width, height, texture.cpu_handle, &texture.texture)) {
-            return false;
-        }
-        texture.width = width;
-        texture.height = height;
-        return true;
-    }
-
-    void ReleaseDynamicTextureSet(WindowsDynamicTextureSet &texture_set, const bool free_descriptor) {
-        for (auto &texture: texture_set.textures) {
-            ReleaseTexture(texture, free_descriptor);
-        }
-    }
-
-    void ReleaseTexture(WindowsVideoTexture &texture, const bool free_descriptor) {
-        if (texture.texture != nullptr) {
-            texture.texture->Release();
-            texture.texture = nullptr;
-        }
-        if (free_descriptor && texture.descriptor_allocated) {
-            srv_descriptor_heap_allocator_.Free(texture.cpu_handle, texture.gpu_handle);
-            texture.descriptor_allocated = false;
-        }
-        texture.width = 0;
-        texture.height = 0;
-        texture.ready = false;
-    }
-
-    [[nodiscard]] static RoboGo::app::TextureView BuildTextureView(const WindowsVideoTexture &texture) {
-        RoboGo::app::TextureView texture_view;
-        if (texture.texture != nullptr) {
-            texture_view.texture_ref = ImTextureRef(static_cast<ImTextureID>(texture.gpu_handle.ptr));
-        }
-        texture_view.size = ImVec2(static_cast<float>(texture.width), static_cast<float>(texture.height));
-        return texture_view;
-    }
-
-    static LRESULT WINAPI StaticWndProc(HWND hwnd, UINT message, WPARAM w_param, LPARAM l_param) {
-        if (message == WM_NCCREATE) {
-            auto *create_struct = reinterpret_cast<CREATESTRUCTW *>(l_param);
-            auto *backend = static_cast<WindowsPlatformBackend *>(create_struct->lpCreateParams);
-            SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(backend));
-            backend->hwnd_ = hwnd;
-        }
-
-        auto *backend = reinterpret_cast<WindowsPlatformBackend *>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
-        if (backend != nullptr) {
-            return backend->WndProc(hwnd, message, w_param, l_param);
-        }
-        return ::DefWindowProcW(hwnd, message, w_param, l_param);
-    }
-
-    LRESULT WndProc(HWND hwnd, UINT message, WPARAM w_param, LPARAM l_param) {
-        if (ImGui::GetCurrentContext() != nullptr && ImGui_ImplWin32_WndProcHandler(hwnd, message, w_param, l_param)) {
-            return TRUE;
-        }
-
-        switch (message) {
-            case WM_SIZE:
-                if (device_ != nullptr && w_param != SIZE_MINIMIZED) {
-                    CleanupRenderTarget();
-                    DXGI_SWAP_CHAIN_DESC1 desc = {};
-                    swap_chain_->GetDesc1(&desc);
-                    const HRESULT result = swap_chain_->ResizeBuffers(0,
-                                                                      static_cast<UINT>(LOWORD(l_param)),
-                                                                      static_cast<UINT>(HIWORD(l_param)),
-                                                                      desc.Format,
-                                                                      desc.Flags);
-                    IM_ASSERT(SUCCEEDED(result) && "Failed to resize swapchain.");
-                    CreateRenderTarget();
+        if (FAILED(removed)) recovery_requested_ = true;
+        if (FAILED(removed) && !device_removed_logged_) {
+            device_removed_logged_ = true;
+#if defined(__ID3D12DeviceRemovedExtendedData1_INTERFACE_DEFINED__)
+            ComPtr<ID3D12DeviceRemovedExtendedData1> dred;
+            if (SUCCEEDED(device_.As(&dred)) && dred) {
+                D3D12_DRED_AUTO_BREADCRUMBS_OUTPUT1 breadcrumbs{};
+                if (SUCCEEDED(dred->GetAutoBreadcrumbsOutput1(&breadcrumbs))) {
+                    unsigned count = 0;
+                    for (auto *node = breadcrumbs.pHeadAutoBreadcrumbNode; node && count++ < 8; node = node->pNext)
+                        SPDLOG_ERROR("GPU DRED queue={} list={} breadcrumb={}/{}", node->pCommandQueueDebugNameA ? node->pCommandQueueDebugNameA : "unnamed", node->pCommandListDebugNameA ? node->pCommandListDebugNameA : "unnamed", node->pLastBreadcrumbValue ? *node->pLastBreadcrumbValue : 0, node->BreadcrumbCount);
                 }
-                return 0;
-            case WM_SYSCOMMAND:
-                if ((w_param & 0xfff0) == SC_KEYMENU) {
-                    return 0;
-                }
-                break;
-            case WM_DESTROY:
-                ::PostQuitMessage(0);
-                return 0;
-            default:
-                break;
+                D3D12_DRED_PAGE_FAULT_OUTPUT1 page{};
+                if (SUCCEEDED(dred->GetPageFaultAllocationOutput1(&page)))
+                    SPDLOG_ERROR("GPU DRED page_fault_va=0x{:016X}", static_cast<uint64_t>(page.PageFaultVA));
+            }
+#endif
         }
-
-        return ::DefWindowProcW(hwnd, message, w_param, l_param);
+        if (first && device_) {
+            ComPtr<ID3D12InfoQueue> info;
+            if (SUCCEEDED(device_.As(&info)) && info) {
+                const auto count = info->GetNumStoredMessagesAllowedByRetrievalFilter();
+                const auto start = count > 8 ? count - 8 : 0;
+                for (auto i = start; i < count; ++i) {
+                    SIZE_T bytes = 0;
+                    if (FAILED(info->GetMessage(i, nullptr, &bytes)) || !bytes || bytes > 1024 * 1024) continue;
+                    std::vector<uint8_t> storage(bytes);
+                    auto *message = reinterpret_cast<D3D12_MESSAGE *>(storage.data());
+                    if (SUCCEEDED(info->GetMessage(i, message, &bytes)))
+                        SPDLOG_ERROR("GPU debug message id={} severity={} text={}", static_cast<int>(message->ID), static_cast<int>(message->Severity), message->pDescription ? message->pDescription : "");
+                }
+            }
+        }
+    }
+    bool DeviceRemoved() const { return device_ && FAILED(device_->GetDeviceRemovedReason()); }
+    UINT64 CompletedFence() {
+        if (!fence_) return 0;
+        const UINT64 value = fence_->GetCompletedValue();
+        if (value == UINT64_MAX) { RecordFailure("get_completed_fence", DXGI_ERROR_DEVICE_REMOVED); return 0; }
+        return value;
+    }
+    bool QueueIdle() {
+        if (!device_ || DeviceRemoved()) return true;
+        if (unfenced_work_) {
+            const UINT64 value = ++last_signal_;
+            if (!Check("recovery_signal", queue_->Signal(fence_.Get(), value))) return false;
+            last_submitted_ = value; unfenced_work_ = false;
+        }
+        return CompletedFence() >= last_submitted_;
+    }
+    void AbandonFrame() {
+        prepared_ = false; active_ = nullptr;
+        for (auto &set : textures_) set.pending = -1;
+    }
+    void AbortFrame() {
+        if (prepared_ && active_ && !Check("abort_close", active_->commands->Close())) recovery_requested_ = true;
+        AbandonFrame();
     }
 
-    std::array<WindowsFrameContext, kFramesInFlight> frame_context_ = {};
-    UINT frame_index_ = 0;
-    ID3D12Device *device_ = nullptr;
-    ID3D12DescriptorHeap *rtv_descriptor_heap_ = nullptr;
-    ID3D12DescriptorHeap *srv_descriptor_heap_ = nullptr;
-    DescriptorHeapAllocator srv_descriptor_heap_allocator_;
-    ID3D12CommandQueue *command_queue_ = nullptr;
-    ID3D12GraphicsCommandList *command_list_ = nullptr;
-    ID3D12Fence *fence_ = nullptr;
+    // The remaining helpers use this one render queue. No per-image command objects.
+    bool CreateGpu();
+    bool InitializeRenderer();
+    bool CreateRenderTargets();
+    void MaintainGpu();
+    void RecoverGpu();
+    bool PrepareFrame(bool restore_map = true);
+    bool WaitForFence(UINT64 value);
+    static DWORD WaitResponsive(HANDLE handle, DWORD milliseconds = 5) {
+        return MsgWaitForMultipleObjectsEx(handle ? 1 : 0, handle ? &handle : nullptr,
+                                           milliseconds, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
+    }
+    bool Upload(RoboGo::app::TextureSlot, const uint8_t *, size_t, int, int);
+    bool StageUpload(TextureSet &, const uint8_t *, int, int);
+    bool CreateTexture(VideoTexture &, int, int);
+    bool DrainForShutdown();
+    void CleanupGpu(bool safe);
+    void CleanupWindow();
+    static LRESULT WINAPI StaticWndProc(HWND, UINT, WPARAM, LPARAM);
+    LRESULT WndProc(HWND, UINT, WPARAM, LPARAM);
+
+    std::array<FrameContext, kFrames> frames_;
+    std::array<TextureSet, 4> textures_;
+    std::vector<uint8_t> map_pixels_;
+    int map_width_ = 0, map_height_ = 0;
+    ComPtr<ID3D12Device> device_;
+    ComPtr<ID3D12DescriptorHeap> rtv_heap_, srv_heap_;
+    DescriptorAllocator descriptors_;
+    ComPtr<ID3D12CommandQueue> queue_;
+    ComPtr<ID3D12Fence> fence_;
+    ComPtr<IDXGISwapChain3> swap_chain_;
+    std::array<ComPtr<ID3D12Resource>, kBackBuffers> back_buffers_;
+    std::array<D3D12_CPU_DESCRIPTOR_HANDLE, kBackBuffers> rtv_handles_{};
+    HANDLE swap_wait_ = nullptr;
     HANDLE fence_event_ = nullptr;
-    UINT64 fence_last_signaled_value_ = 0;
-    IDXGISwapChain3 *swap_chain_ = nullptr;
-    bool swap_chain_tearing_support_ = false;
-    bool swap_chain_occluded_ = false;
-    HANDLE swap_chain_waitable_object_ = nullptr;
-    std::array<ID3D12Resource *, kBackBuffers> main_render_target_resource_ = {};
-    std::array<D3D12_CPU_DESCRIPTOR_HANDLE, kBackBuffers> main_render_target_descriptor_ = {};
-    WNDCLASSEXW window_class_ = {};
+    UINT64 fence_event_target_ = 0;
+    UINT64 last_signal_ = 0, last_submitted_ = 0, frame_index_ = 0;
+    FrameContext *active_ = nullptr;
+    WNDCLASSEXW window_class_{};
     HWND hwnd_ = nullptr;
-    bool window_class_registered_ = false;
-    float main_scale_ = 1.0f;
-    WindowsDynamicTextureSet udp_video_textures_;
-    WindowsDynamicTextureSet custom_video_textures_;
-    WindowsDynamicTextureSet teammate_video_textures_;
-    WindowsVideoTexture mini_map_texture_;
-    bool initialized_ = false;
-    bool should_close_ = false;
-    bool game_input_captured_ = false;
+    float main_scale_ = 1;
+    UINT resize_width_ = 0, resize_height_ = 0;
+    bool initialized_ = false, context_initialized_ = false, win32_initialized_ = false;
+    bool renderer_initialized_ = false, window_class_registered_ = false, should_close_ = false;
+    bool game_input_captured_ = false, prepared_ = false, back_buffers_valid_ = false;
+    bool occluded_ = false, resize_pending_ = false, recovery_requested_ = false;
+    bool unfenced_work_ = false, latency_slot_acquired_ = false, recreate_texture_ = false;
+    bool offline_test_ = false;
+    bool device_removed_logged_ = false;
+    std::string failure_stage_;
+    int failure_remaining_ = 0;
+    Clock::time_point retry_at_{}, recovery_not_before_{}, last_error_log_{};
+    RoboGo::platform::RenderDiagnostics diagnostics_;
 };
 
-}// namespace
-
-namespace RoboGo::platform {
-
-std::unique_ptr<PlatformBackend> CreatePlatformBackend() {
-    return std::make_unique<WindowsPlatformBackend>();
+bool WindowsPlatformBackend::CreateGpu() {
+    device_removed_logged_ = false;
+    // Debug validation is opt-in for the isolated runner, never a production startup requirement.
+    wchar_t debug_value[8]{};
+    if (offline_test_ && GetEnvironmentVariableW(L"RM26_GPU_DEBUG", debug_value, 8) && debug_value[0] == L'1') {
+        ComPtr<ID3D12Debug> debug;
+        if (SUCCEEDED(D3D12GetDebugInterface(IID_PPV_ARGS(&debug))) && debug) {
+            debug->EnableDebugLayer(); SPDLOG_INFO("GPU offline D3D12 debug layer enabled");
+        } else SPDLOG_WARN("GPU offline debug layer unavailable; continuing without it");
+    }
+    if (!Check("create_device", D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device_))) || !device_) return false;
+    device_->SetName(L"RM26 renderer device");
+    ++diagnostics_.resource_creations;
+    D3D12_DESCRIPTOR_HEAP_DESC heap{};
+    heap.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV; heap.NumDescriptors = kBackBuffers;
+    if (!Check("create_rtv_heap", device_->CreateDescriptorHeap(&heap, IID_PPV_ARGS(&rtv_heap_))) || !rtv_heap_) return false;
+    ++diagnostics_.resource_creations;
+    auto handle = rtv_heap_->GetCPUDescriptorHandleForHeapStart();
+    const UINT increment = device_->GetDescriptorHandleIncrementSize(heap.Type);
+    for (unsigned i = 0; i < kBackBuffers; ++i) { rtv_handles_[i] = handle; handle.ptr += increment; }
+    heap.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV; heap.NumDescriptors = kDescriptors;
+    heap.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
+    if (!Check("create_srv_heap", device_->CreateDescriptorHeap(&heap, IID_PPV_ARGS(&srv_heap_))) || !srv_heap_) return false;
+    ++diagnostics_.resource_creations; descriptors_.Create(device_.Get(), srv_heap_.Get());
+    D3D12_COMMAND_QUEUE_DESC queue_desc{}; queue_desc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
+    if (!Check("create_queue", Fail("create_queue") ? E_FAIL : device_->CreateCommandQueue(&queue_desc, IID_PPV_ARGS(&queue_))) || !queue_) return false;
+    queue_->SetName(L"RM26 shared upload/render queue");
+    ++diagnostics_.resource_creations;
+    for (auto &frame : frames_) {
+        if (!Check("create_allocator", Fail("create_allocator") ? E_FAIL : device_->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&frame.allocator))) || !frame.allocator) return false;
+        ++diagnostics_.resource_creations;
+        if (!Check("create_list", Fail("create_list") ? E_FAIL : device_->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, frame.allocator.Get(), nullptr, IID_PPV_ARGS(&frame.commands))) || !frame.commands) return false;
+        frame.commands->SetName(L"RM26 frame upload/render list");
+        ++diagnostics_.resource_creations;
+        if (!Check("initial_close", frame.commands->Close())) return false;
+    }
+    if (!Check("create_fence", Fail("create_fence") ? E_FAIL : device_->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fence_))) || !fence_) return false;
+    ++diagnostics_.resource_creations;
+    fence_event_ = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+    if (!fence_event_) { RecordFailure("create_fence_event", HRESULT_FROM_WIN32(GetLastError())); return false; }
+    ComPtr<IDXGIFactory5> factory;
+    if (!Check("create_factory", CreateDXGIFactory1(IID_PPV_ARGS(&factory))) || !factory) return false;
+    DXGI_SWAP_CHAIN_DESC1 desc{};
+    desc.BufferCount = kBackBuffers; desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    desc.Flags = DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
+    desc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT; desc.SampleDesc.Count = 1;
+    desc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD; desc.Scaling = DXGI_SCALING_STRETCH;
+    BOOL tearing = FALSE;
+    if (SUCCEEDED(factory->CheckFeatureSupport(DXGI_FEATURE_PRESENT_ALLOW_TEARING, &tearing, sizeof(tearing))) && tearing) desc.Flags |= DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING;
+    ComPtr<IDXGISwapChain1> first;
+    if (!Check("create_swap_chain", factory->CreateSwapChainForHwnd(queue_.Get(), hwnd_, &desc, nullptr, nullptr, &first)) || !first) return false;
+    if (!Check("query_swap_chain", first.As(&swap_chain_)) || !swap_chain_) return false;
+    Check("window_association", factory->MakeWindowAssociation(hwnd_, DXGI_MWA_NO_ALT_ENTER));
+    if (!Check("frame_latency", swap_chain_->SetMaximumFrameLatency(kBackBuffers))) return false;
+    swap_wait_ = swap_chain_->GetFrameLatencyWaitableObject();
+    if (!swap_wait_) { RecordFailure("swap_wait_handle", E_HANDLE); return false; }
+    return CreateRenderTargets();
 }
 
-}// namespace RoboGo::platform
+bool WindowsPlatformBackend::InitializeRenderer() {
+    ImGuiDx12SetFailureHook([](const char *stage, void *user) {
+        return static_cast<WindowsPlatformBackend *>(user)->Fail(stage);
+    }, this);
+    ImGui_ImplDX12_InitInfo info{};
+    info.Device = device_.Get(); info.CommandQueue = queue_.Get(); info.NumFramesInFlight = kFrames;
+    info.RTVFormat = DXGI_FORMAT_R8G8B8A8_UNORM; info.DSVFormat = DXGI_FORMAT_UNKNOWN;
+    info.SrvDescriptorHeap = srv_heap_.Get(); info.UserData = this;
+    info.SrvDescriptorAllocFn = [](ImGui_ImplDX12_InitInfo *value, D3D12_CPU_DESCRIPTOR_HANDLE *cpu, D3D12_GPU_DESCRIPTOR_HANDLE *gpu) {
+        static_cast<WindowsPlatformBackend *>(value->UserData)->descriptors_.Alloc(cpu, gpu);
+    };
+    info.SrvDescriptorFreeFn = [](ImGui_ImplDX12_InitInfo *value, D3D12_CPU_DESCRIPTOR_HANDLE cpu, D3D12_GPU_DESCRIPTOR_HANDLE gpu) {
+        static_cast<WindowsPlatformBackend *>(value->UserData)->descriptors_.Free(cpu, gpu);
+    };
+    try {
+        const bool success = ImGui_ImplDX12_Init(&info);
+        renderer_initialized_ = ImGui::GetIO().BackendRendererUserData != nullptr;
+        if (!success) { RecordFailure("imgui_dx12_init", E_FAIL); return false; }
+        for (auto &set : textures_) for (auto &slot : set.slots) descriptors_.Alloc(&slot.cpu, &slot.gpu);
+    } catch (const std::exception &e) {
+        SPDLOG_ERROR("GPU descriptor/renderer initialization exception: {}", e.what()); RecordFailure("imgui_dx12_init", E_FAIL); return false;
+    }
+    return true;
+}
 
+bool WindowsPlatformBackend::CreateRenderTargets() {
+    std::array<ComPtr<ID3D12Resource>, kBackBuffers> buffers;
+    for (unsigned i = 0; i < kBackBuffers; ++i) {
+        if (!Check("get_buffer", Fail("get_buffer") ? E_FAIL : swap_chain_->GetBuffer(i, IID_PPV_ARGS(&buffers[i]))) || !buffers[i]) return false;
+        device_->CreateRenderTargetView(buffers[i].Get(), nullptr, rtv_handles_[i]);
+    }
+    back_buffers_ = std::move(buffers); back_buffers_valid_ = true;
+    return true;
+}
+
+void WindowsPlatformBackend::MaintainGpu() {
+    if (!initialized_) return;
+    if (DeviceRemoved()) { RecordFailure("device_removed", device_->GetDeviceRemovedReason()); recovery_requested_ = true; }
+    if (recovery_requested_) {
+        AbortFrame();
+        const auto now = Clock::now();
+        if (now >= retry_at_ && now >= recovery_not_before_ && QueueIdle()) RecoverGpu();
+        return;
+    }
+    if (!resize_pending_ || Clock::now() < retry_at_) return;
+    AbortFrame();
+    if (recovery_requested_) return;
+    if (!QueueIdle()) return;
+    for (auto &buffer : back_buffers_) buffer.Reset();
+    back_buffers_valid_ = false;
+    DXGI_SWAP_CHAIN_DESC1 desc{};
+    if (!Check("get_swap_desc", swap_chain_->GetDesc1(&desc))) { recovery_requested_ = true; return; }
+    const HRESULT result = Fail("resize") ? E_INVALIDARG : swap_chain_->ResizeBuffers(0, resize_width_, resize_height_, desc.Format, desc.Flags);
+    if (!Check("resize", result)) {
+        // Resize failure does not justify destroying a healthy device. Reacquire
+        // the unchanged old buffers and retry later, leaving the event loop live.
+        if (!CreateRenderTargets()) recovery_requested_ = true;
+        retry_at_ = Clock::now() + std::chrono::milliseconds(250);
+        return;
+    }
+    if (!CreateRenderTargets()) { recovery_requested_ = true; return; }
+    resize_pending_ = false; occluded_ = false;
+}
+
+void WindowsPlatformBackend::RecoverGpu() {
+    if (!QueueIdle()) return;
+    AbortFrame();
+    if (renderer_initialized_) ImGui_ImplDX12_Shutdown();
+    renderer_initialized_ = false;
+    CleanupGpu(true);
+    if (!CreateGpu() || !InitializeRenderer()) {
+        if (renderer_initialized_) ImGui_ImplDX12_Shutdown();
+        renderer_initialized_ = false; CleanupGpu(true);
+        recovery_requested_ = true; retry_at_ = Clock::now() + std::chrono::seconds(1);
+        SetWindowTextW(hwnd_, L"luojiamaster - 正在恢复画面");
+        return;
+    }
+    recovery_requested_ = false; resize_pending_ = false; occluded_ = false;
+    retry_at_ = {};
+    recovery_not_before_ = Clock::now() + std::chrono::milliseconds(250);
+    ++diagnostics_.recoveries;
+    SetWindowTextW(hwnd_, L"luojiamaster");
+    SPDLOG_INFO("GPU renderer recovered; preserved UI state, queued cached map restore");
+}
+
+bool WindowsPlatformBackend::PrepareFrame(bool restore_map) {
+    if (prepared_) return true;
+    auto busy = [&] { ++diagnostics_.skipped_busy; return false; };
+    if (!initialized_ || !renderer_initialized_ || !device_ || recovery_requested_ || !back_buffers_valid_) {
+        if (!fence_ || !last_submitted_ || unfenced_work_ || WaitForFence(last_submitted_)) WaitResponsive(nullptr);
+        return busy();
+    }
+    if (IsIconic(hwnd_)) { WaitResponsive(nullptr, 20); return busy(); }
+    if (resize_pending_ && Clock::now() >= retry_at_) {
+        if (WaitForFence(last_submitted_)) WaitResponsive(nullptr);
+        return busy();
+    }
+    if (occluded_) {
+        const HRESULT result = swap_chain_->Present(0, DXGI_PRESENT_TEST);
+        if (result == DXGI_STATUS_OCCLUDED) { WaitResponsive(nullptr, 20); return false; }
+        if (!Check("occlusion_test", result)) { recovery_requested_ = true; return false; }
+        occluded_ = false;
+    }
+    if (Fail("wait")) { ++diagnostics_.wait_timeouts; WaitResponsive(nullptr); return busy(); }
+    auto &frame = frames_[frame_index_ % kFrames];
+    const UINT64 complete = CompletedFence();
+    unsigned deferred = 0;
+    for (auto &set : textures_) for (auto &slot : set.slots) {
+        if (slot.deferred && slot.last_use <= complete) slot.deferred = false;
+        deferred += slot.deferred ? 1 : 0;
+    }
+    diagnostics_.deferred_resources = deferred;
+    diagnostics_.max_deferred_resources = std::max<uint64_t>(diagnostics_.max_deferred_resources, deferred);
+    if (complete < frame.fence && !WaitForFence(frame.fence)) return busy();
+    if (!latency_slot_acquired_) {
+        const DWORD status = WaitResponsive(swap_wait_);
+        if (status == WAIT_TIMEOUT) return busy();
+        if (status == WAIT_OBJECT_0 + 1) return busy();
+        if (status != WAIT_OBJECT_0) { RecordFailure("swap_wait", HRESULT_FROM_WIN32(GetLastError())); recovery_requested_ = true; return false; }
+        // Keep this token across an unsubmitted/cancelled frame. It is only
+        // consumed by Present; waiting again would deadlock on an auto-reset event.
+        latency_slot_acquired_ = true;
+    }
+    if (!Check("reset_allocator", Fail("reset_allocator") ? E_FAIL : frame.allocator->Reset())) { recovery_requested_ = true; return false; }
+    if (!Check("reset_list", Fail("reset_list") ? E_FAIL : frame.commands->Reset(frame.allocator.Get(), nullptr))) { recovery_requested_ = true; return false; }
+    active_ = &frame; prepared_ = true;
+    if (restore_map && !map_pixels_.empty() && textures_[2].current < 0) StageUpload(textures_[2], map_pixels_.data(), map_width_, map_height_);
+    return true;
+}
+
+bool WindowsPlatformBackend::WaitForFence(UINT64 value) {
+    if (!value || CompletedFence() >= value) return true;
+    if (!fence_ || !fence_event_) return false;
+    if (fence_event_target_ != value) {
+        if (!ResetEvent(fence_event_)) {
+            RecordFailure("reset_fence_event", HRESULT_FROM_WIN32(GetLastError())); recovery_requested_ = true; return false;
+        }
+        if (!Check("set_fence_event", fence_->SetEventOnCompletion(value, fence_event_))) {
+            recovery_requested_ = true; return false;
+        }
+        fence_event_target_ = value;
+    }
+    const DWORD status = WaitResponsive(fence_event_);
+    if (status == WAIT_FAILED) { RecordFailure("fence_wait", HRESULT_FROM_WIN32(GetLastError())); recovery_requested_ = true; return false; }
+    return CompletedFence() >= value;
+}
+
+bool WindowsPlatformBackend::Upload(RoboGo::app::TextureSlot slot, const uint8_t *pixels, size_t size, int width, int height) {
+    if (!pixels || width <= 0 || height <= 0 || width > 16384 || height > 16384 ||
+        static_cast<uint64_t>(width) * height * 4 > size) {
+        ++diagnostics_.upload_failures; RecordFailure("invalid_pixels", E_INVALIDARG); return false;
+    }
+    if (slot == RoboGo::app::TextureSlot::MiniMap) {
+        map_pixels_.assign(pixels, pixels + static_cast<size_t>(width) * height * 4);
+        map_width_ = width; map_height_ = height;
+    }
+    if (!PrepareFrame(slot != RoboGo::app::TextureSlot::MiniMap)) return false;
+    return StageUpload(textures_[SlotIndex(slot)], pixels, width, height);
+}
+
+bool WindowsPlatformBackend::StageUpload(TextureSet &set, const uint8_t *pixels, int width, int height) {
+    if (!prepared_ || !active_ || set.pending >= 0) { ++diagnostics_.skipped_busy; return false; }
+    const int index = set.current < 0 ? 0 : 1 - set.current;
+    auto &slot = set.slots[index];
+    // This fence includes both prior copy and every conservative render use.
+    // Neither mapped bytes nor descriptor contents may change before it completes.
+    if (slot.last_use > CompletedFence()) {
+        slot.deferred = true; ++diagnostics_.skipped_busy;
+        unsigned count = 0;
+        for (auto &stream : textures_) for (auto &entry : stream.slots) count += entry.deferred ? 1 : 0;
+        diagnostics_.deferred_resources = count;
+        diagnostics_.max_deferred_resources = std::max<uint64_t>(diagnostics_.max_deferred_resources, count);
+        return false;
+    }
+    slot.deferred = false;
+    if (!slot.texture || slot.width != width || slot.height != height || recreate_texture_) {
+        if (!CreateTexture(slot, width, height)) { ++diagnostics_.upload_failures; return false; }
+    }
+    if (Fail("map")) { RecordFailure("map", E_FAIL); ++diagnostics_.upload_failures; return false; }
+    const size_t row_bytes = static_cast<size_t>(width) * 4;
+    for (int y = 0; y < height; ++y) memcpy(slot.mapped + static_cast<size_t>(y) * slot.pitch, pixels + static_cast<size_t>(y) * row_bytes, row_bytes);
+    auto *commands = active_->commands.Get();
+    D3D12_RESOURCE_BARRIER barrier{};
+    barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    barrier.Transition.pResource = slot.texture.Get();
+    barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    barrier.Transition.StateBefore = slot.state;
+    barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
+    if (slot.state != D3D12_RESOURCE_STATE_COPY_DEST) commands->ResourceBarrier(1, &barrier);
+    D3D12_TEXTURE_COPY_LOCATION source{}, target{};
+    source.pResource = slot.upload.Get(); source.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+    source.PlacedFootprint.Footprint = {DXGI_FORMAT_R8G8B8A8_UNORM, static_cast<UINT>(width), static_cast<UINT>(height), 1, slot.pitch};
+    target.pResource = slot.texture.Get(); target.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+    commands->CopyTextureRegion(&target, 0, 0, 0, &source, nullptr);
+    barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
+    barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+    commands->ResourceBarrier(1, &barrier);
+    // State is committed only after Execute+Signal. Aborted lists never ran.
+    set.pending = index;
+    return true;
+}
+
+bool WindowsPlatformBackend::CreateTexture(VideoTexture &slot, int width, int height) {
+    ComPtr<ID3D12Resource> texture, upload;
+    D3D12_HEAP_PROPERTIES props{}; props.Type = D3D12_HEAP_TYPE_DEFAULT;
+    D3D12_RESOURCE_DESC desc{};
+    desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D; desc.Width = width; desc.Height = height;
+    desc.DepthOrArraySize = 1; desc.MipLevels = 1; desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    desc.SampleDesc.Count = 1; desc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+    if (!Check("create_texture", Fail("create_texture") ? E_FAIL : device_->CreateCommittedResource(&props, D3D12_HEAP_FLAG_NONE, &desc, D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&texture))) || !texture) return false;
+    ++diagnostics_.resource_creations;
+    const UINT pitch = (static_cast<UINT>(width) * 4 + D3D12_TEXTURE_DATA_PITCH_ALIGNMENT - 1) & ~(D3D12_TEXTURE_DATA_PITCH_ALIGNMENT - 1);
+    desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER; desc.Width = static_cast<UINT64>(pitch) * height;
+    desc.Height = 1; desc.Format = DXGI_FORMAT_UNKNOWN; desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+    props.Type = D3D12_HEAP_TYPE_UPLOAD;
+    if (!Check("create_upload", Fail("create_upload") ? E_FAIL : device_->CreateCommittedResource(&props, D3D12_HEAP_FLAG_NONE, &desc, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&upload))) || !upload) return false;
+    ++diagnostics_.resource_creations;
+    void *mapped = nullptr; const D3D12_RANGE no_reads{0, 0};
+    if (!Check("initial_map", upload->Map(0, &no_reads, &mapped)) || !mapped) return false;
+    // All prerequisites succeeded. Only now replace the fence-safe old slot.
+    slot.Release(); slot.texture = std::move(texture); slot.upload = std::move(upload);
+    slot.mapped = static_cast<uint8_t *>(mapped); slot.pitch = pitch; slot.width = width; slot.height = height;
+    D3D12_SHADER_RESOURCE_VIEW_DESC srv{};
+    srv.Format = DXGI_FORMAT_R8G8B8A8_UNORM; srv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+    srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING; srv.Texture2D.MipLevels = 1;
+    device_->CreateShaderResourceView(slot.texture.Get(), &srv, slot.cpu);
+    if (!failure_remaining_) recreate_texture_ = false;
+    return true;
+}
+
+bool WindowsPlatformBackend::DrainForShutdown() {
+    if (!device_ || DeviceRemoved()) return true;
+    const auto deadline = Clock::now() + std::chrono::seconds(2);
+    while (!QueueIdle()) {
+        if (Clock::now() >= deadline) { ++diagnostics_.wait_timeouts; SPDLOG_ERROR("GPU shutdown wait exceeded 2s; quarantining live resources until process exit"); return false; }
+        Sleep(1);
+    }
+    return true;
+}
+
+void WindowsPlatformBackend::CleanupGpu(bool safe) {
+    for (auto &set : textures_) {
+        for (auto &slot : set.slots) {
+            if (safe) slot.Release();
+            else { slot.texture.Detach(); slot.upload.Detach(); slot.mapped = nullptr; }
+            slot.cpu = {}; slot.gpu = {}; slot.last_use = 0;
+        }
+        set.current = set.pending = -1;
+    }
+    for (auto &frame : frames_) {
+        if (safe) { frame.commands.Reset(); frame.allocator.Reset(); }
+        else { frame.commands.Detach(); frame.allocator.Detach(); }
+        frame.fence = 0;
+    }
+    for (auto &buffer : back_buffers_) { if (safe) buffer.Reset(); else buffer.Detach(); }
+    if (safe) { swap_chain_.Reset(); queue_.Reset(); fence_.Reset(); rtv_heap_.Reset(); srv_heap_.Reset(); device_.Reset(); }
+    else { swap_chain_.Detach(); queue_.Detach(); fence_.Detach(); rtv_heap_.Detach(); srv_heap_.Detach(); device_.Detach(); }
+    if (swap_wait_) CloseHandle(swap_wait_);
+    if (fence_event_) CloseHandle(fence_event_);
+    fence_event_ = nullptr; fence_event_target_ = 0;
+    swap_wait_ = nullptr; descriptors_.Destroy(); back_buffers_valid_ = false;
+    prepared_ = false; active_ = nullptr; unfenced_work_ = false; latency_slot_acquired_ = false;
+    frame_index_ = last_signal_ = last_submitted_ = 0;
+    diagnostics_.deferred_resources = 0;
+}
+
+void WindowsPlatformBackend::CleanupWindow() {
+    if (hwnd_) { DestroyWindow(hwnd_); hwnd_ = nullptr; }
+    if (window_class_registered_) { UnregisterClassW(window_class_.lpszClassName, window_class_.hInstance); window_class_registered_ = false; }
+}
+
+LRESULT WINAPI WindowsPlatformBackend::StaticWndProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam) {
+    if (message == WM_NCCREATE) {
+        auto *create = reinterpret_cast<CREATESTRUCTW *>(lparam);
+        auto *backend = static_cast<WindowsPlatformBackend *>(create->lpCreateParams);
+        SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(backend)); backend->hwnd_ = hwnd;
+    }
+    auto *backend = reinterpret_cast<WindowsPlatformBackend *>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+    return backend ? backend->WndProc(hwnd, message, wparam, lparam) : DefWindowProcW(hwnd, message, wparam, lparam);
+}
+
+LRESULT WindowsPlatformBackend::WndProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam) {
+    if (ImGui::GetCurrentContext() && ImGui_ImplWin32_WndProcHandler(hwnd, message, wparam, lparam)) return TRUE;
+    switch (message) {
+        case WM_SIZE:
+            if (wparam != SIZE_MINIMIZED && LOWORD(lparam) && HIWORD(lparam)) {
+                resize_width_ = LOWORD(lparam); resize_height_ = HIWORD(lparam); resize_pending_ = true;
+            }
+            return 0;
+        case WM_SYSCOMMAND: if ((wparam & 0xfff0) == SC_KEYMENU) return 0; break;
+        case WM_DESTROY: PostQuitMessage(0); return 0;
+        default: break;
+    }
+    return DefWindowProcW(hwnd, message, wparam, lparam);
+}
+
+} // namespace
+namespace RoboGo::platform {
+std::unique_ptr<PlatformBackend> CreatePlatformBackend() { return std::make_unique<WindowsPlatformBackend>(); }
+}
 #endif

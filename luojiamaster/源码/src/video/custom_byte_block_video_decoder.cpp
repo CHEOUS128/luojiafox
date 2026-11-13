@@ -203,6 +203,7 @@ struct CustomByteBlockVideoDecoder::Impl {
     AVFrame *frame = nullptr;
     AVPacket *packet = nullptr;
     std::deque<PendingFrame> pending_frames;
+    std::size_t assembly_bytes = 0;
     int source_width = 0;
     int source_height = 0;
     AVPixelFormat source_format = AV_PIX_FMT_NONE;
@@ -290,6 +291,10 @@ void reset_decoder_after_loss(CustomByteBlockVideoDecoder::Impl *impl) {
         avcodec_flush_buffers(impl->codec_context);
     }
     impl->pending_frames.clear();
+    impl->assembly_bytes = 0;
+    impl->waiting_for_keyframe = true;
+    av_frame_unref(impl->frame);
+    av_packet_unref(impl->packet);
     reset_parser(impl);
 }
 
@@ -332,12 +337,11 @@ std::vector<CustomByteBlockDecodedFrame> drain_decoded_frames(CustomByteBlockVid
             throw std::runtime_error("Failed to receive decoded frame: " + ffmpeg_error_to_string(ret_receive));
         }
 
-        ensure_sws_context(impl, impl.frame);
-
         CustomByteBlockDecodedFrame output;
         output.width = impl.frame->width;
         output.height = impl.frame->height;
         output.rgba.resize(decoded_frame_byte_count(output.width, output.height, config));
+        ensure_sws_context(impl, impl.frame);
 
         std::uint8_t *dst_slices[4] = {nullptr, nullptr, nullptr, nullptr};
         int dst_stride[4] = {0, 0, 0, 0};
@@ -384,6 +388,7 @@ std::vector<CustomByteBlockDecodedFrame> drain_decoded_frames(CustomByteBlockVid
             output.pts = (impl.frame->pts == AV_NOPTS_VALUE) ? impl.next_pts++ : impl.frame->pts;
             output.keyframe = (impl.frame->flags & AV_FRAME_FLAG_KEY) != 0;
         }
+        av_frame_unref(impl.frame);
         frames.push_back(std::move(output));
     }
     return frames;
@@ -442,7 +447,19 @@ std::vector<CustomByteBlockDecodedFrame> decode_access_unit(CustomByteBlockVideo
     impl->packet->dts = impl->next_pts;
     impl->packet->flags = keyframe ? AV_PKT_FLAG_KEY : 0;
 
-    const int ret_send = avcodec_send_packet(impl->codec_context, impl->packet);
+    std::vector<CustomByteBlockDecodedFrame> output;
+    int ret_send = avcodec_send_packet(impl->codec_context, impl->packet);
+    if (ret_send == AVERROR(EAGAIN)) {
+        try {
+            output = drain_decoded_frames(*impl, config);
+            ret_send = avcodec_send_packet(impl->codec_context, impl->packet);
+        } catch (const std::exception &error) {
+            av_packet_unref(impl->packet);
+            SPDLOG_WARN("CustomByteBlock 解码输出失败 message={}", error.what());
+            reset_decoder_after_loss(impl);
+            return {};
+        }
+    }
     av_packet_unref(impl->packet);
     if (ret_send < 0) {
         SPDLOG_WARN("CustomByteBlock 解码器拒收访问单元 keyframe={} message={}",
@@ -450,9 +467,14 @@ std::vector<CustomByteBlockDecodedFrame> decode_access_unit(CustomByteBlockVideo
                     ffmpeg_error_to_string(ret_send));
         impl->waiting_for_keyframe = true;
         reset_decoder_after_loss(impl);
-        return {};
+        return output;
     }
 
+    if (impl->pending_frames.size() >= static_cast<std::size_t>(config.max_reorder_frames)) {
+        SPDLOG_WARN("CustomByteBlock 解码重排超限，等待关键帧 pending={}", impl->pending_frames.size());
+        reset_decoder_after_loss(impl);
+        return output;
+    }
     impl->pending_frames.push_back({
             impl->next_frame_id++,
             impl->next_pts++,
@@ -460,7 +482,9 @@ std::vector<CustomByteBlockDecodedFrame> decode_access_unit(CustomByteBlockVideo
     });
 
     try {
-        return drain_decoded_frames(*impl, config);
+        auto decoded = drain_decoded_frames(*impl, config);
+        output.insert(output.end(), std::make_move_iterator(decoded.begin()), std::make_move_iterator(decoded.end()));
+        return output;
     } catch (const std::exception &error) {
         SPDLOG_WARN("CustomByteBlock 解码输出失败 message={}", error.what());
         reset_decoder_after_loss(impl);
@@ -486,8 +510,14 @@ std::vector<CustomByteBlockDecodedFrame> feed_parser(CustomByteBlockVideoDecoder
         throw std::invalid_argument("feed_parser() received null payload with non-zero size");
     }
 
+    if (payload_size > static_cast<std::size_t>(std::numeric_limits<int>::max())) {
+        throw std::invalid_argument("parser input exceeds FFmpeg size limit");
+    }
+    std::vector<std::uint8_t> padded(payload_size + AV_INPUT_BUFFER_PADDING_SIZE, 0);
+    if (payload_size != 0) std::memcpy(padded.data(), payload, payload_size);
     std::vector<CustomByteBlockDecodedFrame> output;
-    const std::uint8_t *cursor = payload;
+    const std::uint8_t *cursor = padded.data();
+    unsigned no_progress = 0;
     while (payload_size > 0U) {
         std::uint8_t *parsed_data = nullptr;
         int parsed_size = 0;
@@ -501,14 +531,26 @@ std::vector<CustomByteBlockDecodedFrame> feed_parser(CustomByteBlockVideoDecoder
                 AV_NOPTS_VALUE,
                 AV_NOPTS_VALUE,
                 0);
-        if (consumed < 0) {
+        if (consumed < 0 || static_cast<std::size_t>(consumed) > payload_size) {
             throw std::runtime_error("Failed to parse H.264 byte stream: " + ffmpeg_error_to_string(consumed));
         }
+        if (consumed == 0 && ++no_progress > 8) {
+            reset_decoder_after_loss(impl);
+            return output;
+        }
+        if (consumed != 0) no_progress = 0;
 
         cursor += consumed;
         payload_size -= static_cast<std::size_t>(consumed);
+        impl->assembly_bytes += static_cast<std::size_t>(consumed);
+        if (impl->assembly_bytes > config.max_assembly_bytes) {
+            SPDLOG_WARN("CustomByteBlock 解析缓存超限，等待关键帧 bytes={}", impl->assembly_bytes);
+            reset_decoder_after_loss(impl);
+            return output;
+        }
 
         if (parsed_size > 0) {
+            impl->assembly_bytes = 0;
             append_decoded_frames(
                     output,
                     decode_access_unit(
@@ -702,6 +744,8 @@ CustomByteBlockVideoDecoder::CustomByteBlockVideoDecoder(CustomByteBlockVideoDec
         throw std::runtime_error("Failed to allocate decoder context");
     }
 
+    // This tiny low-latency stream does not need a frame-thread backlog.
+    impl_->codec_context->thread_count = 1;
     const int ret_open = avcodec_open2(impl_->codec_context, codec, nullptr);
     if (ret_open < 0) {
         const std::string message = ffmpeg_error_to_string(ret_open);
@@ -732,6 +776,13 @@ CustomByteBlockVideoDecoder::~CustomByteBlockVideoDecoder() {
 
 CustomByteBlockVideoDecoder::CustomByteBlockVideoDecoder(CustomByteBlockVideoDecoder &&) noexcept = default;
 CustomByteBlockVideoDecoder &CustomByteBlockVideoDecoder::operator=(CustomByteBlockVideoDecoder &&) noexcept = default;
+
+void CustomByteBlockVideoDecoder::reset_stream() {
+    reset_decoder_after_loss(impl_.get());
+    impl_->has_expected_sequence = false;
+    impl_->last_packet_time = std::chrono::steady_clock::time_point::min();
+    impl_->wire_format = WireFormat::Unknown;
+}
 
 std::vector<CustomByteBlockDecodedFrame> CustomByteBlockVideoDecoder::push_packet_bytes(std::span<const std::uint8_t> wire_bytes) {
     const bool transport_first = should_try_transport_first(impl_->wire_format, wire_bytes);
