@@ -8,6 +8,22 @@ struct VideoFrame {
     std::vector<uint8_t> buffer;
     int width = 0;
     int height = 0;
+    // Official video can own one slot from the bounded aligned conversion pool.
+    // CBB and teammate frames retain their existing vector ownership and layout.
+    std::shared_ptr<std::vector<std::uint8_t>> shared_buffer;
+    std::size_t pixel_offset = 0;
+    std::size_t row_pitch = 0;
+    [[nodiscard]] const std::uint8_t *Pixels() const {
+        const auto &bytes = shared_buffer ? *shared_buffer : buffer;
+        return pixel_offset < bytes.size() ? bytes.data() + pixel_offset : nullptr;
+    }
+    [[nodiscard]] std::size_t ByteSize() const {
+        const auto &bytes = shared_buffer ? *shared_buffer : buffer;
+        return pixel_offset <= bytes.size() ? bytes.size() - pixel_offset : 0;
+    }
+    [[nodiscard]] std::size_t RowPitch() const {
+        return row_pitch ? row_pitch : (width > 0 ? static_cast<std::size_t>(width) * 4 : 0);
+    }
 };
 
 struct UiLogMessage {

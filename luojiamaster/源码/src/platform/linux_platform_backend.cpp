@@ -211,7 +211,7 @@ public:
             case RoboGo::app::TextureSlot::TeammateVideo:
                 return UploadDynamicTexture(teammate_video_textures_, frame);
             case RoboGo::app::TextureSlot::MiniMap:
-                return UploadStaticTexture(mini_map_texture_, frame.buffer.data(), frame.width, frame.height);
+                return UploadStaticTexture(mini_map_texture_, frame.Pixels(), frame.width, frame.height);
         }
         return false;
     }
@@ -791,7 +791,17 @@ private:
         if (next_texture.image != VK_NULL_HANDLE) {
             DestroyVulkanTexture(next_texture);
         }
-        if (!CreateVulkanImage(frame.buffer.data(), frame.width, frame.height, next_texture)) {
+        std::vector<uint8_t> packed;
+        const uint8_t *pixels = frame.Pixels();
+        const size_t row_bytes = static_cast<size_t>(frame.width) * 4;
+        if (frame.RowPitch() != row_bytes) {
+            packed.resize(row_bytes * frame.height);
+            for (int y = 0; y < frame.height; ++y)
+                std::memcpy(packed.data() + static_cast<size_t>(y) * row_bytes,
+                            pixels + static_cast<size_t>(y) * frame.RowPitch(), row_bytes);
+            pixels = packed.data();
+        }
+        if (!CreateVulkanImage(pixels, frame.width, frame.height, next_texture)) {
             return false;
         }
         CreateVideoDescriptorSet(next_texture);

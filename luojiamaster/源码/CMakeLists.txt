@@ -230,6 +230,7 @@ add_executable(luojiamaster WIN32
     src/net/teammate_link.cpp
     src/video/custom_byte_block_video_decoder.cpp
     src/video/custom_byte_block_video_decoder_worker.cpp
+    src/video/rgba_frame_converter.cpp
     src/video/rgba_image_transform.cpp
     src/video/teammate_video_receiver.cpp
     src/video/video_decoder.cpp
@@ -315,4 +316,43 @@ if(BUILD_TESTING)
     endif()
     add_test(NAME video_worker_test COMMAND video_worker_test)
     set_tests_properties(video_worker_test PROPERTIES TIMEOUT 20)
+endif()
+
+if(BUILD_TESTING)
+    add_executable(rgba_converter_test tests/rgba_converter_test.cpp src/video/rgba_frame_converter.cpp)
+    add_executable(input_response_test tests/input_response_test.cpp src/keyboard_mouse_state_manager.cpp gen/messages.pb.cc)
+    foreach(test_target rgba_converter_test input_response_test)
+        target_include_directories(${test_target} PRIVATE include gen src)
+        target_precompile_headers(${test_target} PRIVATE include/pch.h)
+        target_link_libraries(${test_target} PRIVATE spdlog::spdlog utf8_validity protobuf::libprotobuf-lite
+            async_mqtt_asio_bind ffmpeg imgui readerwriterqueue stb)
+        target_compile_definitions(${test_target} PRIVATE SPDLOG_ACTIVE_LEVEL=SPDLOG_LEVEL_TRACE)
+        if(WIN32)
+            target_compile_definitions(${test_target} PRIVATE _WIN32_WINNT=0x0601)
+        endif()
+        if(MSVC)
+            target_compile_options(${test_target} PRIVATE /utf-8 /bigobj /W4)
+        endif()
+        add_test(NAME ${test_target} COMMAND ${test_target})
+        set_tests_properties(${test_target} PROPERTIES TIMEOUT 30)
+    endforeach()
+endif()
+
+if(BUILD_TESTING)
+    add_executable(video_performance_trace_test tests/video_performance_trace_test.cpp)
+    target_include_directories(video_performance_trace_test PRIVATE src)
+    if(MSVC)
+        target_compile_options(video_performance_trace_test PRIVATE /utf-8 /W4)
+    endif()
+    add_test(NAME video_performance_trace_test COMMAND video_performance_trace_test)
+    set_tests_properties(video_performance_trace_test PROPERTIES TIMEOUT 15)
+    add_executable(real_conversion_benchmark tests/real_conversion_benchmark.cpp
+        src/video/video_decoder.cpp src/video/rgba_frame_converter.cpp)
+    target_include_directories(real_conversion_benchmark PRIVATE include gen src)
+    target_precompile_headers(real_conversion_benchmark PRIVATE include/pch.h)
+    target_link_libraries(real_conversion_benchmark PRIVATE spdlog::spdlog utf8_validity protobuf::libprotobuf-lite
+        async_mqtt_asio_bind ffmpeg imgui readerwriterqueue stb)
+    if(MSVC)
+        target_compile_options(real_conversion_benchmark PRIVATE /utf-8 /bigobj /W4)
+    endif()
 endif()

@@ -37,11 +37,18 @@ namespace RoboGo::video {
         // 完整帧相关
         std::vector<uint8_t> full_frame;
         std::function<void(const std::vector<uint8_t> &frame)> frame_callback;
+        std::function<void(const std::vector<uint8_t> &frame, std::uint32_t frame_id)> observed_frame_callback;
 
     public:
         ~VideoShardsManager();
 
         void set_frame_callback(const std::function<void(const std::vector<uint8_t> &frame)> &frame_callback);
+        // Optional observer replaces the ordinary callback, so one AU is decoded
+        // exactly once. It carries identity only; no data or timing affects decoding.
+        void set_observed_frame_callback(
+                std::function<void(const std::vector<uint8_t> &, std::uint32_t)> callback) {
+            observed_frame_callback = std::move(callback);
+        }
 
         void on_receive_shard(const uint8_t *data, size_t size);
 

@@ -14,7 +14,12 @@ static bool marker_mode_enabled = false;
 static bool marker_mode_include_sentry = true;// 标记模式是否包含哨兵，默认包含
 static std::chrono::steady_clock::time_point last_publish_time;
 static std::function<void(bool enabled)> game_input_capture_handler;
-constexpr std::chrono::milliseconds publish_interval(13);// ~75Hz (1000/75 ≈ 13.33ms)
+static bool was_in_game_mode = false;
+static int last_sampled_imgui_frame = -1;
+static bool offline_input_test_active = false;
+static std::optional<std::chrono::steady_clock::time_point> offline_input_test_now;
+// A minimum interval, not a timer: actual rate is also limited by UI frame rate.
+constexpr std::chrono::milliseconds publish_interval(13);
 
 void add_raw_mouse_delta(float dx, float dy) {
     raw_mouse_dx += dx;
@@ -105,14 +110,7 @@ void send_map_marker(RoboGo::io::MqttClient &mqtt_client, float map_x, float map
     SPDLOG_INFO("地图点位标记模式已自动退出");
 }
 
-void update_keyboard_mouse_state(RoboGo::io::MqttClient &mqtt_client) {
-    ImGuiIO &io = ImGui::GetIO();
-    if (ImGui::IsKeyPressed(ImGuiKey_Escape, false)) {
-        game_mode_enabled = !game_mode_enabled;
-        SPDLOG_INFO("比赛模式切换 enabled={}", game_mode_enabled);
-    }
-
-    static bool was_in_game_mode = false;
+void synchronize_game_input_capture() {
     if (game_mode_enabled) {
         if (!was_in_game_mode) {
             if (game_input_capture_handler) {
@@ -132,8 +130,32 @@ void update_keyboard_mouse_state(RoboGo::io::MqttClient &mqtt_client) {
         mouse_z = 0;
         raw_mouse_dx = 0.0f;
         raw_mouse_dy = 0.0f;
+    }
+}
+
+void update_keyboard_mouse_state(RoboGo::io::MqttClient &mqtt_client) {
+    if (offline_input_test_active) {
+        throw std::logic_error("offline input tests must use the local KeyboardMouseSink overload");
+    }
+    update_keyboard_mouse_state(KeyboardMouseSink{[&mqtt_client](const std::string &topic, const std::string &payload) {
+        mqtt_client.publish(topic, payload);
+    }});
+}
+
+void update_keyboard_mouse_state(const KeyboardMouseSink &sink) {
+    const int frame = ImGui::GetFrameCount();
+    if (last_sampled_imgui_frame == frame) {
+        synchronize_game_input_capture();
         return;
     }
+    last_sampled_imgui_frame = frame;
+    ImGuiIO &io = ImGui::GetIO();
+    if (ImGui::IsKeyPressed(ImGuiKey_Escape, false)) {
+        game_mode_enabled = !game_mode_enabled;
+        SPDLOG_INFO("比赛模式切换 enabled={}", game_mode_enabled);
+    }
+    synchronize_game_input_capture();
+    if (!game_mode_enabled) return;
     if (use_raw_mouse) {
         // 游戏模式：使用平台层累积的真实位移（光标已被锁定并每帧重置，不会到边缘）
         mouse_x += static_cast<int32_t>(raw_mouse_dx * mouse_sensitivity);
@@ -146,7 +168,8 @@ void update_keyboard_mouse_state(RoboGo::io::MqttClient &mqtt_client) {
     }
     mouse_z += static_cast<int32_t>(io.MouseWheel);
 
-    auto now = std::chrono::steady_clock::now();
+    const auto now = offline_input_test_active && offline_input_test_now
+        ? *offline_input_test_now : std::chrono::steady_clock::now();
     if (now - last_publish_time < publish_interval) {
         return;
     }
@@ -154,7 +177,7 @@ void update_keyboard_mouse_state(RoboGo::io::MqttClient &mqtt_client) {
 
     std::bitset<32> keyboard_value;
     // 注意：必须用 IsKeyDown（当前是否按住），不能用 IsKeyPressed（只在按下的那一瞬间为真）。
-    // ACE 原版误用了 IsKeyPressed，而这里以 ~75Hz 反复采样，按键几乎总会被采成"未按下"，
+    // ACE 原版误用了 IsKeyPressed，周期采样时按键几乎总会被采成"未按下"，
     // 导致发给机器人的键盘值恒为 0（2026-10-17 实测确认：鼠标有数据、键盘 bit 全 0）。
     keyboard_value[0] = ImGui::IsKeyDown(ImGuiKey_W);
     keyboard_value[1] = ImGui::IsKeyDown(ImGuiKey_S);
@@ -190,11 +213,55 @@ void update_keyboard_mouse_state(RoboGo::io::MqttClient &mqtt_client) {
                      io.MouseDown[1],
                      io.MouseDown[2],
                      keyboard_value.to_ulong());
-        mqtt_client.publish("KeyboardMouseControl", serialized);
+        if (sink) sink("KeyboardMouseControl", serialized);
         mouse_x = 0;
         mouse_y = 0;
         mouse_z = 0;
     } else {
         SPDLOG_ERROR("键鼠控制序列化失败");
     }
+}
+
+namespace RoboGo::testing {
+struct OfflineKeyboardMouseTestScope::Impl {
+    int32_t x = mouse_x, y = mouse_y, z = mouse_z;
+    float dx = raw_mouse_dx, dy = raw_mouse_dy, sensitivity = mouse_sensitivity;
+    bool raw = use_raw_mouse, game = game_mode_enabled, marker = marker_mode_enabled;
+    bool include_sentry = marker_mode_include_sentry, captured = was_in_game_mode;
+    int sampled_frame = last_sampled_imgui_frame;
+    std::chrono::steady_clock::time_point published = last_publish_time;
+    std::function<void(bool)> capture = game_input_capture_handler;
+};
+
+OfflineKeyboardMouseTestScope::OfflineKeyboardMouseTestScope() {
+    if (offline_input_test_active || game_input_capture_handler) {
+        throw std::logic_error("offline input scope requires no running platform input capture");
+    }
+    impl_ = std::make_unique<Impl>();
+    offline_input_test_active = true;
+    Reset();
+}
+
+OfflineKeyboardMouseTestScope::~OfflineKeyboardMouseTestScope() {
+    mouse_x = impl_->x; mouse_y = impl_->y; mouse_z = impl_->z;
+    raw_mouse_dx = impl_->dx; raw_mouse_dy = impl_->dy; mouse_sensitivity = impl_->sensitivity;
+    use_raw_mouse = impl_->raw; game_mode_enabled = impl_->game;
+    marker_mode_enabled = impl_->marker; marker_mode_include_sentry = impl_->include_sentry;
+    was_in_game_mode = impl_->captured; last_sampled_imgui_frame = impl_->sampled_frame;
+    last_publish_time = impl_->published; game_input_capture_handler = std::move(impl_->capture);
+    offline_input_test_now.reset(); offline_input_test_active = false;
+}
+
+void OfflineKeyboardMouseTestScope::Reset() {
+    mouse_x = mouse_y = mouse_z = 0;
+    raw_mouse_dx = raw_mouse_dy = 0;
+    use_raw_mouse = game_mode_enabled = marker_mode_enabled = was_in_game_mode = false;
+    marker_mode_include_sentry = true; mouse_sensitivity = 0.4f;
+    last_publish_time = {}; last_sampled_imgui_frame = -1;
+    game_input_capture_handler = {}; offline_input_test_now.reset();
+}
+
+void OfflineKeyboardMouseTestScope::SetNowForTest(std::optional<std::chrono::steady_clock::time_point> now) {
+    offline_input_test_now = now;
+}
 }

@@ -12,6 +12,32 @@ void set_game_input_capture_handler(std::function<void(bool enabled)> handler);
 
 void update_keyboard_mouse_state(RoboGo::io::MqttClient &mqtt_client);
 
+using KeyboardMouseSink = std::function<void(const std::string &topic, const std::string &payload)>;
+
+// Same sampling, serialization and 13ms gate; an offline caller supplies a local sink.
+void update_keyboard_mouse_state(const KeyboardMouseSink &sink);
+
+// Synchronize an entry/menu transition after UI construction, without sampling
+// MouseDelta or Escape again and without publishing a second control packet.
+void synchronize_game_input_capture();
+
+namespace RoboGo::testing {
+// May only start before installing a platform capture handler. It saves/restores
+// all input globals; the MQTT overload is disabled for the lifetime of this scope.
+class OfflineKeyboardMouseTestScope {
+public:
+    OfflineKeyboardMouseTestScope();
+    ~OfflineKeyboardMouseTestScope();
+    OfflineKeyboardMouseTestScope(const OfflineKeyboardMouseTestScope &) = delete;
+    OfflineKeyboardMouseTestScope &operator=(const OfflineKeyboardMouseTestScope &) = delete;
+    void Reset();
+    void SetNowForTest(std::optional<std::chrono::steady_clock::time_point> now);
+private:
+    struct Impl;
+    std::unique_ptr<Impl> impl_;
+};
+}
+
 // 平台层（Windows）每帧在“把光标拉回窗口中心”之前调用，累积真实的鼠标位移增量。
 // 这样光标被重置也不会丢失移动量——这是官方客户端那种“无限旋转”手感的关键。
 void add_raw_mouse_delta(float dx, float dy);

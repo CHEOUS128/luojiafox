@@ -165,7 +165,9 @@ namespace RoboGo::video {
                 full_frame.insert(full_frame.end(), shard.begin() + 8, shard.end());
             }
             if (is_success) [[likely]] {
-                if (frame_callback) {
+                if (observed_frame_callback) {
+                    observed_frame_callback(full_frame, first_frame_shards.frame_id);
+                } else if (frame_callback) {
                     frame_callback(full_frame);
                 } else {
                     SPDLOG_WARN("视频完整帧已生成但未设置回调 frame_id={}", first_frame_shards.frame_id);

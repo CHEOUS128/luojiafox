@@ -3,8 +3,8 @@
 
 namespace RoboGo::video {
 
-VideoDecoder::VideoDecoder(const std::function<void(const AVFrame *frame)> &callback)
-    : frame_callback(callback) {
+VideoDecoder::VideoDecoder(const std::function<void(const AVFrame *frame)> &callback, VideoDecoderConfig config)
+    : frame_callback(callback), config_(config) {
     try {
         const AVCodec *candidates[] = {avcodec_find_decoder_by_name("hevc_cuvid"),
                                       avcodec_find_decoder_by_name("hevc")};
@@ -74,7 +74,14 @@ int VideoDecoder::drain_frames() const {
     throw std::runtime_error("HEVC decoder exceeded bounded output work");
 }
 
-void VideoDecoder::decode_frame(const std::vector<uint8_t> &frame) {
+VideoDecoderStatistics VideoDecoder::statistics() const noexcept {
+    return {parsed_packets_.load(std::memory_order_relaxed),
+            packet_allocations_.load(std::memory_order_relaxed),
+            0,
+            copied_packet_bytes_.load(std::memory_order_relaxed)};
+}
+
+void VideoDecoder::decode_frame(const std::vector<uint8_t> &frame, const std::int64_t input_token) {
     constexpr std::size_t kMaximumFrameBytes = 8U * 1024U * 1024U;
     if (frame.empty()) return;
     if (frame.size() > kMaximumFrameBytes || av_codec_context == nullptr || av_parser_context == nullptr) {
@@ -91,7 +98,7 @@ void VideoDecoder::decode_frame(const std::vector<uint8_t> &frame) {
         int parsed_size = 0;
         const int consumed = av_parser_parse2(av_parser_context, av_codec_context,
                                              &parsed_data, &parsed_size, data, remaining,
-                                             AV_NOPTS_VALUE, AV_NOPTS_VALUE, 0);
+                                             input_token, input_token, 0);
         if (consumed < 0 || consumed > remaining) {
             reset();
             throw std::runtime_error("HEVC parser rejected input/progress");
@@ -111,6 +118,17 @@ void VideoDecoder::decode_frame(const std::vector<uint8_t> &frame) {
         av_packet_unref(packet);
         if (av_new_packet(packet, parsed_size) < 0) throw std::runtime_error("HEVC packet allocation failed");
         std::memcpy(packet->data, parsed_data, static_cast<std::size_t>(parsed_size));
+        packet_allocations_.fetch_add(1, std::memory_order_relaxed);
+        parsed_packets_.fetch_add(1, std::memory_order_relaxed);
+        copied_packet_bytes_.fetch_add(static_cast<std::uint64_t>(parsed_size), std::memory_order_relaxed);
+        if (config_.on_access_unit) {
+            packet->pts = packet->dts = config_.on_access_unit(
+                    std::span<const std::uint8_t>(parsed_data, static_cast<std::size_t>(parsed_size)),
+                    av_parser_context->frame_offset, av_parser_context->pts);
+        } else {
+            packet->pts = av_parser_context->pts;
+            packet->dts = av_parser_context->dts;
+        }
         int sent = avcodec_send_packet(av_codec_context, packet);
         if (sent == AVERROR(EAGAIN)) {
             drain_frames();

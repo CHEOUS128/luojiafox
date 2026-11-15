@@ -1,3 +1,4 @@
+#include "video/rgba_frame_converter.h"
 #include "application.h"
 #include "app/latest_video_frame.h"
 
@@ -227,84 +228,12 @@ void ParseNetworkEndpoints(LaunchOptions &options) {
 
 class AvFrameRgbaConverter {
 public:
-    explicit AvFrameRgbaConverter(const bool invert_udp_video)
-        : invert_udp_video_(invert_udp_video) {
-        rgba_frame_ = av_frame_alloc();
-        if (rgba_frame_ == nullptr) throw std::runtime_error("Unable to allocate RGBA conversion frame");
-    }
-
-    ~AvFrameRgbaConverter() {
-        if (sws_context_ != nullptr) {
-            sws_freeContext(sws_context_);
-            sws_context_ = nullptr;
-        }
-        av_frame_free(&rgba_frame_);
-    }
-
-    std::optional<VideoFrame> convert(const AVFrame *frame) {
-        if (frame == nullptr) {
-            return std::nullopt;
-        }
-        if (frame->width <= 0 || frame->height <= 0 || frame->width > 4096 || frame->height > 4096) {
-            return std::nullopt;
-        }
-
-        if (frame->format != AV_PIX_FMT_NV12 && frame->format != AV_PIX_FMT_YUV420P) {
-            return std::nullopt;
-        }
-
-        sws_context_ = sws_getCachedContext(
-                sws_context_,
-                frame->width, frame->height, static_cast<AVPixelFormat>(frame->format),
-                frame->width, frame->height, AV_PIX_FMT_RGBA,
-                SWS_FAST_BILINEAR, nullptr, nullptr, nullptr);
-        if (sws_context_ == nullptr) {
-            return std::nullopt;
-        }
-
-        VideoFrame video_frame;
-        video_frame.buffer.resize(static_cast<size_t>(frame->width) * static_cast<size_t>(frame->height) * 4u);
-        video_frame.width = frame->width;
-        video_frame.height = frame->height;
-        if (rgba_frame_->width != frame->width || rgba_frame_->height != frame->height) {
-            av_frame_unref(rgba_frame_);
-            rgba_frame_->format = AV_PIX_FMT_RGBA;
-            rgba_frame_->width = frame->width;
-            rgba_frame_->height = frame->height;
-            if (av_frame_get_buffer(rgba_frame_, 32) < 0) {
-                av_frame_unref(rgba_frame_);
-                return std::nullopt;
-            }
-        }
-        if (av_frame_make_writable(rgba_frame_) < 0) return std::nullopt;
-        const int scaled_height = sws_scale(sws_context_,
-                                            frame->data, frame->linesize,
-                                            0, frame->height,
-                                            rgba_frame_->data, rgba_frame_->linesize);
-        if (scaled_height != frame->height) {
-            return std::nullopt;
-        }
-        for (int y = 0; y < frame->height; ++y) {
-            std::memcpy(video_frame.buffer.data() + static_cast<std::size_t>(y) * frame->width * 4u,
-                        rgba_frame_->data[0] + static_cast<std::ptrdiff_t>(y) * rgba_frame_->linesize[0],
-                        static_cast<std::size_t>(frame->width) * 4u);
-        }
-        // 180° 旋转已改到渲染阶段用 GPU 的 UV 翻转完成（见 main_window.cpp），
-        // 不再在这里用 CPU 逐像素交换整帧 1080p 数据——那是操作延迟的主要来源之一。
-        return video_frame;
-    }
-
-    void SetInvertUdpVideo(const bool enabled) {
-        invert_udp_video_.store(enabled, std::memory_order_relaxed);
-    }
-
-    [[nodiscard]] bool IsInvertUdpVideoEnabled() const {
-        return invert_udp_video_.load(std::memory_order_relaxed);
-    }
-
+    explicit AvFrameRgbaConverter(bool inverted) : invert_udp_video_(inverted) {}
+    std::optional<VideoFrame> convert(const AVFrame *frame) { return converter_.Convert(frame); }
+    void SetInvertUdpVideo(bool value) { invert_udp_video_.store(value, std::memory_order_relaxed); }
+    [[nodiscard]] bool IsInvertUdpVideoEnabled() const { return invert_udp_video_.load(std::memory_order_relaxed); }
 private:
-    SwsContext *sws_context_ = nullptr;
-    AVFrame *rgba_frame_ = nullptr;
+    RoboGo::video::RgbaFrameConverter converter_;
     std::atomic<bool> invert_udp_video_ = false;
 };
 
@@ -893,6 +822,7 @@ int RunApplication(platform::PlatformBackend &platform_backend, const LaunchOpti
             UpdateState(state);
             PublishCustomControlIfDue(state, background_services.mqtt_client());
             if (!platform_backend.BeginFrame()) continue;
+            update_keyboard_mouse_state(background_services.mqtt_client());
             const auto pending_video_presentation = UploadLatestVideoFrames(platform_backend, background_services);
 
             // Video probe counts successfully presented new textures. Compare
@@ -1093,7 +1023,7 @@ int RunApplication(platform::PlatformBackend &platform_backend, const LaunchOpti
                                   state);
             }
 
-            update_keyboard_mouse_state(background_services.mqtt_client());
+            synchronize_game_input_capture();
 
             ImGui::Render();
             if (platform_backend.RenderFrame(ImGui::GetDrawData())) {

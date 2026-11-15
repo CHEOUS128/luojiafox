@@ -203,6 +203,8 @@ struct CustomByteBlockVideoDecoder::Impl {
     AVFrame *frame = nullptr;
     AVPacket *packet = nullptr;
     std::deque<PendingFrame> pending_frames;
+    std::shared_ptr<CustomByteBlockTraceObserver> trace_observer;
+    std::uint64_t parser_epoch = 0;
     std::size_t assembly_bytes = 0;
     int source_width = 0;
     int source_height = 0;
@@ -281,6 +283,7 @@ void reset_parser(CustomByteBlockVideoDecoder::Impl *impl) {
     if (impl->parser == nullptr) {
         throw std::runtime_error("Failed to allocate H.264 parser");
     }
+    ++impl->parser_epoch;
 }
 
 void reset_decoder_after_loss(CustomByteBlockVideoDecoder::Impl *impl) {
@@ -291,6 +294,10 @@ void reset_decoder_after_loss(CustomByteBlockVideoDecoder::Impl *impl) {
         avcodec_flush_buffers(impl->codec_context);
     }
     impl->pending_frames.clear();
+    if (impl->trace_observer && impl->trace_observer->on_reset) {
+        try { impl->trace_observer->on_reset(); }
+        catch (...) { impl->trace_observer.reset(); } // Observation cannot change format fallback or pixels.
+    }
     impl->assembly_bytes = 0;
     impl->waiting_for_keyframe = true;
     av_frame_unref(impl->frame);
@@ -377,16 +384,21 @@ std::vector<CustomByteBlockDecodedFrame> drain_decoded_frames(CustomByteBlockVid
         }
         av_freep(&dst_slices[0]);
 
-        if (!impl.pending_frames.empty()) {
-            const CustomByteBlockVideoDecoder::Impl::PendingFrame meta = impl.pending_frames.front();
-            impl.pending_frames.pop_front();
-            output.frame_id = meta.frame_id;
-            output.pts = meta.pts;
-            output.keyframe = meta.keyframe;
-        } else {
-            output.frame_id = impl.next_frame_id++;
-            output.pts = (impl.frame->pts == AV_NOPTS_VALUE) ? impl.next_pts++ : impl.frame->pts;
-            output.keyframe = (impl.frame->flags & AV_FRAME_FLAG_KEY) != 0;
+        // Associate by the timestamp actually returned by FFmpeg. Never pair
+        // output N with pending input N: buffering, loss and reordering break it.
+        output.frame_id = std::numeric_limits<std::uint32_t>::max();
+        output.pts = AV_NOPTS_VALUE;
+        output.keyframe = (impl.frame->flags & AV_FRAME_FLAG_KEY) != 0;
+        const auto actual_pts = impl.frame->pts;
+        if (actual_pts != AV_NOPTS_VALUE) {
+            const auto found = std::find_if(impl.pending_frames.begin(), impl.pending_frames.end(),
+                [actual_pts](const auto &meta) { return meta.pts == actual_pts; });
+            if (found != impl.pending_frames.end()) {
+                output.frame_id = found->frame_id;
+                output.pts = found->pts;
+                output.keyframe = found->keyframe;
+                impl.pending_frames.erase(found);
+            }
         }
         av_frame_unref(impl.frame);
         frames.push_back(std::move(output));
@@ -445,6 +457,11 @@ std::vector<CustomByteBlockDecodedFrame> decode_access_unit(CustomByteBlockVideo
     std::memcpy(impl->packet->data, access_unit, access_unit_size);
     impl->packet->pts = impl->next_pts;
     impl->packet->dts = impl->next_pts;
+    if (impl->trace_observer && impl->trace_observer->on_access_unit) {
+        try { impl->trace_observer->on_access_unit(impl->next_pts,
+            std::span<const std::uint8_t>(access_unit, access_unit_size), impl->parser->frame_offset); }
+        catch (...) { impl->trace_observer.reset(); }
+    }
     impl->packet->flags = keyframe ? AV_PKT_FLAG_KEY : 0;
 
     std::vector<CustomByteBlockDecodedFrame> output;
@@ -513,6 +530,10 @@ std::vector<CustomByteBlockDecodedFrame> feed_parser(CustomByteBlockVideoDecoder
     if (payload_size > static_cast<std::size_t>(std::numeric_limits<int>::max())) {
         throw std::invalid_argument("parser input exceeds FFmpeg size limit");
     }
+    if (impl->trace_observer && impl->trace_observer->on_payload) {
+        try { impl->trace_observer->on_payload(std::span<const std::uint8_t>(payload, payload_size)); }
+        catch (...) { impl->trace_observer.reset(); }
+    }
     std::vector<std::uint8_t> padded(payload_size + AV_INPUT_BUFFER_PADDING_SIZE, 0);
     if (payload_size != 0) std::memcpy(padded.data(), payload, payload_size);
     std::vector<CustomByteBlockDecodedFrame> output;
@@ -551,6 +572,7 @@ std::vector<CustomByteBlockDecodedFrame> feed_parser(CustomByteBlockVideoDecoder
 
         if (parsed_size > 0) {
             impl->assembly_bytes = 0;
+            const auto parser_epoch = impl->parser_epoch;
             append_decoded_frames(
                     output,
                     decode_access_unit(
@@ -558,6 +580,15 @@ std::vector<CustomByteBlockDecodedFrame> feed_parser(CustomByteBlockVideoDecoder
                             config,
                             parsed_data,
                             static_cast<std::size_t>(parsed_size)));
+            // A rejected AU can reset the parser in the middle of this supplied
+            // payload. Reset cleared its provenance too, but the real parser
+            // continues consuming the remaining bytes. Register precisely that
+            // remainder in the new epoch; never subtract a guessed constant.
+            if (impl->parser_epoch != parser_epoch && payload_size > 0
+                && impl->trace_observer && impl->trace_observer->on_payload) {
+                try { impl->trace_observer->on_payload(std::span<const std::uint8_t>(cursor, payload_size)); }
+                catch (...) { impl->trace_observer.reset(); }
+            }
         }
 
         if (consumed == 0 && parsed_size == 0) {
@@ -734,6 +765,7 @@ CustomByteBlockVideoDecoder::CustomByteBlockVideoDecoder(CustomByteBlockVideoDec
       impl_(std::make_unique<Impl>()) {
     validate_config(config_);
 
+    impl_->trace_observer = config_.trace_observer;
     const AVCodec *codec = avcodec_find_decoder(AV_CODEC_ID_H264);
     if (codec == nullptr) {
         throw std::runtime_error("Unable to find an H.264 decoder");

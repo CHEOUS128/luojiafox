@@ -232,7 +232,7 @@ public:
     }
 
     bool UploadTexture(RoboGo::app::TextureSlot slot, const RoboGo::app::VideoFrame &frame) override {
-        return Upload(slot, frame.buffer.data(), frame.buffer.size(), frame.width, frame.height);
+        return Upload(slot, frame.Pixels(), frame.ByteSize(), frame.width, frame.height, frame.RowPitch());
     }
     bool UploadTexture(RoboGo::app::TextureSlot slot, const RoboGo::resource::DecodedImage &image) override {
         if (slot != RoboGo::app::TextureSlot::MiniMap) return false;
@@ -351,8 +351,8 @@ private:
         return MsgWaitForMultipleObjectsEx(handle ? 1 : 0, handle ? &handle : nullptr,
                                            milliseconds, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
     }
-    bool Upload(RoboGo::app::TextureSlot, const uint8_t *, size_t, int, int);
-    bool StageUpload(TextureSet &, const uint8_t *, int, int);
+    bool Upload(RoboGo::app::TextureSlot, const uint8_t *, size_t, int, int, size_t source_pitch = 0);
+    bool StageUpload(TextureSet &, const uint8_t *, int, int, size_t source_pitch = 0);
     bool CreateTexture(VideoTexture &, int, int);
     bool DrainForShutdown();
     void CleanupGpu(bool safe);
@@ -600,9 +600,11 @@ bool WindowsPlatformBackend::WaitForFence(UINT64 value) {
     return CompletedFence() >= value;
 }
 
-bool WindowsPlatformBackend::Upload(RoboGo::app::TextureSlot slot, const uint8_t *pixels, size_t size, int width, int height) {
+bool WindowsPlatformBackend::Upload(RoboGo::app::TextureSlot slot, const uint8_t *pixels, size_t size, int width, int height, size_t source_pitch) {
+    if (!source_pitch && width > 0) source_pitch = static_cast<size_t>(width) * 4;
     if (!pixels || width <= 0 || height <= 0 || width > 16384 || height > 16384 ||
-        static_cast<uint64_t>(width) * height * 4 > size) {
+        source_pitch < static_cast<size_t>(width) * 4 ||
+        (static_cast<uint64_t>(height) - 1) * source_pitch + static_cast<uint64_t>(width) * 4 > size) {
         ++diagnostics_.upload_failures; RecordFailure("invalid_pixels", E_INVALIDARG); return false;
     }
     if (slot == RoboGo::app::TextureSlot::MiniMap) {
@@ -610,10 +612,10 @@ bool WindowsPlatformBackend::Upload(RoboGo::app::TextureSlot slot, const uint8_t
         map_width_ = width; map_height_ = height;
     }
     if (!PrepareFrame(slot != RoboGo::app::TextureSlot::MiniMap)) return false;
-    return StageUpload(textures_[SlotIndex(slot)], pixels, width, height);
+    return StageUpload(textures_[SlotIndex(slot)], pixels, width, height, source_pitch);
 }
 
-bool WindowsPlatformBackend::StageUpload(TextureSet &set, const uint8_t *pixels, int width, int height) {
+bool WindowsPlatformBackend::StageUpload(TextureSet &set, const uint8_t *pixels, int width, int height, size_t source_pitch) {
     if (!prepared_ || !active_ || set.pending >= 0) { ++diagnostics_.skipped_busy; return false; }
     const int index = set.current < 0 ? 0 : 1 - set.current;
     auto &slot = set.slots[index];
@@ -633,7 +635,8 @@ bool WindowsPlatformBackend::StageUpload(TextureSet &set, const uint8_t *pixels,
     }
     if (Fail("map")) { RecordFailure("map", E_FAIL); ++diagnostics_.upload_failures; return false; }
     const size_t row_bytes = static_cast<size_t>(width) * 4;
-    for (int y = 0; y < height; ++y) memcpy(slot.mapped + static_cast<size_t>(y) * slot.pitch, pixels + static_cast<size_t>(y) * row_bytes, row_bytes);
+    if (!source_pitch) source_pitch = row_bytes;
+    for (int y = 0; y < height; ++y) memcpy(slot.mapped + static_cast<size_t>(y) * slot.pitch, pixels + static_cast<size_t>(y) * source_pitch, row_bytes);
     auto *commands = active_->commands.Get();
     D3D12_RESOURCE_BARRIER barrier{};
     barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;

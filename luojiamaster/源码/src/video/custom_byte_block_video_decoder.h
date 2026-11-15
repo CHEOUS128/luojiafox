@@ -4,8 +4,16 @@
 
 namespace RoboGo::video {
 
+// Optional local observation only. No observer data enters the transport or pixels.
+struct CustomByteBlockTraceObserver {
+    std::function<void(std::span<const std::uint8_t>)> on_payload;
+    std::function<void(std::int64_t, std::span<const std::uint8_t>, std::int64_t)> on_access_unit;
+    std::function<void()> on_reset;
+};
+
 struct CustomByteBlockVideoDecoderConfig {
     int max_reorder_frames = 8;
+    std::shared_ptr<CustomByteBlockTraceObserver> trace_observer;
     std::size_t max_access_unit_bytes = 512U * 1024U;
     std::size_t max_assembly_bytes = 512U * 1024U;
     int max_frame_dimension = 4096;
