@@ -1,6 +1,6 @@
 # luojiafox
 
-珞珈狐战队机器人软件仓库，包含自瞄、下位机、Windows 客户端和压片仿真四个子系统。
+珞珈狐战队机器人软件仓库，包含自瞄、电控、压片战争仿真和自定义客户端四个子系统。**当前开发核心是自定义客户端，面向接口匹配的不同车辆，不绑定全向轮底盘。** 自瞄和电控目录保存已在26赛季全向轮步兵部署的参考实现。
 
 **当前保留的是 2026 实车基础。** 本车已跑通 Jetson B 档视频、云台 DMA 转发和官方图传到自定义客户端。2027 RMUL 适配在当前版本整理、验稳之后进行；已有队友互看功能不代表已经完成 2027 官方接口适配。
 
@@ -12,18 +12,18 @@
 2. 官方选手端先有画面，再按 `P` 把键鼠来源设为“自定义客户端”。客户端接官方端的网口用 `192.168.12.2/24`，网关和 DNS 留空。
 3. 双击 `luojiamaster/程序/luojiamaster.exe`，连接 `192.168.12.1:3333`，选择相同队伍和机器人；登录后按 `Esc` 进入比赛模式，按 `H` 看工业相机第二视角。
 
-第一次布置电脑，照 [客户端工具与现场接线](luojiamaster/工具/README.md) 做。普通操作和版本校验看 [客户端 README](luojiamaster/README.md)。
+**新电脑安装、其他车接入，以及Jetson和电控需要保留哪些改法，统一看 [自定义客户端部署教程](luojiamaster/部署教程/README.md)。** 日常操作和版本校验看 [客户端 README](luojiamaster/README.md)，详细网卡接线看 [工具与现场接线](luojiamaster/工具/README.md)。
 
 **不要按 Ctrl，它会触发整车复位。串口数据接线不接 12V、VCC、5V、3V3 电源脚。**
 
 ## 四个子系统分别看哪里
 
-| 目录 | 管什么 | 入口 |
+| 子系统 | 当前现状与边界 | 入口 |
 | --- | --- | --- |
-| `autoaim/` | Jetson 的相机、自瞄、模型、标定、与云台通信，同时编码 B 档视频 | [自瞄与 Jetson 部署](autoaim/README.md) |
-| `lower-machine/` | 云台 C 板、底盘固件；本车视频出口为云台 TX DMA | [电控工程与实车证据](lower-machine/README.md) |
-| `luojiamaster/` | Windows 自定义客户端：本车画面、第二视角、键鼠和两台客户端互看 | [客户端使用与维护](luojiamaster/README.md) |
-| `compression-war/` | 独立实时仿真、压缩策略对比与收包重放，不参与实车运行 | [压片仿真](compression-war/README.md) |
+| 自瞄 `autoaim/` | `my_lf_INF_20261025`是本车Jetson完整自瞄＋B档视频，`20261013`为旧参考。换车核模型、标定、相机SDK和云台接口；只加视频可移植发送模块 | [自瞄与Jetson维护](autoaim/README.md) |
+| 电控 `lower-machine/` | `26赛季全向轮步兵`内为Keil云台与底盘工程；已实车部署云台DMA转发。其他车移植通信模块与入口，保留自己的整车控制，不把本工程当通用必刷固件 | [电控工程与DMA经验](lower-machine/README.md) |
+| 压片战争 `compression-war/` | 独立实时仿真、压缩策略对比与收包重放；当前B档已用于实车。仿真不部署到车上，不参与客户端正式运行 | [仿真使用](compression-war/README.md) |
+| 自定义客户端 `luojiamaster/` | 当前开发核心，Windows显示、操作和队友互看；可按匹配接口接入其他车辆。当前仍是2026基础，UL/UC及兵种界面分化后续实施 | [客户端](luojiamaster/README.md) · [跨电脑跨车部署](luojiamaster/部署教程/README.md) |
 
 工业相机第二视角的当前链路为：
 
