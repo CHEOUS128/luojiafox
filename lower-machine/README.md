@@ -68,6 +68,6 @@ Jetson → USB CDC → C板按帧头分流、校验、排队 → USART6 TX DMA �
 | `诊断工具` | 历史小样本及离线抓包分析；旧灌包、回环和宽松监听入口已退役，见 [档案索引](档案/README.md) |
 | `档案` | 历史实测、已推翻的判断和本次闭环记录 |
 
-固件仍把 **Ctrl 当作整车复位输入，客户端不要按 Ctrl**。旁听串口时只接 CH340 的 RXD 和 GND，TXD 与所有电源脚悬空。
+固件仍把 **Ctrl 当作整车复位输入，客户端不要按 Ctrl**。旁听串口时只接 CH340 的 RXD 和 GND，TXD与12V、VCC、5V、3V3等所有电源脚悬空。
 
-整车部署看 [仓库 README](../README.md)，Jetson 看 [自瞄说明](../autoaim/README.md)，操作手看 [客户端使用说明](../luojiamaster/使用说明.md)。本次不把编译中间产物、HEX、大量试跑日志和原始抓包放进仓库。
+整车部署看 [仓库 README](../README.md)，Jetson 看 [自瞄说明](../autoaim/README.md)，操作手看 [客户端使用与现场接线](../luojiamaster/README.md)。本次不把编译中间产物、HEX、大量试跑日志和原始抓包放进仓库。

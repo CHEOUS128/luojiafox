@@ -34,7 +34,7 @@ luojiamaster/源码/3rdparty_downloads/_archives/boost-*
 # 其余 8 个依赖的已解压源码（约 76MB）随仓库上传，新电脑 clone 后可直接编译。
 # boost 已解压源码（39MB / 3.8 万个文件）不放进 git：
 #   它是第三方上游代码，且这里放不下它自己的压缩包（103.5MB 超 GitHub 上限），
-#   缺了它 cmake --preset release 会自动按 CMakeLists.txt 的 URL 下载，见完整复现指南文末。
+#   缺了它 cmake --preset release 会自动按 CMakeLists.txt 的 URL 下载，见客户端 README 的编译说明。
 luojiamaster/源码/3rdparty_downloads/boost/
 # 自瞄：演示视频与模型文件
 autoaim/**/assets/

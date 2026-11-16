@@ -23,7 +23,10 @@ DEFAULT_LIMITS = dict(minimum_seconds=3600.0, memory_warmup_seconds=60.0,
     max_private_growth_mib=128.0, max_private_slope_mib_per_minute=4.0,
     max_handle_growth=32.0, max_resource_growth=0,
     packet_queue_capacity=256, mailbox_capacity=1, max_deferred=64,
-    gap_threshold_ms=250.0)
+    gap_threshold_ms=250.0,
+    # Fixed before the 2026-11-16 run. These measure probe coverage, not vehicle
+    # responsiveness. Video source-loop exclusions never stop the input clock.
+    minimum_input_slot_coverage=.95, maximum_input_event_gap_seconds=2.0)
 
 
 def eligible_fraction_argument(value):
@@ -68,6 +71,162 @@ def window_gaps(sorted_times, begin, end, threshold_ms):
     return update_gaps(context,[[begin,end]],threshold_ms)
 
 
+def input_coverage_windows(elapsed, events):
+    """Only planned window/fault exercises may leave the input coverage clock.
+
+    In particular source-loop recovery and externally lost focus do not create
+    an exclusion. Lost events remain losses even during a declared exercise.
+    """
+    exclusions = []
+    minimized = fault = None
+    for row in events:
+        kind = row.get('event')
+        if kind not in ('window_action', 'fault_begin', 'fault_clear'):
+            continue
+        at = number(row, 'seconds')
+        if kind == 'window_action':
+            action = int(row['detail'])
+            exclusions.append((at, at+2.0))
+            if action == 2:
+                if minimized is None:
+                    minimized = at
+            elif minimized is not None:
+                exclusions.append((minimized, at+2.0))
+                minimized = None
+        elif kind == 'fault_begin':
+            fault = at
+        elif fault is not None:
+            exclusions.append((fault, at+2.0))
+            fault = None
+    if minimized is not None:
+        exclusions.append((minimized, elapsed))
+    if fault is not None:
+        exclusions.append((fault, elapsed))
+    windows = [[2.0, elapsed]] if elapsed > 2.0 else []
+    for left, right in sorted(exclusions):
+        reduced = []
+        for begin, end in windows:
+            if right <= begin or left >= end:
+                reduced.append([begin, end])
+            else:
+                if left > begin:
+                    reduced.append([begin, left])
+                if right < end:
+                    reduced.append([right, end])
+        windows = reduced
+    return windows
+
+
+def audit_local_input_v2(summary, inputs, elapsed, events=(), limits=None):
+    """Every generated event terminates once; lost is never a latency sample."""
+    limits = dict(DEFAULT_LIMITS, **(limits or {}))
+    checks = []
+    def check(name, passed, actual, limit):
+        checks.append(dict(check=name, passed=bool(passed), actual=actual, limit=limit))
+    fields = ('input_events_generated', 'input_events_matched', 'input_events_lost',
+              'input_events_mismatched', 'input_events_scheduled', 'input_events_skipped_no_catchup')
+    recorded = all(type(summary.get(field)) is int and summary[field] >= 0 for field in fields)
+    check('local_input_counters_recorded', recorded,
+          {field:summary.get(field) for field in fields}, 'explicit nonnegative integers')
+    generated, matched, lost, mismatched, scheduled, skipped = (summary[field] if type(summary.get(field)) is int else 0 for field in fields)
+    check('local_input_event_accounting', recorded and generated > 0 and generated == matched+lost,
+          dict(generated=generated, matched=matched, lost=lost), 'generated = matched + lost > 0')
+    check('all_generated_local_input_matched', recorded and generated > 0 and matched == generated and lost == 0 and mismatched == 0,
+          dict(generated=generated, matched=matched, lost=lost, mismatched=mismatched),
+          'normal profile: generated=matched>0; lost=0; mismatched=0')
+    check('no_pending_input_before_finish', summary.get('input_events_pending_before_finish') is False,
+          summary.get('input_events_pending_before_finish'), False)
+    check('no_pending_input_after_finish', summary.get('input_events_pending_at_stop') is False,
+          summary.get('input_events_pending_at_stop'), False)
+    check('local_input_csv_count_matches', len(inputs) == generated,
+          dict(csv=len(inputs), generated=generated), 'equal')
+    bad, event_times = [], []
+    csv_matched = csv_lost = 0
+    loss_reasons = {}
+    previous_enqueued = -1.0
+    for index, row in enumerate(inputs):
+        try:
+            enqueued = number(row, 'event_enqueued_us')
+            resolved = number(row, 'resolved_us')
+            event_times.append(enqueued/1e6)
+            valid = (int(row['event_id']) == index+1 and row['key_down'] in ('0','1')
+                     and row['excluded'] in ('0','1') and enqueued >= previous_enqueued
+                     and 0 <= enqueued <= resolved <= (elapsed+1.0)*1e6)
+            previous_enqueued = enqueued
+            sampled = number(row, 'sample_started_us') if row.get('sample_started_us') else None
+            received = number(row, 'sink_received_us') if row.get('sink_received_us') else None
+            if sampled is not None:
+                valid = valid and enqueued <= sampled <= resolved
+            if received is not None:
+                valid = valid and sampled is not None and sampled <= received <= resolved
+                valid = valid and abs(number(row, 'event_to_sink_us')-(received-enqueued)) <= 2.0
+                valid = valid and abs(number(row, 'sample_to_sink_us')-(received-sampled)) <= 2.0
+            if row['outcome'] == 'matched':
+                csv_matched += 1
+                valid = (valid and row['matched'] == '1' and row['lost'] == '0'
+                         and not row['loss_reason'] and sampled is not None and received is not None
+                         and int(row['keyboard_value']) == int(row['key_down']) and number(row, 'mouse_x') == 2)
+            elif row['outcome'] == 'lost':
+                csv_lost += 1
+                reason = row['loss_reason']
+                loss_reasons[reason] = loss_reasons.get(reason, 0)+1
+                valid = (valid and row['matched'] == '0' and row['lost'] == '1'
+                         and reason in ('focus_lost','timeout','invalid_payload','key_state_mismatch','payload_mismatch','run_stopped'))
+                if received is None:
+                    valid = valid and not row.get('event_to_sink_us') and not row.get('sample_to_sink_us')
+            else:
+                valid = False
+            if not valid:
+                bad.append(dict(row=index,event_id=row.get('event_id')))
+        except (ValueError, TypeError, KeyError):
+            bad.append(dict(row=index,event_id=row.get('event_id')))
+    check('local_input_csv_payload_and_chronology', not bad, bad, [])
+    check('local_input_csv_outcomes_match_counters', csv_matched == matched and csv_lost == lost,
+          dict(csv_matched=csv_matched, csv_lost=csv_lost, matched=matched, lost=lost), 'equal by outcome')
+    check('local_input_schedule_accounting', recorded and scheduled == generated+skipped,
+          dict(scheduled=scheduled,generated=generated,skipped=skipped), 'scheduled = generated + skipped')
+    windows = input_coverage_windows(elapsed, events)
+    eligible_events = expected_slots = 0
+    largest_gap = 0.0
+    for begin, end in windows:
+        times = sorted(time for time in event_times if begin <= time < end)
+        eligible_events += len(times)
+        # Fixed absolute 250ms slots beginning at t=2s; no replay-loop filter.
+        first = max(0, math.ceil((begin-2.0)/.25-1e-9))
+        stop = max(0, math.ceil((end-2.0)/.25-1e-9))
+        expected_slots += max(0, stop-first)
+        edges = [begin]+times+[end]
+        largest_gap = max(largest_gap, max((b-a for a,b in zip(edges,edges[1:])), default=0.0))
+    fraction = eligible_events/expected_slots if expected_slots else 0.0
+    coverage = dict(windows=windows, eligible_generated=eligible_events, expected_fixed_slots=expected_slots,
+        generated_slot_fraction=fraction, maximum_no_event_seconds=largest_gap,
+        scheduled=scheduled, skipped=skipped, loss_reasons=loss_reasons,
+        definition='250ms absolute slots after startup. Only declared window/fault exercises are separate; source-loop recovery and real focus loss are not excluded. Lost is never matched and normal-profile lost must be zero.')
+    check('local_input_generation_coverage', expected_slots > 0 and fraction >= limits['minimum_input_slot_coverage'],
+          dict(generated=eligible_events, expected_fixed_slots=expected_slots, fraction=fraction), limits['minimum_input_slot_coverage'])
+    check('local_input_generation_continues', expected_slots > 0 and largest_gap <= limits['maximum_input_event_gap_seconds'],
+          largest_gap, limits['maximum_input_event_gap_seconds'])
+    return checks, coverage
+
+
+def audit_final_render_counters(summary, samples):
+    pairs = dict(backend_uploads='backend_uploads_succeeded', backend_upload_failures='backend_upload_failures',
+                 backend_recoveries='backend_recoveries', backend_resources='backend_resource_creations',
+                 backend_wait_timeouts='backend_wait_timeouts')
+    final = {key:summary.get(key) for key in pairs.values()}
+    before = summary.get('backend_wait_timeouts_before_shutdown')
+    valid = all(type(value) is int and value >= 0 for value in final.values()) and type(before) is int and before >= 0
+    recorded = dict(check='final_backend_counters_recorded', passed=valid, actual=dict(final=final,before_shutdown_wait_timeouts=before), limit='explicit nonnegative integers')
+    chronological = (valid and summary.get('backend_diagnostics_phase') == 'after_shutdown'
+                     and final['backend_wait_timeouts'] >= before)
+    if samples and valid:
+        chronological = chronological and all(final[end] >= number(samples[-1], sample) for sample,end in pairs.items())
+    covered = dict(check='final_backend_counters_cover_shutdown_and_samples', passed=bool(chronological),
+        actual=dict(phase=summary.get('backend_diagnostics_phase'),final=final,
+                    before_shutdown_wait_timeouts=before),limit='after_shutdown; final >= before shutdown and last sample')
+    return [recorded, covered]
+
+
 def audit_long(summary, frames, inputs, samples, events=(), source_inventory=None, limits=None):
     limits = dict(DEFAULT_LIMITS, **(limits or {}))
     checks, warnings = [], []
@@ -92,6 +251,8 @@ def audit_long(summary, frames, inputs, samples, events=(), source_inventory=Non
         check('zero_' + field, summary.get(field) == 0, summary.get(field), 0)
     check('no_first_gpu_failure_stage', not summary.get('first_failure_stage'),
           summary.get('first_failure_stage', ''), '')
+    if summary.get('input_probe_schema_version', 1) >= 2:
+        checks.extend(audit_final_render_counters(summary, samples))
     check('performance_trace_integrity', not performance['integrity_failures'],
           performance['integrity_failures'], [])
 
@@ -217,28 +378,38 @@ def audit_long(summary, frames, inputs, samples, events=(), source_inventory=Non
     if not continuity['no_eligible_gaps_over_threshold']:
         warnings.append('Eligible no-new-image gaps exceed the declared threshold. They remain in the report, including any source outage; review before a smoothness claim.')
 
-    generated=summary.get('input_events_generated',0)
-    matched=summary.get('input_events_matched',0)
-    mismatched=summary.get('input_events_mismatched',0)
-    check('local_input_probe_enabled', summary.get('input_probe_enabled') is True,summary.get('input_probe_enabled'),True)
-    check('all_generated_local_input_matched', generated>0 and matched==generated and mismatched==0,
-          dict(generated=generated,matched=matched,mismatched=mismatched), 'generated=matched>0; mismatched=0')
-    check('local_input_csv_count_matches', len(inputs)==generated,dict(csv=len(inputs),generated=generated),'equal')
-    input_bad=[]
-    seen_inputs=set()
-    for index,row in enumerate(inputs):
-        times=[number(row,key) for key in ('event_enqueued_us','sample_started_us','sink_received_us')]
-        event=row['event_id']
-        if (event in seen_inputs or row['matched']!='1' or times!=sorted(times)
-                or int(row['keyboard_value']) != int(row['key_down']) or number(row,'mouse_x')!=2):
-            input_bad.append(dict(row=index,event_id=event))
-        seen_inputs.add(event)
-    check('local_input_csv_payload_and_chronology',not input_bad,input_bad,[])
-    scheduled,skipped=summary.get('input_events_scheduled',0),summary.get('input_events_skipped_no_catchup',0)
-    check('local_input_schedule_accounting', scheduled==generated+skipped,
-          dict(scheduled=scheduled,generated=generated,skipped=skipped),'scheduled = generated + skipped')
-    if skipped:
-        warnings.append('Some fixed input slots were skipped without catch-up; matched/generated excludes those slots, which are explicitly disclosed.')
+    if summary.get('input_probe_schema_version', 1) >= 2:
+        check('local_input_probe_enabled', summary.get('input_probe_enabled') is True, summary.get('input_probe_enabled'), True)
+        input_checks, input_coverage = audit_local_input_v2(summary, inputs, elapsed, events, limits)
+        checks.extend(input_checks)
+        performance['input']['coverage'] = input_coverage
+        if summary.get('input_events_skipped_no_catchup'):
+            warnings.append('Fixed input slots were skipped without catch-up; their count and independent wall-time coverage are audited. Losses are never counted as matches.')
+    else:
+        # Preserve the original audit of historical captures, including the old
+        # 1993/1992 input failure and absent final GPU count. Do not repair data.
+        generated=summary.get('input_events_generated',0)
+        matched=summary.get('input_events_matched',0)
+        mismatched=summary.get('input_events_mismatched',0)
+        check('local_input_probe_enabled', summary.get('input_probe_enabled') is True,summary.get('input_probe_enabled'),True)
+        check('all_generated_local_input_matched', generated>0 and matched==generated and mismatched==0,
+              dict(generated=generated,matched=matched,mismatched=mismatched), 'generated=matched>0; mismatched=0')
+        check('local_input_csv_count_matches', len(inputs)==generated,dict(csv=len(inputs),generated=generated),'equal')
+        input_bad=[]
+        seen_inputs=set()
+        for index,row in enumerate(inputs):
+            times=[number(row,key) for key in ('event_enqueued_us','sample_started_us','sink_received_us')]
+            event=row['event_id']
+            if (event in seen_inputs or row['matched']!='1' or times!=sorted(times)
+                    or int(row['keyboard_value']) != int(row['key_down']) or number(row,'mouse_x')!=2):
+                input_bad.append(dict(row=index,event_id=event))
+            seen_inputs.add(event)
+        check('local_input_csv_payload_and_chronology',not input_bad,input_bad,[])
+        scheduled,skipped=summary.get('input_events_scheduled',0),summary.get('input_events_skipped_no_catchup',0)
+        check('local_input_schedule_accounting', scheduled==generated+skipped,
+              dict(scheduled=scheduled,generated=generated,skipped=skipped),'scheduled = generated + skipped')
+        if skipped:
+            warnings.append('Some fixed input slots were skipped without catch-up; matched/generated excludes those slots, which are explicitly disclosed.')
 
     if summary.get('minimap_required'):
         check('minimap_ready_and_presented',summary.get('minimap_ready') and summary.get('minimap_presented',0)>0,

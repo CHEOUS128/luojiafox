@@ -1,33 +1,119 @@
-# 自瞄：Jetson 完整程序与 B 档视频
+# 自瞄与 Jetson 现役部署
 
-**当前版本为 2026-11-12 实车成功组合。** 本车运行完整自瞄程序，同时用 B 档发送彩色工业相机画面；云台板改为 DMA 转发后，用户已确认官方图传到自定义客户端正常出画。
+本目录负责相机、自瞄算法、模型、标定、云台通信及 B 档视频。**2026-11-12 本车已部署完整自瞄，云台 DMA 修复后，CH 确认工业相机画面经官方链路到自定义客户端正常。** 原算法、模型和本车标定继续沿用。
 
-日常开机和维护统一看 [实车成功版本](../docs/2026-11-12-实车成功版本.md)。本轮不改变自瞄算法、模型和标定，不需要重复部署。
+当前2026运行基础先整理、验稳，2027 RMUL适配另行核对。正常开机直接用已配置的服务，不要再启动第二个进程抢相机和USB。
 
-## 源码和本车实际目录
+## 当前目录和视频参数
 
-| 项目 | 当前值 |
+| 项目 | 本车实际值 |
 | --- | --- |
-| 仓库源码 | `my_lf_INF_20261025/`，包括 `cw-trial-20261109-r2` 视频入口 |
-| 本车现役目录 | `/home/nvidia4/my_lf_INF_20261025_cwtrial` |
-| 自启动 | `autoaim-20261025.service`，覆盖配置 `40-cw-trial.conf` 选择现役目录 |
-| 启动参数 | `build_cw/standard_mpc configs/standard3.yaml --cw-profile=quality` |
-| 当前视频 | B 档：彩色、全视野、320×256、目标20 fps、H.264、GOP20 |
-| 固定预算 | 300 B数据段/309 B外层，最多2包/592 B H.264，最高50包/秒，逐包至少20 ms |
-| 保留的旧版 | 车上 `my_lf_INF_20261025` 原目录及 `my_lf_INF_20261013`；仓库旧版本不修改 |
+| 仓库源码 | `my_lf_INF_20261025/`，视频版本标记 `cw-trial-20261109-r2` |
+| 主机/用户 | `nvidia4` |
+| 现役目录 | `/home/nvidia4/my_lf_INF_20261025_cwtrial` |
+| 程序与参数 | `build_cw/standard_mpc configs/standard3.yaml --cw-profile=quality` |
+| 自启动服务 | `autoaim-20261025.service`，root运行；覆盖文件 `/etc/systemd/system/autoaim-20261025.service.d/40-cw-trial.conf` |
+| 启动等待 | 基础服务先等15秒，再最多等40秒，等待 `/dev/ttyACM0` 和相机 `2ba2:4d55` |
+| 日志 | `/home/nvidia4/my_lf_INF_20261025_cwtrial/logs/autostart.log` |
+| 视频 | B档：彩色、全视野、等比缩小补边，320×256、目标20 fps、H.264/GOP20，约74.5 kbps |
+| 通信预算 | 300 B数据段含4 B内层头、最多296 B码流；309 B外层；含关键帧最多2包/592 B；最高50包/秒，逐包至少20 ms |
+| 保留的原目录 | `/home/nvidia4/my_lf_INF_20261025` 与更早的 `my_lf_INF_20261013` |
+| 不能清掉的依赖 | `/home/nvidia4/my_sp_main/io/daheng/lib/armv8/liblog4cplus_gx.so`，现役程序仍依赖它 |
 
-`quality` 会覆盖视频尺寸、颜色、GOP和包数等参数；YAML里仍保留的灰度、8包参数属于未选择试验档时的旧流程，不能把它当作本车现在的画面设置。仿真对应配置为 `compression-war/profiles/one-320-gop20.ini`，原始对照仍为 `baseline.ini`。
-
-现役服务保留本车 `configs/standard3.yaml`、模型和标定。`my_sp_main/io/daheng/lib/armv8` 提供仍被依赖的 `liblog4cplus_gx.so`，这个旧目录不能清掉。
-
-## 视频链路
+`--cw-profile=quality` 覆盖视频参数；YAML仍显示灰度、8包等旧值时，不把它们当作现役视频档位。仿真同档为 `compression-war/profiles/one-320-gop20.ini`，原始对照为 `baseline.ini`。
 
 ```text
-相机 → 完整自瞄程序取图、B档编码 → 0x0310 / USB CDC
-→ 云台C板校验与TX DMA → VT03 → VT13 → 官方选手端 → 自定义客户端
+相机 → 完整自瞄和B档编码 → USB CDC → 云台校验/队列/TX DMA
+→ VT03 → VT13 → 官方端 → CustomByteBlock → 自定义客户端
 ```
 
-32 B自瞄控制和309 B视频继续共用USB，串口互斥、短写续传和控制帧边界保留。C板本轮修改见 [电控 README](../lower-machine/README.md)。早期单包、灰度和多包方案的参数、经验留在 [档案](档案/README.md)，旧“怀疑无线链路”的判断不再作为本次故障结论。
+32 B自瞄控制与309 B视频共用USB，串口互斥、短写续传及控制帧边界保留。视频成功出画证明该视频链路可用，自瞄精度还要靠标定与打靶单独验证。云台源码、2391包实测及采集溢出见 [电控README](../lower-machine/README.md)；Windows操作见 [客户端README](../luojiamaster/README.md)。
+
+## 日常开机与只读检查
+
+相机、Jetson、云台按既有接线上电，服务自动运行。没有画面时，在Jetson终端先查看：
+
+```bash
+systemctl show autoaim-20261025 -p ActiveState -p SubState -p ExecStart -p WorkingDirectory -p DropInPaths
+ls -l /dev/ttyACM0
+lsusb -d 2ba2:4d55
+tail -n 30 /home/nvidia4/my_lf_INF_20261025_cwtrial/logs/autostart.log
+```
+
+应看到 `active/running`、现役目录、`quality` 参数，USB和相机存在。记录异常时间和原始输出，按“Jetson成帧/写入 → 云台完整输出 → 官方端收包 → 客户端解码/显示”找第一处差异。含NUL的SDK日志需要筛选时使用 `grep -a`，避免只得到 `binary file matches`。
+
+Jetson网口为 `enP8p1s0`，原地址 `192.168.1.50/24`。直连Windows维护时曾临时加 `10.88.26.2/24`，重启会消失；Windows对应 `10.88.26.1`。这是维护网络，不是客户端比赛IP。恢复官方客户端连接时改回12.x专线，具体看 [现场接线](../luojiamaster/工具/README.md)。
+
+## 以后维护或换电脑
+
+当前车已经部署好。以下操作用于安排好的停机维护，执行前保留本车 `configs/`、模型、标定、原目录和依赖，确认不会同时运行两个完整自瞄程序。
+
+| 传什么 | 传到哪里 | 如何确认 |
+| --- | --- | --- |
+| 本次源码ZIP及同名 `.sha256` | 手动ToDesk传到 `/home/nvidia4/Downloads/`；核验后将包内8份源码对应更新到现役目录，保留 `configs/`、`assets/` | 对应新包SHA256；两个编译产物 `--help` 含 `cw-trial-20261109-r2`；记录时间、大小及SHA |
+| 模型、配置或标定 | 仅按对应维护任务的明确清单传，不随源码包整目录覆盖 | 核对本车型号、文件SHA及配置引用路径 |
+| 云台代码 | 从仓库取配套完整云台工程，由电控处理 | Keil工程、3份DMA源码及构建标记见电控README；烧录须CH确认 |
+
+在Windows仓库根生成带时间的新包：
+
+```powershell
+$package = '.\compression-war\runs\delivery\RM26_jetson_B_' + (Get-Date -Format 'yyyyMMdd_HHmmss') + '.zip'
+python '.\compression-war\tools\package_vehicle_trial.py' --out $package
+```
+
+打包器显示路径、SHA并生成同名 `.sha256`。手动ToDesk传这两个文件；Jetson在Downloads核验时换成这次真实名称：
+
+```bash
+tr -d '\r' < RM26_jetson_B_日期时间.sha256 | sha256sum -c -
+```
+
+在已准备好源码的Jetson现役目录，仅编两个生产目标：
+
+```bash
+cd /home/nvidia4/my_lf_INF_20261025_cwtrial
+cmake -S . -B build_cw -G 'Unix Makefiles' \
+  -DOpenCV_DIR=/usr/local/lib/cmake/opencv4 \
+  -DCUDA_TOOLKIT_ROOT_DIR=/usr/local/cuda-12.6 \
+  -DCMAKE_CUDA_COMPILER=/usr/local/cuda-12.6/bin/nvcc
+make -C build_cw standard_mpc video_sender_test -j2
+./build_cw/standard_mpc --help | grep 'cw-trial-20261109-r2'
+./build_cw/video_sender_test --help | grep 'cw-trial-20261109-r2'
+stat -c '%y %s %n' build_cw/standard_mpc build_cw/video_sender_test
+sha256sum build_cw/standard_mpc build_cw/video_sender_test
+```
+
+不跑全量 `make`，遗留 `fire_test` 目标有构建问题。OpenCV、CUDA/TensorRT或OpenVINO及相机SDK按目标机器实际环境核对，不能拿Windows编码速度当Jetson速度。
+
+模型不在仓库中；原生产识别会加载配置引用的模型，不能靠打开传统识别开关跳过模型准备。TensorRT engine与设备/版本有关，换机器须检查或重新生成，保留原ONNX及标定。配置涉及 `yolov5_model_path` 等实际键，按本车文件核对。
+
+`video_sender_test`本地编码，不向C板串口发送；合成模式不需接车：
+
+```bash
+cd /home/nvidia4/my_lf_INF_20261025_cwtrial
+./build_cw/video_sender_test /tmp/cw-quality-check --cw-profile quality --seconds 15
+python3 tests/verify_frames.py /tmp/cw-quality-check/video_test_frames.bin tools/crc.cpp
+```
+
+真实相机检查需要相机空闲，不能与生产服务抢相机。编译完成不代表现役服务已切换；先读 `systemctl cat autoaim-20261025`。旧 `scripts/enable_video_service.sh` 是历史安装入口，不在当前机器反复重跑。需要回退时由维护负责人核对服务覆盖配置，切回保留的原目录并重新核验，不能只改base service就认定生效。
+
+<details>
+<summary>现役服务覆盖配置与11月12日版本校验记录</summary>
+
+基础服务保留15秒等待及自动重试，`40-cw-trial.conf`增加设备等待并选择现役目录：
+
+```ini
+[Service]
+WorkingDirectory=/home/nvidia4/my_lf_INF_20261025_cwtrial
+ExecStartPre=/usr/bin/timeout 40s /bin/sh -c 'until test -c /dev/ttyACM0 && /usr/bin/lsusb -d 2ba2:4d55 >/dev/null 2>&1; do /bin/sleep 1; done'
+ExecStart=
+ExecStart=/home/nvidia4/my_lf_INF_20261025_cwtrial/build_cw/standard_mpc configs/standard3.yaml --cw-profile=quality
+StandardOutput=append:/home/nvidia4/my_lf_INF_20261025_cwtrial/logs/autostart.log
+StandardError=append:/home/nvidia4/my_lf_INF_20261025_cwtrial/logs/autostart.log
+```
+
+当时 `RM26_cw_trial_20261109_r2.zip` SHA256：`e6dcb827598847accc45389ac1865de5a9b9cd8f325c08723f4c5c7b1c33b390`；本车已编 `standard_mpc` SHA256：`9e4fef10f9c7ce68aac3ec70eb3f0bb915fbebb4d0394fdec68130beaccf2f50`。这些只对应11-12记录；重新打包或编译后使用新校验值，不能拿历史值要求新包相同。
+
+</details>
 
 ## 换车必须重做的标定（★ 最重要）
 
@@ -90,7 +176,7 @@ cd my_lf_INF_20261025
 
 ### 4. yaw_offset / pitch_offset（弹着点校准）
 
-**固定靶、`auto_fire: true`、打 10 发**，看弹着点相对准星的平均偏差：
+**仅在已安排的打靶场地，由电控确认执行器及开火方式后对固定靶采样**，看弹着点相对准星的平均偏差。`standard_mpc`直接发送规划结果，不能把YAML的 `auto_fire` 当作整车禁火总开关。
 
 - 偏差**方向恒定** → 改这两个 offset。1 米距离上 1 cm ≈ 0.57°。
 - 偏差**时大时小** → 不是 offset 的问题，是第 1、2 项标定没做好，别硬调。
@@ -166,27 +252,6 @@ cd my_lf_INF_20261025
 
 ---
 
-## 编译和运行维护
-
-现役机器已经配置开机自启动。先用以下只读命令确认状态，不要再启动第二个进程抢相机、串口：
-
-```bash
-systemctl show autoaim-20261025 -p ActiveState -p ExecStart -p WorkingDirectory -p DropInPaths
-tail -n 30 /home/nvidia4/my_lf_INF_20261025_cwtrial/logs/autostart.log
-```
-
-维护或换电脑时先核对配置、模型、相机SDK、CUDA/OpenCV和共享库，具体成功配置及“传什么→传到哪→怎么验证”集中在 [统一维护说明](../docs/2026-11-12-实车成功版本.md)。只编 `standard_mpc` 和 `video_sender_test`，不跑全量 `make`。
-
-`video_sender_test` 是本地编码检查，不向C板串口发送；合成模式不需要接车。在已编好的现役目录可执行：
-
-```bash
-cd /home/nvidia4/my_lf_INF_20261025_cwtrial
-./build_cw/video_sender_test /tmp/cw-quality-check --cw-profile quality --seconds 15
-python3 tests/verify_frames.py /tmp/cw-quality-check/video_test_frames.bin tools/crc.cpp
-```
-
-真实相机检查需要相机可用，维护时避免与现役程序同时占用。源码文件继续通过 ToDesk 手动传输；原有 `scripts/enable_video_service.sh` 属于旧服务部署入口，当前维护不重跑它。切换现役或回退需核对实际服务覆盖配置，避免只改base service却没有切换生效。
-
 ## 许可与来源
 
-本项目基于 [同济大学 SuperPower 战队 25 赛季自瞄算法](https://github.com/TongjiSuperPower) 二次开发，沿用原项目 LICENSE。当前调校针对26赛季全向轮步兵，换兵种必须重新适配和标定。
+本项目基于 [同济大学 SuperPower 战队25赛季自瞄](https://github.com/TongjiSuperPower) 二次开发，沿用原许可。当前参数针对26赛季全向轮步兵，换车需重新适配和标定。早期视频方案与更正见 [档案索引](档案/README.md)。

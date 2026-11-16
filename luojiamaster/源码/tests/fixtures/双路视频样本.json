@@ -1,0 +1,19 @@
+{
+  "purpose": "Small genuine receive-only sample for disconnected client playback; not a live-link benchmark",
+  "source_sha256": "68b2ef566aae34a347e32f76da390035e7d4f6477b00d2ffc081ce65ba386716",
+  "source_session": "20261112_173547_006",
+  "selected_window_us": 4000000,
+  "retained_span_us": 3996026,
+  "records": {
+    "udp": 2783,
+    "cbb": 158
+  },
+  "payload_sha256": {
+    "udp": "1338b84853bb0a866fc913d5fb195509e72f25b1b2c79a9eb90d6f6889f270ab",
+    "cbb": "c37cd3cc7c3d2793b6baf8ee5754ab09b7603bfc437fa170d81b5036a74cab87"
+  },
+  "output_bytes": 3956659,
+  "output_sha256": "80673f9373cb8a9e50fff48cc290a1b75c05ba1fa6f2a1c9c2b40980ef7b9554",
+  "original_record_bytes_and_times_preserved": true,
+  "only_received_video_channels": true
+}

@@ -1,6 +1,8 @@
 #include "video_stability_test.h"
 
 #include "app/latest_video_frame.h"
+#include "app/local_input_probe.h"
+#include "app/offline_test_summary.h"
 #include "app/video_performance_trace.h"
 #include "video/rgba_frame_converter.h"
 #include "keyboard_mouse_state_manager.h"
@@ -428,56 +430,7 @@ void DrawLane(platform::PlatformBackend &backend, TextureSlot slot, const char *
     } else ImGui::TextUnformatted("Waiting for a real decoded frame");
     ImGui::EndChild();
 }
-class LocalInputProbe {
-    struct Event { std::uint64_t id; bool down; Clock::time_point enqueued; };
-    RoboGo::testing::OfflineKeyboardMouseTestScope scope_;
-    std::ostream &output_;
-    Clock::time_point start_, next_{}, sampled_{};
-    std::optional<Event> pending_;
-    bool down_ = false, excluded_ = false;
-    std::uint64_t generated_ = 0, matched_ = 0, mismatched_ = 0, packets_ = 0, scheduled_ = 0, skipped_ = 0;
-public:
-    LocalInputProbe(std::ostream &output, Clock::time_point start) : output_(output), start_(start), next_(start + std::chrono::seconds(2)) {
-        scope_.Reset(); set_use_raw_mouse(true); enter_game_mode();
-        output_ << "event_id,key_down,event_enqueued_us,sample_started_us,sink_received_us,event_to_sink_us,sample_to_sink_us,mouse_x,keyboard_value,matched,excluded\n";
-    }
-    void QueueIfDue() {
-        const auto now = Clock::now();
-        if (now < next_) return;
-        const auto overdue = std::chrono::duration_cast<std::chrono::milliseconds>(now-next_).count();
-        const auto slots = static_cast<std::uint64_t>(overdue/250) + 1;
-        scheduled_ += slots; next_ += std::chrono::milliseconds(slots*250);
-        if (pending_) { skipped_ += slots; return; }
-        skipped_ += slots-1; // Keep fixed absolute slots; never inject a catch-up burst.
-        down_ = (scheduled_ % 2) != 0;
-        ImGui::GetIO().AddKeyEvent(ImGuiKey_W, down_);
-        add_raw_mouse_delta(5.0f,0.0f); // 0.4 sensitivity -> actual serialized x=2; no platform mouse capture.
-        pending_ = Event{++generated_,down_,Clock::now()};
-    }
-    void Sample(bool excluded) {
-        excluded_ = excluded; sampled_ = Clock::now();
-        update_keyboard_mouse_state(KeyboardMouseSink([&](const std::string &topic, const std::string &payload) {
-            ++packets_;
-            KeyboardMouseControl message;
-            if (topic != "KeyboardMouseControl" || !message.ParseFromString(payload)) { ++mismatched_; return; }
-            if (!pending_ || bool(message.keyboard_value() & 1U) != pending_->down) return;
-            const auto received = Clock::now();
-            const bool correct = message.keyboard_value() == (pending_->down ? 1U : 0U) && message.mouse_x() == 2 && message.mouse_y() == 0;
-            if (correct) ++matched_; else ++mismatched_;
-            const auto us = [&](Clock::time_point value) { return std::chrono::duration_cast<std::chrono::microseconds>(value-start_).count(); };
-            output_ << pending_->id << ',' << pending_->down << ',' << us(pending_->enqueued) << ',' << us(sampled_) << ',' << us(received) << ','
-                << std::chrono::duration<double,std::micro>(received-pending_->enqueued).count() << ',' << std::chrono::duration<double,std::micro>(received-sampled_).count() << ','
-                << message.mouse_x() << ',' << message.keyboard_value() << ',' << correct << ',' << excluded_ << '\n';
-            pending_.reset();
-        }));
-    }
-    std::uint64_t Generated() const { return generated_; }
-    std::uint64_t Matched() const { return matched_; }
-    std::uint64_t Mismatched() const { return mismatched_; }
-    std::uint64_t Packets() const { return packets_; }
-    std::uint64_t Scheduled() const { return scheduled_; }
-    std::uint64_t Skipped() const { return skipped_; }
-};
+using offline::LocalInputProbe;
 } // namespace
 
 int RunVideoStabilityTest(platform::PlatformBackend &backend, const std::vector<std::string> &args) {
@@ -664,7 +617,9 @@ int RunVideoStabilityTest(platform::PlatformBackend &backend, const std::vector<
         workers.Join();
         elapsed = std::chrono::duration<double>(Clock::now() - start).count();
         backend.SetTestFailure("", 0);
-        const auto gpu = backend.GetRenderDiagnostics();
+        const auto gpu_before_shutdown = backend.GetRenderDiagnostics();
+        const bool input_pending_before_finish = input_probe && input_probe->Pending();
+        if (input_probe) input_probe->Finish();
         last_memory = ProcessStats();
         const auto q0 = state.lanes[0].input.Stats(), q1 = state.lanes[1].input.Stats();
         const auto m0 = state.lanes[0].latest.Stats(), m1 = state.lanes[1].latest.Stats();
@@ -673,6 +628,13 @@ int RunVideoStabilityTest(platform::PlatformBackend &backend, const std::vector<
         const bool fault_recovered = mini_map_ok && (options.fault_stage.empty() || (fault_started && fault_cleared && failure_observed && presented[0] > at_fault_clear[0] && presented[1] > at_fault_clear[1] && mini_map_presented > map_presented_at_fault_clear));
         const bool completed = elapsed >= options.seconds && !state.failed;
         const bool smoke_valid = presented[0] > 0 && presented[1] > 0 && mini_map_ok;
+        // Texture readiness and input outcomes belong to the measured run.
+        // Final diagnostics also cover shutdown, which can add a GPU timeout.
+        const auto shutdown_begin = Clock::now();
+        backend.RequestTestWindowAction(0);
+        backend.Shutdown(); backend_guard.active = false;
+        const auto gpu = backend.GetRenderDiagnostics();
+        const double shutdown_seconds = std::chrono::duration<double>(Clock::now() - shutdown_begin).count();
         auto summary = platform_util::OpenUtf8Output(platform_util::PathToUtf8(report_dir / "summary.json"));
         summary << "{\n  \"offline_no_network\": true,\n  \"capture\": " << Quote(options.capture) << ",\n  \"requested_seconds\": " << options.seconds << ",\n  \"elapsed_seconds\": " << elapsed << ",\n  \"completed\": " << (completed ? "true" : "false") << ",\n  \"dual_stream_smoke_ok\": " << (smoke_valid ? "true" : "false") << ",\n  \"acceptance_evaluated\": false,\n  \"acceptance\": \"PENDING_STRICT_CSV_AUDIT\""
             << ",\n  \"performance_profile\": " << Quote(state.baseline ? "baseline" : "optimized")
@@ -685,6 +647,10 @@ int RunVideoStabilityTest(platform::PlatformBackend &backend, const std::vector<
             << ",\n  \"input_events_scheduled\": " << (input_probe ? input_probe->Scheduled() : 0)
             << ",\n  \"input_events_skipped_no_catchup\": " << (input_probe ? input_probe->Skipped() : 0)
             << ",\n  \"input_events_matched\": " << (input_probe ? input_probe->Matched() : 0)
+            << ",\n  \"input_events_lost\": " << (input_probe ? input_probe->Lost() : 0)
+            << ",\n  \"input_events_pending_before_finish\": " << (input_pending_before_finish ? "true" : "false")
+            << ",\n  \"input_events_pending_at_stop\": " << (input_probe && input_probe->Pending() ? "true" : "false")
+            << ",\n  \"input_probe_schema_version\": 2"
             << ",\n  \"input_events_mismatched\": " << (input_probe ? input_probe->Mismatched() : 0)
             << ",\n  \"input_sink_packets\": " << (input_probe ? input_probe->Packets() : 0)
             << ",\n  \"performance_reference\": \"Same instrumented executable; baseline reproduces previous RGBA conversion and late input sampling. Historical 009 EXE is not being timed.\""
@@ -703,12 +669,14 @@ int RunVideoStabilityTest(platform::PlatformBackend &backend, const std::vector<
             << ",\n  \"minimap_required\": true,\n  \"minimap_source_dimensions\": [" << mini_map_image->width << ',' << mini_map_image->height << "],\n  \"minimap_initial_upload_accepted\": " << (initial_map_upload ? "true" : "false") << ",\n  \"minimap_ready\": " << (final_map.IsReady() ? "true" : "false") << ",\n  \"minimap_final_dimensions\": [" << final_map.size.x << ',' << final_map.size.y << "],\n  \"minimap_presented\": " << mini_map_presented << ",\n  \"minimap_presented_after_fault_clear\": " << (fault_cleared ? mini_map_presented - map_presented_at_fault_clear : 0)
             << ",\n  \"window_actions\": " << window_actions << ",\n  \"menu_exercises\": " << menu_exercises << ",\n  \"packet_queue_capacity_each\": 256,\n  \"packet_queue_max\": [" << q0[1] << ',' << q1[1] << "],\n  \"packet_dropped\": [" << q0[2] << ',' << q1[2] << "],\n  \"mailbox_capacity_each\": 1,\n  \"mailbox_pending_at_stop\": [" << m0.pending << ',' << m1.pending << "],\n  \"mailbox_overwritten\": [" << m0.overwritten << ',' << m1.overwritten << ']'
             << ",\n  \"private_bytes_start\": " << first_memory.private_bytes << ",\n  \"private_bytes_after_warmup\": " << warm_memory.private_bytes << ",\n  \"private_bytes_last\": " << last_memory.private_bytes << ",\n  \"private_bytes_peak\": " << peak_memory.private_bytes << ",\n  \"handles_start\": " << first_memory.handles << ",\n  \"handles_last\": " << last_memory.handles << ",\n  \"handles_peak\": " << peak_memory.handles
-            << ",\n  \"backend_frames_submitted\": " << gpu.frames_submitted << ",\n  \"backend_uploads_succeeded\": " << gpu.uploads_succeeded << ",\n  \"backend_upload_failures\": " << gpu.upload_failures << ",\n  \"backend_recoveries\": " << gpu.recoveries << ",\n  \"backend_resource_creations\": " << gpu.resource_creations << ",\n  \"backend_deferred_max\": " << gpu.max_deferred_resources << ",\n  \"first_failure_stage\": " << Quote(gpu.first_failure_stage) << ",\n  \"first_hresult\": " << gpu.first_hresult
+            ;
+        offline::WriteFinalRenderCounters(summary, gpu_before_shutdown, gpu);
+        summary << ",\n  \"shutdown_seconds\": " << shutdown_seconds
+            << ",\n  \"first_failure_stage\": " << Quote(gpu.first_failure_stage) << ",\n  \"first_hresult\": " << gpu.first_hresult
             << ",\n  \"fault_stage\": " << Quote(options.fault_stage) << ",\n  \"fault_observed\": " << (failure_observed ? "true" : "false") << ",\n  \"fault_cleared\": " << (fault_cleared ? "true" : "false") << ",\n  \"fault_recovered\": " << (fault_recovered ? "true" : "false") << ",\n  \"worker_error\": " << Quote(state.error)
             << ",\n  \"age_definition\": \"Time since the decoded frame currently committed by a successful Present; not end-to-end camera latency.\",\n  \"present_definition\": \"Only RenderFrame=true; accepted uploads and UI iterations are counted separately.\"\n}\n";
         summary.flush(); samples.flush(); events.flush(); frames.flush(); input_trace.flush();
         input_probe.reset();
-        backend.RequestTestWindowAction(0); backend.Shutdown(); backend_guard.active = false;
         SPDLOG_INFO("[offline-video-test] finished completed={} dual_stream_smoke={} acceptance=PENDING_CSV_AUDIT report={}", completed, smoke_valid, platform_util::PathToUtf8(report_dir));
         return completed && smoke_valid && fault_recovered ? 0 : 2;
     } catch (const std::exception &error) {

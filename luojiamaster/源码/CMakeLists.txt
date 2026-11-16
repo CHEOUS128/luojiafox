@@ -356,3 +356,27 @@ if(BUILD_TESTING)
         target_compile_options(real_conversion_benchmark PRIVATE /utf-8 /bigobj /W4)
     endif()
 endif()
+
+
+# Offline-only input/final-counter regression uses the production sampler and
+# real ImGui, without a platform backend, network services or OS input injection.
+if(BUILD_TESTING)
+    add_executable(local_input_probe_test
+        tests/local_input_probe_test.cpp
+        src/keyboard_mouse_state_manager.cpp
+        gen/messages.pb.cc)
+    target_include_directories(local_input_probe_test PRIVATE include gen src)
+    target_precompile_headers(local_input_probe_test PRIVATE include/pch.h)
+    target_link_libraries(local_input_probe_test PRIVATE
+        spdlog::spdlog utf8_validity protobuf::libprotobuf-lite async_mqtt_asio_bind
+        ffmpeg imgui readerwriterqueue stb)
+    target_compile_definitions(local_input_probe_test PRIVATE SPDLOG_ACTIVE_LEVEL=SPDLOG_LEVEL_TRACE)
+    if(WIN32)
+        target_compile_definitions(local_input_probe_test PRIVATE _WIN32_WINNT=0x0601)
+    endif()
+    if(MSVC)
+        target_compile_options(local_input_probe_test PRIVATE /utf-8 /bigobj /W4)
+    endif()
+    add_test(NAME local_input_probe_test COMMAND local_input_probe_test)
+    set_tests_properties(local_input_probe_test PROPERTIES TIMEOUT 15)
+endif()

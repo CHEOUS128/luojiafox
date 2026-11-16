@@ -1,3 +1,31 @@
+> **2026-11-16基础整理与补测：** 当前结果统一看[客户端README](../README.md#11月16日整理与补测)，精选数据见[基础记录](数据/client-foundation-20261116.json)。旧一小时失败保留；本次按要求提前停止，内存短窗增长继续观察。11-12机器记录已原样归入[档案数据](数据/client-stability-20261112.json)。
+
+# 当前入口与历史路径迁移
+
+2026-11-16归拢说明：当前操作、编译、协议、日志与验证只维护在 [客户端README](../README.md)，现场组网只看 [工具README](../工具/README.md)。以下原有档案正文保持原文，其“当前版本”“下一步”和旧相对路径按对应记录日期阅读。
+
+| 已合并的旧入口 | 现在看哪里 | 整理前原文 |
+| --- | --- | --- |
+| 使用说明 | 客户端README的第一次使用、按键、排错 | [e440b42原文](https://github.com/CHEOUS128/luojiafox/blob/e440b42bb629d571d6c5eee9546c8517628b6f3d/luojiamaster/使用说明.md) |
+| 完整复现指南 | 客户端README的开发者编译；旧ACE改动见本目录已有记录 | [e440b42原文](https://github.com/CHEOUS128/luojiafox/blob/e440b42bb629d571d6c5eee9546c8517628b6f3d/luojiamaster/完整复现指南.md) |
+| 客户端能力基线 | 客户端README的通信与显示边界、验证；历史更正见本索引 | [e440b42原文](https://github.com/CHEOUS128/luojiafox/blob/e440b42bb629d571d6c5eee9546c8517628b6f3d/luojiamaster/客户端能力基线.md) |
+| 局域网联调手册、现场施行手册 | 工具README的唯一接线主线、有线备选和排错 | [联调旧文](https://github.com/CHEOUS128/luojiafox/blob/e440b42bb629d571d6c5eee9546c8517628b6f3d/luojiamaster/局域网联调手册.md)、[现场旧文](https://github.com/CHEOUS128/luojiafox/blob/e440b42bb629d571d6c5eee9546c8517628b6f3d/luojiamaster/现场施行手册-四台电脑-WiFi版.md) |
+| 11-07交接快照、Codex旧提示词 | 当前README及各子系统README；旧指令不继续执行 | [快照](https://github.com/CHEOUS128/luojiafox/blob/e440b42bb629d571d6c5eee9546c8517628b6f3d/luojiamaster/交接快照-2026-11-07.md)、[旧提示词](https://github.com/CHEOUS128/luojiafox/blob/e440b42bb629d571d6c5eee9546c8517628b6f3d/luojiamaster/交接-Codex提示词.txt) |
+| 根docs两份整车说明 | [Jetson部署](../../autoaim/README.md)、[电控闭环](../../lower-machine/README.md)、当前客户端README | [11-12原文](https://github.com/CHEOUS128/luojiafox/blob/e440b42bb629d571d6c5eee9546c8517628b6f3d/docs/2026-11-12-实车成功版本.md)、[早期整车原文](https://github.com/CHEOUS128/luojiafox/blob/e440b42bb629d571d6c5eee9546c8517628b6f3d/docs/整车复现与历史实测.md) |
+
+11-15性能记录保存在 [精选数据](数据/client-performance-20261115.json) 和 [响应曲线](数据图/2026-11-15-客户端优化响应曲线.png)，一小时原组合验收的3项失败保留，不因整理改成通过。11-12稳定性报告只代表当时009264版本，其正式接入/升级操作待复测与后来的记录分别阅读。
+
+## 补充更正
+
+- 旧文中的“固定75Hz”改按当前代码解释为13 ms最短发送门限，实际频率依赖界面；订阅请求QoS0，发布使用QoS1，不能写成全部QoS0。
+- 旧文的CustomControl“10 B”有误，现代码为5×u16血量加3字节状态/计数，共13 B。
+- 队友画面1秒后标为非实时，超过5秒换占位提示；旧“始终保留最后一帧”的描述不再作为当前行为。
+- 主路VideoDecoder已补drain、EAGAIN及错误处理；“没有drain、必然terminate”是早期独立队友解码器的设计背景。
+- 下文“唯一还悬着的一跳”是旧阶段判断；11-12已定位云台阻塞发送残包，DMA后2391完整包通过，官方出画由CH确认。后两次CH340采集Overrun未计通过，用户决定暂不追查。
+- 当前是2026使用基础；2027 RMUL适配另行完成。UL/UC独立入口、共用底层及登录后按兵种切换已定方向，本轮尚未实现。
+
+---
+
 > **2026-11-15 整理：** 本轮客户端性能优化、实测数据和复核命令统一维护在 [客户端 README](../README.md)。不再新增逐次过程报告；以下历史档案原文保留。
 
 > **新增索引：2026-11-12 客户端视频稳定性修复** — [统一修复记录](2026-11-12-客户端视频稳定性修复.md)。四份旧版闪退已定位到同一处显示代码空对象调用；本机离线双路30分钟和20项故障恢复检查已通过；实车登录、升级操作尚未复测。源码、版本、离线命令、故障恢复和连续测试只维护这份记录。三路视频虽然分别解码，仍共用界面与 GPU，旧文中的“互不干扰”不再作为结论。

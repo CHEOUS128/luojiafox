@@ -1,3 +1,5 @@
+> **2026-11-16入口归拢：** 配套Keil工程、DMA三文件、硬件警告与实车证据只维护在 [下位机README](../README.md)和本目录已有DMA闭环记录；Jetson部署查 [自瞄README](../../autoaim/README.md)，Windows操作与组网查 [客户端README](../../luojiamaster/README.md)。旧根docs及客户端旧手册已合并，历史原文中的路径按当时版本阅读，需原文可查 [e440b42仓库快照](https://github.com/CHEOUS128/luojiafox/tree/e440b42bb629d571d6c5eee9546c8517628b6f3d)。下文历史正文不改。
+
 > **旧诊断入口已退役（2026-11-12）：** 旧`listen0310`、`serial_loop`、`inject0310`、`inject_h264`、`selfcheck`及其PowerShell辅助脚本、重复`mqtt_probe.py`从当前目录撤下；当前成功版不需要这些临时灌包/回环步骤。旧原文中的调用属于历史，可在Git提交`ed58658`查看对应文件。小份原始bin及离线抓包分析仍保留；完整新诊断和回归材料留在本机，必要数字已并入本次修复记录。
 
 > **2026-11-12 当前交付：** [云台视频 DMA 修复与实车闭环](2026-11-12-云台视频DMA修复与实车闭环.md)。电控已自行编译烧录，用户接回官方图传后确认画面正常并接受当前版本。
