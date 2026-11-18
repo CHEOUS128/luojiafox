@@ -120,6 +120,7 @@ public:
         DestroyDynamicTextureSet(custom_video_textures_);
         DestroyDynamicTextureSet(teammate_video_textures_);
         DestroyVulkanTexture(mini_map_texture_);
+        DestroyVulkanTexture(ul_map_texture_);
 
         ImGui_ImplVulkan_Shutdown();
         ImGui_ImplGlfw_Shutdown();
@@ -210,6 +211,8 @@ public:
                 return UploadDynamicTexture(custom_video_textures_, frame);
             case RoboGo::app::TextureSlot::TeammateVideo:
                 return UploadDynamicTexture(teammate_video_textures_, frame);
+            case RoboGo::app::TextureSlot::UlMap:
+                return UploadStaticTexture(ul_map_texture_, frame.Pixels(), frame.width, frame.height);
             case RoboGo::app::TextureSlot::MiniMap:
                 return UploadStaticTexture(mini_map_texture_, frame.Pixels(), frame.width, frame.height);
         }
@@ -217,6 +220,7 @@ public:
     }
 
     [[nodiscard]] bool UploadTexture(const RoboGo::app::TextureSlot slot, const RoboGo::resource::DecodedImage &image) override {
+        if (slot == RoboGo::app::TextureSlot::UlMap) return UploadStaticTexture(ul_map_texture_, image.pixels.data(), image.width, image.height);
         if (slot != RoboGo::app::TextureSlot::MiniMap) {
             return false;
         }
@@ -231,6 +235,8 @@ public:
                 return BuildTextureView(custom_video_textures_.textures[custom_video_textures_.current_index]);
             case RoboGo::app::TextureSlot::TeammateVideo:
                 return BuildTextureView(teammate_video_textures_.textures[teammate_video_textures_.current_index]);
+            case RoboGo::app::TextureSlot::UlMap:
+                return BuildTextureView(ul_map_texture_);
             case RoboGo::app::TextureSlot::MiniMap:
                 return BuildTextureView(mini_map_texture_);
         }
@@ -862,6 +868,7 @@ private:
     LinuxDynamicTextureSet custom_video_textures_;
     LinuxDynamicTextureSet teammate_video_textures_;
     LinuxVideoTexture mini_map_texture_;
+    LinuxVideoTexture ul_map_texture_;
     bool initialized_ = false;
     bool game_input_captured_ = false;
 };

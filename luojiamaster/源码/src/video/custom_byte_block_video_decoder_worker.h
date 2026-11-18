@@ -22,6 +22,7 @@ public:
     CustomByteBlockVideoDecoderWorker &operator=(CustomByteBlockVideoDecoderWorker &&) = delete;
 
     void enqueue_packet_bytes(std::span<const std::uint8_t> wire_bytes);
+    void restart_recording();
     void stop();
 
     // 纯观测计数（原子，供主线程每秒打印一次探针）：

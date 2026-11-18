@@ -6,14 +6,20 @@ namespace RoboGo::video {
                                            boost::asio::ip::udp::endpoint endpoint,
                                            const std::function<void(const AVFrame *frame)> &frame_callback,
                                            std::function<void(const std::vector<uint8_t> &frame)> raw_frame_handler)
-        : raw_frame_callback(std::move(raw_frame_handler)),
-          video_stream_receiver(io_context, endpoint, [this](const uint8_t *data, size_t size) {
-              // 接收到数据包之后送入分片管理
-              if (is_running.load(std::memory_order_acquire)) video_shards_manager.on_receive_shard(data, size);
-          }) {
+        : VideoStreamManager(frame_callback, std::move(raw_frame_handler)) {
+        video_stream_receiver = std::make_unique<io::VideoStreamReceiver>(io_context, endpoint,
+            [this](const uint8_t *data, size_t size) { receive_datagram(data, size); });
         SPDLOG_INFO("创建视频流管理器 endpoint={}:{}",
                     endpoint.address().to_string(),
                     endpoint.port());
+    }
+
+    void VideoStreamManager::receive_datagram(const uint8_t *data, size_t size) {
+        if (is_running.load(std::memory_order_acquire)) video_shards_manager.on_receive_shard(data, size);
+    }
+
+    VideoStreamManager::VideoStreamManager(const FrameHandler &frame_callback, RawFrameHandler raw_frame_handler)
+        : raw_frame_callback(std::move(raw_frame_handler)) {
         video_shards_manager.set_reset_callback([this]() {
             stream_ready = false;
             if (video_decoder != nullptr) video_decoder->reset();
@@ -77,7 +83,7 @@ namespace RoboGo::video {
 
     void VideoStreamManager::stop() {
         SPDLOG_INFO("收到视频流管理器停止请求");
-        video_stream_receiver.stop();
+        if (video_stream_receiver) video_stream_receiver->stop();
         is_running.store(false, std::memory_order_relaxed);
         video_shards_manager.stop();
         if (decode_thread.joinable()) {

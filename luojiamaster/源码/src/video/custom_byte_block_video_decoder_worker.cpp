@@ -40,6 +40,14 @@ void CustomByteBlockVideoDecoderWorker::enqueue_packet_bytes(std::span<const std
     queue_cv_.notify_one();
 }
 
+void CustomByteBlockVideoDecoderWorker::restart_recording() {
+    std::deque<std::vector<std::uint8_t>> old_packets;
+    std::lock_guard lock(queue_mutex_);
+    old_packets.swap(packet_queue_);
+    packets_dropped_.fetch_add(old_packets.size(), std::memory_order_relaxed);
+    reset_requested_ = true;
+}
+
 void CustomByteBlockVideoDecoderWorker::stop() {
     stop_requested_.store(true, std::memory_order_release);
     std::deque<std::vector<std::uint8_t>> discarded;

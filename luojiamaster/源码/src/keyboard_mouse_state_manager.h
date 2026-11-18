@@ -6,6 +6,8 @@
 
 bool is_in_game_mode();
 
+void reset_client_session_input();
+
 void enter_game_mode();
 
 void set_game_input_capture_handler(std::function<void(bool enabled)> handler);

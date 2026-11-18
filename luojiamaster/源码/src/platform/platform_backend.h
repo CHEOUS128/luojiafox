@@ -7,6 +7,8 @@
 
 namespace RoboGo::platform {
 
+enum class DesktopWindowKind { Classic, EventPicker, League, Cup };
+
 struct RenderDiagnostics {
     std::uint64_t frames_submitted = 0;
     std::uint64_t uploads_succeeded = 0;
@@ -44,6 +46,8 @@ public:
     [[nodiscard]] virtual RenderDiagnostics GetRenderDiagnostics() const { return {}; }
 
     virtual void SetGameInputCapture(bool enabled) = 0;
+    virtual void SetMatchDisplayShortcuts(bool) {}
+    virtual void SetDesktopWindowKind(DesktopWindowKind) {}
 
     [[nodiscard]] virtual bool UploadTexture(app::TextureSlot slot, const app::VideoFrame &frame) = 0;
 

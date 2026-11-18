@@ -37,10 +37,10 @@ struct TeammateViewState {
 bool ShowTeammateViewport(const TeammateViewState &view,
                           const ImVec2 &pos,
                           const ImVec2 &size,
-                          bool collapsed);
+                          bool alliance, bool local_trial);
 
 // L 模式：把队友画面画到主画面上（viewport 全屏，不画背景）。
-void ShowTeammateFullscreen(const TeammateViewState &view);
+void ShowTeammateFullscreen(const TeammateViewState &view, bool menu_open);
 
 // 折叠条高度（像素）
 float TeammateCollapsedHeight();

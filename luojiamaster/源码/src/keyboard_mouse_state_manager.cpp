@@ -21,6 +21,18 @@ static std::optional<std::chrono::steady_clock::time_point> offline_input_test_n
 // A minimum interval, not a timer: actual rate is also limited by UI frame rate.
 constexpr std::chrono::milliseconds publish_interval(13);
 
+void reset_client_session_input() {
+    game_mode_enabled = false;
+    marker_mode_enabled = false;
+    marker_mode_include_sentry = true;
+    was_in_game_mode = false;
+    mouse_x = mouse_y = mouse_z = 0;
+    raw_mouse_dx = raw_mouse_dy = 0;
+    use_raw_mouse = false;
+    last_sampled_imgui_frame = -1;
+    last_publish_time = {};
+}
+
 void add_raw_mouse_delta(float dx, float dy) {
     raw_mouse_dx += dx;
     raw_mouse_dy += dy;

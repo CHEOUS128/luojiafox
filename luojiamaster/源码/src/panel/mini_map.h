@@ -7,3 +7,5 @@ void ShowMiniMap(const State &state,
                  RoboGo::io::MqttClient &mqtt_client,
                  ImTextureRef mini_map_texture_ref,
                  const ImVec2 &mini_map_texture_size);
+
+void ShowAllianceVenueMap(ImTextureRef texture, const ImVec2 &size, bool blue);

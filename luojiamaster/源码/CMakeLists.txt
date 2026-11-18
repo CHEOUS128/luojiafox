@@ -200,6 +200,8 @@ function(add_embedded_resource input_relative_path generated_name)
 endfunction()
 
 set(EMBEDDED_RESOURCE_SOURCES "")
+add_embedded_resource("tests/fixtures/双路视频样本.bin" "embedded_ul_capture")
+add_embedded_resource("resources/rmul-2027-3v3-base.png" "embedded_ul_map")
 add_embedded_resource("resources/map.png" "embedded_map_png")
 add_embedded_resource("resources/zcool.ttf" "embedded_zcool_font")
 add_embedded_resource("proto/messages.proto" "embedded_messages_proto")
@@ -208,6 +210,7 @@ add_embedded_resource("proto/messages.proto" "embedded_messages_proto")
 add_executable(luojiamaster WIN32
     src/main.cpp
     src/app/application.cpp
+    src/app/ul_preview.cpp
     src/app/video_stability_test.cpp
     src/app/imgui_setup.cpp
     src/custom_control_payload.cpp
@@ -321,7 +324,8 @@ endif()
 if(BUILD_TESTING)
     add_executable(rgba_converter_test tests/rgba_converter_test.cpp src/video/rgba_frame_converter.cpp)
     add_executable(input_response_test tests/input_response_test.cpp src/keyboard_mouse_state_manager.cpp gen/messages.pb.cc)
-    foreach(test_target rgba_converter_test input_response_test)
+    add_executable(match_session_test tests/match_session_test.cpp gen/messages.pb.cc)
+    foreach(test_target rgba_converter_test input_response_test match_session_test)
         target_include_directories(${test_target} PRIVATE include gen src)
         target_precompile_headers(${test_target} PRIVATE include/pch.h)
         target_link_libraries(${test_target} PRIVATE spdlog::spdlog utf8_validity protobuf::libprotobuf-lite

@@ -1,5 +1,6 @@
 #ifdef _WIN32
 #include "platform/platform_backend.h"
+#include "platform/window_display_ime.h"
 #include "platform/imgui_dx12_backend.h"
 #include "app/imgui_setup.h"
 #include "keyboard_mouse_state_manager.h"
@@ -7,13 +8,17 @@
 #include "resources.h"
 #include <wrl/client.h>
 #include <d3d12sdklayers.h>
+#pragma comment(lib, "imm32")
 
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND, UINT, WPARAM, LPARAM);
 
 namespace {
 using Microsoft::WRL::ComPtr;
+using RoboGo::platform::DesktopWindowKind;
 using Clock = std::chrono::steady_clock;
 constexpr unsigned kFrames = 2, kBackBuffers = 2, kDescriptors = 64;
+struct DisplayKey { UINT vkey; ImGuiKey imgui_key; };
+constexpr std::array<DisplayKey, 3> kDisplayKeys{{{'H', ImGuiKey_H}, {'I', ImGuiKey_I}, {'K', ImGuiKey_K}}};
 
 struct FrameContext {
     ComPtr<ID3D12CommandAllocator> allocator;
@@ -100,6 +105,7 @@ public:
         if (offline_test_ && hwnd_) ShowWindow(hwnd_, action == 1 ? SW_MAXIMIZE : action == 2 ? SW_MINIMIZE : SW_RESTORE);
     }
     RoboGo::platform::RenderDiagnostics GetRenderDiagnostics() const override { return diagnostics_; }
+    void SetDesktopWindowKind(DesktopWindowKind kind) override { window_kind_ = kind; }
 
     bool Initialize() override {
         ImGui_ImplWin32_EnableDpiAwareness();
@@ -109,17 +115,37 @@ public:
                          L"luojiamaster", nullptr};
         if (!RegisterClassExW(&window_class_)) { RecordFailure("register_window", HRESULT_FROM_WIN32(GetLastError())); return false; }
         window_class_registered_ = true;
+        RECT initial{100, 100, 1380, 900};
+        if (UsesPerMonitorLayout()) {
+            MONITORINFO monitor{sizeof(MONITORINFO)};
+            if (GetMonitorInfoW(MonitorFromPoint({100, 100}, MONITOR_DEFAULTTOPRIMARY), &monitor)) {
+                const RECT &work = monitor.rcWork;
+                const LONG margin = std::min({static_cast<LONG>(12.f * main_scale_),
+                                              (work.right - work.left) / 8, (work.bottom - work.top) / 8});
+                const LONG width = std::min(1280L, work.right - work.left - 2 * margin);
+                const LONG height = std::min(800L, work.bottom - work.top - 2 * margin);
+                initial.left = std::clamp(100L, work.left + margin, work.right - margin - width);
+                initial.top = std::clamp(100L, work.top + margin, work.bottom - margin - height);
+                initial.right = initial.left + width;
+                initial.bottom = initial.top + height;
+            }
+        }
         hwnd_ = CreateWindowW(window_class_.lpszClassName, L"luojiamaster", WS_OVERLAPPEDWINDOW,
-                              100, 100, 1280, 800, nullptr, nullptr, window_class_.hInstance, this);
+                              initial.left, initial.top, initial.right - initial.left, initial.bottom - initial.top,
+                              nullptr, nullptr, window_class_.hInstance, this);
         if (!hwnd_) { RecordFailure("create_window", HRESULT_FROM_WIN32(GetLastError())); CleanupWindow(); return false; }
         if (!CreateGpu()) { CleanupGpu(true); CleanupWindow(); return false; }
         ShowWindow(hwnd_, SW_SHOWDEFAULT); UpdateWindow(hwnd_);
-        RoboGo::app::InitializeCommonImGui(main_scale_);
+        RoboGo::app::InitializeCommonImGui(UsesPerMonitorLayout() ? 1.0f : main_scale_);
         context_initialized_ = true;
         if (!ImGui_ImplWin32_Init(hwnd_)) { RecordFailure("imgui_win32", E_FAIL); Shutdown(); return false; }
         win32_initialized_ = true;
         if (!InitializeRenderer()) { Shutdown(); return false; }
         RoboGo::app::LoadEmbeddedImGuiFont();
+        if (UsesPerMonitorLayout()) {
+            base_window_style_ = ImGui::GetStyle();
+            UpdateWindowDpi(ImGui_ImplWin32_GetDpiScaleForHwnd(hwnd_));
+        }
         initialized_ = true;
         SPDLOG_INFO("GPU persistent renderer ready: one queue, {} frame contexts, 2 slots/stream", kFrames);
         return true;
@@ -144,11 +170,24 @@ public:
     bool ProcessEvents() override {
         MSG message{};
         while (PeekMessageW(&message, nullptr, 0U, 0U, PM_REMOVE)) {
+            if (HandleMatchDisplayKey(message)) continue;
             TranslateMessage(&message); DispatchMessageW(&message);
             if (message.message == WM_QUIT) should_close_ = true;
         }
         if (!should_close_) MaintainGpu();
         return !should_close_;
+    }
+
+    void SetMatchDisplayShortcuts(bool enabled) override {
+        enabled = enabled && ImGui::GetCurrentContext() && !ImGui::GetIO().WantTextInput;
+        if (display_shortcuts_ && !enabled && ImGui::GetCurrentContext()) {
+            for (size_t i = 0; i < display_key_down_.size(); ++i) {
+                if (display_key_down_[i]) ImGui::GetIO().AddKeyEvent(kDisplayKeys[i].imgui_key, false);
+            }
+            display_key_down_.fill(false);
+        }
+        display_shortcuts_ = enabled;
+        window_ime_.SetDisplayOnly(hwnd_, enabled && GetFocus() == hwnd_);
     }
 
     bool BeginFrame() override {
@@ -235,7 +274,7 @@ public:
         return Upload(slot, frame.Pixels(), frame.ByteSize(), frame.width, frame.height, frame.RowPitch());
     }
     bool UploadTexture(RoboGo::app::TextureSlot slot, const RoboGo::resource::DecodedImage &image) override {
-        if (slot != RoboGo::app::TextureSlot::MiniMap) return false;
+        if (slot != RoboGo::app::TextureSlot::MiniMap && slot != RoboGo::app::TextureSlot::UlMap) return false;
         return Upload(slot, image.pixels.data(), image.pixels.size(), image.width, image.height);
     }
     RoboGo::app::TextureView GetTextureView(RoboGo::app::TextureSlot slot) const override {
@@ -256,6 +295,7 @@ private:
             case RoboGo::app::TextureSlot::CustomVideo: return 1;
             case RoboGo::app::TextureSlot::MiniMap: return 2;
             case RoboGo::app::TextureSlot::TeammateVideo: return 3;
+            case RoboGo::app::TextureSlot::UlMap: return 4;
         }
         return 0;
     }
@@ -359,9 +399,23 @@ private:
     void CleanupWindow();
     static LRESULT WINAPI StaticWndProc(HWND, UINT, WPARAM, LPARAM);
     LRESULT WndProc(HWND, UINT, WPARAM, LPARAM);
+    bool HandleMatchDisplayKey(const MSG &message);
+    void ToggleBorderless();
+    bool UsesPerMonitorLayout() const {
+        return window_kind_ == DesktopWindowKind::League || window_kind_ == DesktopWindowKind::EventPicker;
+    }
+    void UpdateWindowDpi(float scale);
+    DesktopWindowKind window_kind_ = DesktopWindowKind::Classic;
+    bool borderless_ = false;
+    LONG_PTR windowed_style_ = 0;
+    WINDOWPLACEMENT windowed_placement_{sizeof(WINDOWPLACEMENT)};
+    std::optional<ImGuiStyle> base_window_style_;
+    bool display_shortcuts_ = false;
+    std::array<bool, kDisplayKeys.size()> display_key_down_{};
+    WindowDisplayIme window_ime_;
 
     std::array<FrameContext, kFrames> frames_;
-    std::array<TextureSet, 4> textures_;
+    std::array<TextureSet, 5> textures_;
     std::vector<uint8_t> map_pixels_;
     int map_width_ = 0, map_height_ = 0;
     ComPtr<ID3D12Device> device_;
@@ -723,8 +777,71 @@ void WindowsPlatformBackend::CleanupGpu(bool safe) {
 }
 
 void WindowsPlatformBackend::CleanupWindow() {
+    window_ime_.Restore();
+    display_shortcuts_ = false;
+    display_key_down_.fill(false);
     if (hwnd_) { DestroyWindow(hwnd_); hwnd_ = nullptr; }
     if (window_class_registered_) { UnregisterClassW(window_class_.lpszClassName, window_class_.hInstance); window_class_registered_ = false; }
+}
+
+bool WindowsPlatformBackend::HandleMatchDisplayKey(const MSG &message) {
+    if (!display_shortcuts_ || message.hwnd != hwnd_ ||
+        (message.message != WM_KEYDOWN && message.message != WM_KEYUP) ||
+        GetFocus() != hwnd_ || !ImGui::GetCurrentContext() || ImGui::GetIO().WantTextInput)
+        return false;
+    UINT key = static_cast<UINT>(message.wParam);
+    if (key == VK_PROCESSKEY) {
+        // The IME's original key is available only before TranslateMessage.
+        key = message.message == WM_KEYDOWN ? ImmGetVirtualKey(hwnd_) : 0;
+        if (!key || key == VK_PROCESSKEY) {
+            const UINT scan = (message.lParam >> 16) & 0xff;
+            key = MapVirtualKeyExW(scan, MAPVK_VSC_TO_VK_EX, GetKeyboardLayout(0));
+        }
+    }
+    const auto binding = std::find_if(kDisplayKeys.begin(), kDisplayKeys.end(),
+                                      [key](const DisplayKey &item) { return item.vkey == key; });
+    if (binding == kDisplayKeys.end()) return false;
+    bool &held = display_key_down_[binding - kDisplayKeys.begin()];
+    if (message.message == WM_KEYDOWN &&
+        ((GetKeyState(VK_SHIFT) | GetKeyState(VK_CONTROL) | GetKeyState(VK_MENU) |
+          GetKeyState(VK_LWIN) | GetKeyState(VK_RWIN)) & 0x8000)) return false;
+    if (message.message == WM_KEYUP && !held) return false;
+    held = message.message == WM_KEYDOWN;
+    // Deliver the ordinary key event once, without generating WM_CHAR or IME composition.
+    ImGui_ImplWin32_WndProcHandler(hwnd_, message.message, key, message.lParam);
+    return true;
+}
+
+void WindowsPlatformBackend::UpdateWindowDpi(float scale) {
+    if (!base_window_style_ || scale <= 0.f) return;
+    main_scale_ = scale;
+    // Always apply the new monitor DPI to the original style. Scaling an already
+    // rounded style on every monitor change gradually distorts padding and spacing.
+    auto &style = ImGui::GetStyle();
+    style = *base_window_style_;
+    style.ScaleAllSizes(scale);
+    style.FontScaleDpi = scale;
+}
+
+void WindowsPlatformBackend::ToggleBorderless() {
+    constexpr UINT resize_flags = SWP_NOACTIVATE | SWP_NOZORDER | SWP_NOOWNERZORDER | SWP_FRAMECHANGED;
+    if (!borderless_) {
+        MONITORINFO monitor{sizeof(MONITORINFO)};
+        if (!GetMonitorInfoW(MonitorFromWindow(hwnd_, MONITOR_DEFAULTTONEAREST), &monitor) ||
+            !GetWindowPlacement(hwnd_, &windowed_placement_)) return;
+        windowed_style_ = GetWindowLongPtrW(hwnd_, GWL_STYLE);
+        const auto style = (windowed_style_ & ~(WS_OVERLAPPEDWINDOW | WS_MAXIMIZE | WS_MINIMIZE)) | WS_POPUP;
+        if (!SetWindowLongPtrW(hwnd_, GWL_STYLE, style)) return;
+        borderless_ = true;
+        const auto &r = monitor.rcMonitor;
+        if (SetWindowPos(hwnd_, nullptr, r.left, r.top, r.right - r.left, r.bottom - r.top, resize_flags)) return;
+        // If resizing failed, restore the actual window instead of leaving a
+        // half-switched title-less window with the old dimensions.
+    }
+    if (!SetWindowLongPtrW(hwnd_, GWL_STYLE, windowed_style_)) return;
+    borderless_ = false;
+    SetWindowPos(hwnd_, nullptr, 0, 0, 0, 0, resize_flags | SWP_NOSIZE | SWP_NOMOVE);
+    SetWindowPlacement(hwnd_, &windowed_placement_);
 }
 
 LRESULT WINAPI WindowsPlatformBackend::StaticWndProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam) {
@@ -738,6 +855,40 @@ LRESULT WINAPI WindowsPlatformBackend::StaticWndProc(HWND hwnd, UINT message, WP
 }
 
 LRESULT WindowsPlatformBackend::WndProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam) {
+    // Consume both halves of F11 at the window boundary; key repeat must not toggle twice.
+    const bool match_window = window_kind_ == DesktopWindowKind::League || window_kind_ == DesktopWindowKind::Cup;
+    if (match_window && wparam == VK_F11 && (message == WM_KEYDOWN || message == WM_KEYUP)) {
+        if (message == WM_KEYDOWN && !(lparam & (1L << 30))) {
+            ToggleBorderless();
+            // A new window center is not a user mouse movement.
+            if (game_input_captured_ && GetForegroundWindow() == hwnd) {
+                RECT client{};
+                if (GetClientRect(hwnd, &client) && client.right > 0 && client.bottom > 0) {
+                    POINT origin{};
+                    if (ClientToScreen(hwnd, &origin)) {
+                        OffsetRect(&client, origin.x, origin.y);
+                        ClipCursor(&client);
+                        SetCursorPos(client.left + (client.right - client.left) / 2,
+                                     client.top + (client.bottom - client.top) / 2);
+                    }
+                }
+            }
+        }
+        return 0;
+    }
+    if (UsesPerMonitorLayout() && message == WM_DPICHANGED) {
+        UpdateWindowDpi(static_cast<float>(HIWORD(wparam)) / 96.f);
+        RECT rect = *reinterpret_cast<const RECT *>(lparam);
+        MONITORINFO monitor{sizeof(MONITORINFO)};
+        if (borderless_ && GetMonitorInfoW(MonitorFromRect(&rect, MONITOR_DEFAULTTONEAREST), &monitor))
+            rect = monitor.rcMonitor;
+        SetWindowPos(hwnd, nullptr, rect.left, rect.top, rect.right - rect.left, rect.bottom - rect.top,
+                     SWP_NOZORDER | SWP_NOACTIVATE);
+        return 0;
+    }
+    if (message == WM_KILLFOCUS || message == WM_DESTROY) window_ime_.Restore();
+    if (message == WM_SETFOCUS && display_shortcuts_ && ImGui::GetCurrentContext())
+        window_ime_.SetDisplayOnly(hwnd, !ImGui::GetIO().WantTextInput);
     if (ImGui::GetCurrentContext() && ImGui_ImplWin32_WndProcHandler(hwnd, message, wparam, lparam)) return TRUE;
     switch (message) {
         case WM_SIZE:

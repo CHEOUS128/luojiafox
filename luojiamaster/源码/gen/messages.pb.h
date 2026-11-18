@@ -5893,6 +5893,8 @@ class  PROTOBUF_FUTURE_ADD_EARLY_WARN_UNUSED GlobalUnitStatus final : public ::g
     kEnemyOutpostStatusFieldNumber = 10,
     kTotalDamageAllyFieldNumber = 13,
     kTotalDamageEnemyFieldNumber = 14,
+    kTotalCPAllyFieldNumber = 15,
+    kTotalCPEnemyFieldNumber = 16,
   };
   // repeated uint32 robot_health = 11;
   [[nodiscard]] int robot_health_size()
@@ -6078,11 +6080,35 @@ class  PROTOBUF_FUTURE_ADD_EARLY_WARN_UNUSED GlobalUnitStatus final : public ::g
   void _internal_set_total_damage_enemy(::uint32_t value);
 
   public:
+  // optional uint32 total_CP_ally = 15;
+  [[nodiscard]] bool has_total_cp_ally()
+      const;
+  void clear_total_cp_ally() ;
+  [[nodiscard]] ::uint32_t total_cp_ally() const;
+  void set_total_cp_ally(::uint32_t value);
+
+  private:
+  ::uint32_t _internal_total_cp_ally() const;
+  void _internal_set_total_cp_ally(::uint32_t value);
+
+  public:
+  // optional uint32 total_CP_enemy = 16;
+  [[nodiscard]] bool has_total_cp_enemy()
+      const;
+  void clear_total_cp_enemy() ;
+  [[nodiscard]] ::uint32_t total_cp_enemy() const;
+  void set_total_cp_enemy(::uint32_t value);
+
+  private:
+  ::uint32_t _internal_total_cp_enemy() const;
+  void _internal_set_total_cp_enemy(::uint32_t value);
+
+  public:
   // @@protoc_insertion_point(class_scope:GlobalUnitStatus)
  private:
   class _Internal;
   using ParseTableT_ =
-      ::google::protobuf::internal::TcParseTable<4, 14,
+      ::google::protobuf::internal::TcParseTable<4, 16,
                           0, 0,
                           2>;
   static constexpr ParseTableT_ InternalGenerateParseTable_(
@@ -6127,6 +6153,8 @@ class  PROTOBUF_FUTURE_ADD_EARLY_WARN_UNUSED GlobalUnitStatus final : public ::g
     ::uint32_t enemy_outpost_status_;
     ::uint32_t total_damage_ally_;
     ::uint32_t total_damage_enemy_;
+    ::uint32_t total_cp_ally_;
+    ::uint32_t total_cp_enemy_;
     PROTOBUF_TSAN_DECLARE_MEMBER
   };
   union { Impl_ _impl_; };
@@ -11103,6 +11131,62 @@ inline ::uint32_t GlobalUnitStatus::_internal_total_damage_enemy() const {
 inline void GlobalUnitStatus::_internal_set_total_damage_enemy(::uint32_t value) {
   ::google::protobuf::internal::TSanWrite(&_impl_);
   _impl_.total_damage_enemy_ = value;
+}
+
+// optional uint32 total_CP_ally = 15;
+inline bool GlobalUnitStatus::has_total_cp_ally() const {
+  bool value = CheckHasBit(_impl_._has_bits_[0], 0x00004000U);
+  return value;
+}
+inline void GlobalUnitStatus::clear_total_cp_ally() {
+  ::google::protobuf::internal::TSanWrite(&_impl_);
+  _impl_.total_cp_ally_ = 0u;
+  ClearHasBit(_impl_._has_bits_[0], 0x00004000U);
+}
+inline ::uint32_t GlobalUnitStatus::total_cp_ally() const {
+  // @@protoc_insertion_point(field_get:GlobalUnitStatus.total_CP_ally)
+  return _internal_total_cp_ally();
+}
+inline void GlobalUnitStatus::set_total_cp_ally(::uint32_t value) {
+  _internal_set_total_cp_ally(value);
+  SetHasBit(_impl_._has_bits_[0], 0x00004000U);
+  // @@protoc_insertion_point(field_set:GlobalUnitStatus.total_CP_ally)
+}
+inline ::uint32_t GlobalUnitStatus::_internal_total_cp_ally() const {
+  ::google::protobuf::internal::TSanRead(&_impl_);
+  return _impl_.total_cp_ally_;
+}
+inline void GlobalUnitStatus::_internal_set_total_cp_ally(::uint32_t value) {
+  ::google::protobuf::internal::TSanWrite(&_impl_);
+  _impl_.total_cp_ally_ = value;
+}
+
+// optional uint32 total_CP_enemy = 16;
+inline bool GlobalUnitStatus::has_total_cp_enemy() const {
+  bool value = CheckHasBit(_impl_._has_bits_[0], 0x00008000U);
+  return value;
+}
+inline void GlobalUnitStatus::clear_total_cp_enemy() {
+  ::google::protobuf::internal::TSanWrite(&_impl_);
+  _impl_.total_cp_enemy_ = 0u;
+  ClearHasBit(_impl_._has_bits_[0], 0x00008000U);
+}
+inline ::uint32_t GlobalUnitStatus::total_cp_enemy() const {
+  // @@protoc_insertion_point(field_get:GlobalUnitStatus.total_CP_enemy)
+  return _internal_total_cp_enemy();
+}
+inline void GlobalUnitStatus::set_total_cp_enemy(::uint32_t value) {
+  _internal_set_total_cp_enemy(value);
+  SetHasBit(_impl_._has_bits_[0], 0x00008000U);
+  // @@protoc_insertion_point(field_set:GlobalUnitStatus.total_CP_enemy)
+}
+inline ::uint32_t GlobalUnitStatus::_internal_total_cp_enemy() const {
+  ::google::protobuf::internal::TSanRead(&_impl_);
+  return _impl_.total_cp_enemy_;
+}
+inline void GlobalUnitStatus::_internal_set_total_cp_enemy(::uint32_t value) {
+  ::google::protobuf::internal::TSanWrite(&_impl_);
+  _impl_.total_cp_enemy_ = value;
 }
 
 // -------------------------------------------------------------------

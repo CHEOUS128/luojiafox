@@ -1,4 +1,5 @@
 #include "log_panel.h"
+#include "hud_text.h"
 
 namespace {
 
@@ -29,7 +30,9 @@ void ShowLogPanel(const State &state) {
         return;
     }
 
-    ImGui::Text("本车日志 + 系统日志");
+    const bool alliance = state.competition == RoboGo::app::Competition::Ul2027;
+    if (alliance) hud::Label("本车日志 + 系统日志");
+    else ImGui::TextUnformatted("本车日志 + 系统日志");
 
     std::vector<CombinedLogLine> combined_logs;
     combined_logs.reserve(state.vehicle_logs.size() + state.system_logs.size());
@@ -43,16 +46,23 @@ void ShowLogPanel(const State &state) {
         return lhs.entry->sequence < rhs.entry->sequence;
     });
 
-    ImGui::BeginChild("CombinedLogs", ImVec2(0, 0), ImGuiChildFlags_Borders);
+    ImGui::BeginChild("CombinedLogs", ImVec2(0, 0), alliance ? ImGuiChildFlags_None : ImGuiChildFlags_Borders);
     if (combined_logs.empty()) {
-        ImGui::TextDisabled("暂无日志");
+        if (alliance) hud::Label("暂无日志", hud::muted);
+        else ImGui::TextDisabled("暂无日志");
     } else {
         static uint64_t last_rendered_sequence = 0;
         const uint64_t newest_sequence = combined_logs.back().entry->sequence;
         ImGui::PushTextWrapPos(0.0f);
         for (const CombinedLogLine &line: combined_logs) {
             const ImVec4 color = GetLogTextColor(*line.entry);
-            ImGui::TextColored(color, "[%s][%s] %s", line.entry->time, line.source, line.entry->text.c_str());
+            if (alliance) {
+                const char *text;
+                ImFormatStringToTempBuffer(&text, nullptr, "[%s][%s] %s", line.entry->time, line.source, line.entry->text.c_str());
+                hud::Label(text, ImGui::GetColorU32(color), true);
+            } else {
+                ImGui::TextColored(color, "[%s][%s] %s", line.entry->time, line.source, line.entry->text.c_str());
+            }
         }
         ImGui::PopTextWrapPos();
         if (newest_sequence != last_rendered_sequence) {

@@ -3599,11 +3599,11 @@ constexpr GlobalUnitStatus::ParseTableT_ GlobalUnitStatus::InternalGenerateParse
     {
       PROTOBUF_FIELD_OFFSET(GlobalUnitStatus, _impl_._has_bits_),
       0, // no _extensions_
-      14, 120,  // max_field_number, fast_idx_mask
+      16, 120,  // max_field_number, fast_idx_mask
       offsetof(ParseTableT_, field_lookup_table),
-      4294950912,  // skipmap
+      4294901760,  // skipmap
       offsetof(ParseTableT_, field_entries),
-      14,  // num_field_entries
+      16,  // num_field_entries
       0,  // num_aux_entries
       offsetof(ParseTableT_, field_names),  // no aux_entries
       class_data,
@@ -3613,7 +3613,10 @@ constexpr GlobalUnitStatus::ParseTableT_ GlobalUnitStatus::InternalGenerateParse
       ::_pbi::TcParser::GetTable<::GlobalUnitStatus>(),  // to_prefetch
       #endif  // PROTOBUF_PREFETCH_PARSE_TABLE
     }, {{
-      {::_pbi::TcParser::MiniParse, {}},
+      // optional uint32 total_CP_enemy = 16;
+      {::_pbi::TcParser::FastV32S2,
+       {384, 15, 0,
+        PROTOBUF_FIELD_OFFSET(GlobalUnitStatus, _impl_.total_cp_enemy_)}},
       // optional uint32 base_health = 1;
       {::_pbi::TcParser::FastV32S1,
        {8, 2, 0,
@@ -3670,7 +3673,10 @@ constexpr GlobalUnitStatus::ParseTableT_ GlobalUnitStatus::InternalGenerateParse
       {::_pbi::TcParser::FastV32S1,
        {112, 13, 0,
         PROTOBUF_FIELD_OFFSET(GlobalUnitStatus, _impl_.total_damage_enemy_)}},
-      {::_pbi::TcParser::MiniParse, {}},
+      // optional uint32 total_CP_ally = 15;
+      {::_pbi::TcParser::FastV32S1,
+       {120, 14, 0,
+        PROTOBUF_FIELD_OFFSET(GlobalUnitStatus, _impl_.total_cp_ally_)}},
     }}, {{
       65535, 65535
     }}, {{
@@ -3702,6 +3708,10 @@ constexpr GlobalUnitStatus::ParseTableT_ GlobalUnitStatus::InternalGenerateParse
       {PROTOBUF_FIELD_OFFSET(GlobalUnitStatus, _impl_.total_damage_ally_), _Internal::kHasBitsOffset + 12, 0, (0 | ::_fl::kFcOptional | ::_fl::kUInt32)},
       // optional uint32 total_damage_enemy = 14;
       {PROTOBUF_FIELD_OFFSET(GlobalUnitStatus, _impl_.total_damage_enemy_), _Internal::kHasBitsOffset + 13, 0, (0 | ::_fl::kFcOptional | ::_fl::kUInt32)},
+      // optional uint32 total_CP_ally = 15;
+      {PROTOBUF_FIELD_OFFSET(GlobalUnitStatus, _impl_.total_cp_ally_), _Internal::kHasBitsOffset + 14, 0, (0 | ::_fl::kFcOptional | ::_fl::kUInt32)},
+      // optional uint32 total_CP_enemy = 16;
+      {PROTOBUF_FIELD_OFFSET(GlobalUnitStatus, _impl_.total_cp_enemy_), _Internal::kHasBitsOffset + 15, 0, (0 | ::_fl::kFcOptional | ::_fl::kUInt32)},
     }},
     // no aux_entries
     {{
@@ -3737,7 +3747,9 @@ inline constexpr GlobalUnitStatus::Impl_::Impl_(
         enemy_outpost_health_{0u},
         enemy_outpost_status_{0u},
         total_damage_ally_{0u},
-        total_damage_enemy_{0u} {}
+        total_damage_enemy_{0u},
+        total_cp_ally_{0u},
+        total_cp_enemy_{0u} {}
 
 template <typename>
 constexpr GlobalUnitStatus::GlobalUnitStatus(::_pbi::ConstantInitialized,
@@ -8847,9 +8859,9 @@ GlobalUnitStatus::GlobalUnitStatus(
                offsetof(Impl_, base_health_),
            reinterpret_cast<const char*>(&from._impl_) +
                offsetof(Impl_, base_health_),
-           offsetof(Impl_, total_damage_enemy_) -
+           offsetof(Impl_, total_cp_enemy_) -
                offsetof(Impl_, base_health_) +
-               sizeof(Impl_::total_damage_enemy_));
+               sizeof(Impl_::total_cp_enemy_));
 
   // @@protoc_insertion_point(copy_constructor:GlobalUnitStatus)
 }
@@ -8875,9 +8887,9 @@ inline void GlobalUnitStatus::SharedCtor(::_pb::Arena* PROTOBUF_NULLABLE arena) 
   ::memset(reinterpret_cast<char*>(&_impl_) +
                offsetof(Impl_, base_health_),
            0,
-           offsetof(Impl_, total_damage_enemy_) -
+           offsetof(Impl_, total_cp_enemy_) -
                offsetof(Impl_, base_health_) +
-               sizeof(Impl_::total_damage_enemy_));
+               sizeof(Impl_::total_cp_enemy_));
 }
 GlobalUnitStatus::~GlobalUnitStatus() {
   // @@protoc_insertion_point(destructor:GlobalUnitStatus)
@@ -8936,10 +8948,10 @@ PROTOBUF_NOINLINE void GlobalUnitStatus::Clear() {
         reinterpret_cast<char*>(&_impl_.enemy_base_health_) -
         reinterpret_cast<char*>(&_impl_.base_health_)) + sizeof(_impl_.enemy_base_health_));
   }
-  if (BatchCheckHasBit(cached_has_bits, 0x00003f00U)) {
+  if (BatchCheckHasBit(cached_has_bits, 0x0000ff00U)) {
     ::memset(&_impl_.enemy_base_status_, 0, static_cast<::size_t>(
-        reinterpret_cast<char*>(&_impl_.total_damage_enemy_) -
-        reinterpret_cast<char*>(&_impl_.enemy_base_status_)) + sizeof(_impl_.total_damage_enemy_));
+        reinterpret_cast<char*>(&_impl_.total_cp_enemy_) -
+        reinterpret_cast<char*>(&_impl_.enemy_base_status_)) + sizeof(_impl_.total_cp_enemy_));
   }
   _impl_._has_bits_.Clear();
   _internal_metadata_.Clear<::std::string>();
@@ -9070,6 +9082,20 @@ PROTOBUF_NOINLINE void GlobalUnitStatus::Clear() {
         14, this_._internal_total_damage_enemy(), target);
   }
 
+  // optional uint32 total_CP_ally = 15;
+  if (CheckHasBit(cached_has_bits, 0x00004000U)) {
+    target = stream->EnsureSpace(target);
+    target = ::_pbi::WireFormatLite::WriteUInt32ToArray(
+        15, this_._internal_total_cp_ally(), target);
+  }
+
+  // optional uint32 total_CP_enemy = 16;
+  if (CheckHasBit(cached_has_bits, 0x00008000U)) {
+    target = stream->EnsureSpace(target);
+    target = ::_pbi::WireFormatLite::WriteUInt32ToArray(
+        16, this_._internal_total_cp_enemy(), target);
+  }
+
   if (ABSL_PREDICT_FALSE(this_._internal_metadata_.have_unknown_fields())) {
     target = stream->WriteRaw(
         this_._internal_metadata_.unknown_fields<::std::string>(::google::protobuf::internal::GetEmptyString).data(),
@@ -9141,7 +9167,7 @@ PROTOBUF_NOINLINE void GlobalUnitStatus::Clear() {
           this_._internal_enemy_base_health());
     }
   }
-  if (BatchCheckHasBit(cached_has_bits, 0x00003f00U)) {
+  if (BatchCheckHasBit(cached_has_bits, 0x0000ff00U)) {
     // optional uint32 enemy_base_status = 7;
     if (CheckHasBit(cached_has_bits, 0x00000100U)) {
       total_size += ::_pbi::WireFormatLite::UInt32SizePlusOne(
@@ -9171,6 +9197,16 @@ PROTOBUF_NOINLINE void GlobalUnitStatus::Clear() {
     if (CheckHasBit(cached_has_bits, 0x00002000U)) {
       total_size += ::_pbi::WireFormatLite::UInt32SizePlusOne(
           this_._internal_total_damage_enemy());
+    }
+    // optional uint32 total_CP_ally = 15;
+    if (CheckHasBit(cached_has_bits, 0x00004000U)) {
+      total_size += ::_pbi::WireFormatLite::UInt32SizePlusOne(
+          this_._internal_total_cp_ally());
+    }
+    // optional uint32 total_CP_enemy = 16;
+    if (CheckHasBit(cached_has_bits, 0x00008000U)) {
+      total_size += 2 + ::_pbi::WireFormatLite::UInt32Size(
+                                      this_._internal_total_cp_enemy());
     }
   }
   if (ABSL_PREDICT_FALSE(this_._internal_metadata_.have_unknown_fields())) {
@@ -9219,7 +9255,7 @@ void GlobalUnitStatus::MergeImpl(::google::protobuf::MessageLite& to_msg,
       _this->_impl_.enemy_base_health_ = from._impl_.enemy_base_health_;
     }
   }
-  if (BatchCheckHasBit(cached_has_bits, 0x00003f00U)) {
+  if (BatchCheckHasBit(cached_has_bits, 0x0000ff00U)) {
     if (CheckHasBit(cached_has_bits, 0x00000100U)) {
       _this->_impl_.enemy_base_status_ = from._impl_.enemy_base_status_;
     }
@@ -9237,6 +9273,12 @@ void GlobalUnitStatus::MergeImpl(::google::protobuf::MessageLite& to_msg,
     }
     if (CheckHasBit(cached_has_bits, 0x00002000U)) {
       _this->_impl_.total_damage_enemy_ = from._impl_.total_damage_enemy_;
+    }
+    if (CheckHasBit(cached_has_bits, 0x00004000U)) {
+      _this->_impl_.total_cp_ally_ = from._impl_.total_cp_ally_;
+    }
+    if (CheckHasBit(cached_has_bits, 0x00008000U)) {
+      _this->_impl_.total_cp_enemy_ = from._impl_.total_cp_enemy_;
     }
   }
   _this->_impl_._has_bits_[0] |= cached_has_bits;
@@ -9259,8 +9301,8 @@ void GlobalUnitStatus::InternalSwap(GlobalUnitStatus* PROTOBUF_RESTRICT PROTOBUF
   _impl_.robot_health_.InternalSwap(&other->_impl_.robot_health_);
   _impl_.robot_bullets_.InternalSwap(&other->_impl_.robot_bullets_);
   ::google::protobuf::internal::memswap<
-      PROTOBUF_FIELD_OFFSET(GlobalUnitStatus, _impl_.total_damage_enemy_)
-      + sizeof(GlobalUnitStatus::_impl_.total_damage_enemy_)
+      PROTOBUF_FIELD_OFFSET(GlobalUnitStatus, _impl_.total_cp_enemy_)
+      + sizeof(GlobalUnitStatus::_impl_.total_cp_enemy_)
       - PROTOBUF_FIELD_OFFSET(GlobalUnitStatus, _impl_.base_health_)>(
           reinterpret_cast<char*>(&_impl_.base_health_),
           reinterpret_cast<char*>(&other->_impl_.base_health_));

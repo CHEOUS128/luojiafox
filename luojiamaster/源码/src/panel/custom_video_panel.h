@@ -7,4 +7,5 @@ bool ShowCustomVideoPanel(ImTextureRef video_texture_ref,
                           const char *panel_title,
                           bool video_display_ready,
                           std::string_view unavailable_message,
-                          bool udp_video_inverted);
+                          bool udp_video_inverted, bool secondary_is_udp,
+                          bool *swap_requested = nullptr);

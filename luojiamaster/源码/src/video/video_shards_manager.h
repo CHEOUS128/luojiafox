@@ -56,6 +56,8 @@ namespace RoboGo::video {
         void stop();
         // Consumer-thread reconnect/replay reset; does not restart a stopped source.
         void reset_stream();
+        // Producer-side boundary. Only the decoder thread touches frame caches.
+        void request_stream_reset();
         void set_reset_callback(std::function<void()> callback) { reset_callback = std::move(callback); }
 
     private:

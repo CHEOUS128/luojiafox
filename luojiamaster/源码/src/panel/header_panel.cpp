@@ -1,4 +1,141 @@
 #include "header_panel.h"
+#include "app/match_values.h"
+#include "panel/hud_text.h"
+
+const char *GetGameResultName(uint32_t game_result);
+
+namespace {
+using RoboGo::app::kUlStartingControlDegree;
+
+float TextWidth(const char *text, float font) {
+    return ImGui::GetFont()->CalcTextSizeA(font, FLT_MAX, 0.f, text).x;
+}
+
+void CenteredText(ImDrawList *draw, float x, float top, float font, const char *text, ImU32 color = IM_COL32_WHITE) {
+    hud::Outline(draw, {x - TextWidth(text, font) * .5f, top}, color, text, font);
+}
+
+void DrawTeamBars(const State &state, bool blue, float left, float right, float top, float font) {
+    auto *draw = ImGui::GetWindowDrawList();
+    const ImU32 team = blue ? IM_COL32(3, 187, 245, 255) : IM_COL32(250, 63, 64, 255);
+    const ImU32 track = blue ? IM_COL32(12, 67, 102, 165) : IM_COL32(104, 35, 45, 165);
+    const float bar_height = font * 1.61f;
+    const ImVec2 start{left, top}, end{right, top + bar_height};
+    const float rounding = bar_height * .25f;
+    const auto corners = blue ? ImDrawFlags_RoundCornersRight : ImDrawFlags_RoundCornersLeft;
+    draw->AddRectFilled(start, end, track, rounding, corners);
+    const auto control = RoboGo::app::ControlDegree2027(state, blue);
+    if (control && *control > 0) {
+        // Both bars start at the clock, as in the 2026 scoreboard.
+        const float fill = (right - left) * std::min(*control, kUlStartingControlDegree) / kUlStartingControlDegree;
+        draw->AddRectFilled({blue ? left : right - fill, top}, {blue ? left + fill : right, end.y},
+                            team, rounding, corners);
+    }
+    draw->AddRect(start, end, team, rounding, 1.f, corners);
+    const char *label = blue ? "蓝方控制度" : "红方控制度";
+    char points[32] = "等待";
+    if (control) ImFormatString(points, IM_ARRAYSIZE(points), "%u / %u", *control, kUlStartingControlDegree);
+    const float padding = font * .55f;
+    const float text_y = top + (bar_height - font) * .5f;
+    hud::Outline(draw, {blue ? right - padding - TextWidth(label, font) : left + padding, text_y},
+                 IM_COL32_WHITE, label, font);
+    hud::Outline(draw, {blue ? left + padding : right - padding - TextWidth(points, font), text_y},
+                 IM_COL32_WHITE, points, font);
+
+    constexpr std::array<int, 3> roles{1, 3, 7};
+    constexpr std::array<const char *, 3> names{"重装 1", "步兵 3", "哨兵 7"};
+    const float gap = font * .55f;
+    const float width = (right - left - 2.f * gap) / 3.f;
+    const float names_top = end.y + font * .20f;
+    const float rail_top = names_top + font * 1.05f;
+    const float rail_bottom = rail_top + font * .35f;
+    for (size_t i = 0; i < roles.size(); ++i) {
+        const float x = left + static_cast<float>(i) * (width + gap);
+        const float center = x + width * .5f;
+        const auto hp = RoboGo::app::Health2027(state.robot_static_status, state.global_unit_status, blue, roles[i]);
+        const auto cap = RoboGo::app::HealthCap2027(state, blue, roles[i]);
+        CenteredText(draw, center, names_top, font, names[i]);
+        draw->AddRectFilled({x, rail_top}, {x + width, rail_bottom}, IM_COL32(32, 37, 44, 177));
+        char number[32] = "等待";
+        if (hp) {
+            // Unconfirmed max: absolute scale with a tick every 100 HP, not a percentage.
+            const uint32_t scale = cap.value_or(roles[i] == 1 ? 450u : 350u);
+            const float filled = width * (std::min(*hp, scale) / static_cast<float>(scale));
+            if (filled > 0.f) draw->AddRectFilled({x, rail_top}, {x + filled, rail_bottom}, team);
+            if (cap) {
+                ImFormatString(number, IM_ARRAYSIZE(number), "%u/%u", *hp, *cap);
+            } else {
+                ImFormatString(number, IM_ARRAYSIZE(number), "%u 点", *hp);
+                for (uint32_t tick = 100; tick < scale; tick += 100) {
+                    const float tx = x + width * tick / scale;
+                    draw->AddLine({tx, rail_top}, {tx, rail_bottom}, IM_COL32(235, 241, 245, 225));
+                }
+                if (ImGui::IsMouseHoveringRect({x, names_top}, {x + width, rail_bottom + 1.3f * font}))
+                    ImGui::SetTooltip("每格 100 点血，满血值待确认");
+            }
+        }
+        draw->AddRect({x, rail_top}, {x + width, rail_bottom}, IM_COL32(235, 241, 245, 174));
+        CenteredText(draw, center, rail_bottom + font * .13f, font, number);
+    }
+}
+} // namespace
+
+bool ShowAllianceHeader(const State &state, bool local_trial, bool blue, bool heavy) {
+    bool menu = false;
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
+    const auto flags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoBackground |
+                       ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoBringToFrontOnFocus;
+    if (ImGui::Begin("HeaderWindow", nullptr, flags)) {
+        const ImVec2 pos = ImGui::GetWindowPos(), size = ImGui::GetWindowSize();
+        const float native_font = ImGui::GetFontSize();
+        const float font = std::min({std::clamp(size.x / 80.f, native_font, native_font * 1.6f),
+                                     size.y / 5.2f, size.x / 49.f});
+        const float center = pos.x + size.x * .5f;
+        const float center_half_width = 5.5f * font;
+        const float top = pos.y + font * .32f;
+        DrawTeamBars(state, false, pos.x + font, center - center_half_width, top, font);
+        DrawTeamBars(state, true, center + center_half_width, pos.x + size.x - font, top, font);
+
+        auto *draw = ImGui::GetWindowDrawList();
+        const auto &game = state.game_status;
+        char seat[64] = {};
+        ImFormatString(seat, IM_ARRAYSIZE(seat), "%s · %s%s", local_trial ? "本地试用" : "高校联盟赛",
+                       blue ? "蓝方" : "红方", heavy ? "重装" : "步兵");
+        CenteredText(draw, center, top - .15f * font, .91f * font, seat);
+        char clock[32] = "--:--";
+        if (game && game->has_stage_countdown_sec() && game->stage_countdown_sec() >= 0) {
+            const int seconds = game->stage_countdown_sec();
+            ImFormatString(clock, IM_ARRAYSIZE(clock), "%02d:%02d", seconds / 60, seconds % 60);
+        }
+        const bool paused = game && game->has_is_paused() && game->is_paused();
+        CenteredText(draw, center, top + .76f * font, 1.76f * font, clock,
+                     paused ? IM_COL32(255, 212, 118, 255) : IM_COL32_WHITE);
+        constexpr std::array<const char *, 6> phases{"未开赛", "准备", "自检", "开赛倒计时", "比赛中", "结算"};
+        const char *phase = "等待赛况";
+        if (game && game->has_current_stage() && game->current_stage() < phases.size()) {
+            phase = paused ? "已暂停" : phases[game->current_stage()];
+            if (game->current_stage() == 5 && game->has_game_result()) {
+                if (const char *result = GetGameResultName(game->game_result())) phase = result;
+            }
+        }
+        char status[72] = {};
+        if (game && game->has_current_round())
+            ImFormatString(status, IM_ARRAYSIZE(status), "第 %u 局 · %s", game->current_round(), phase);
+        else
+            ImFormatString(status, IM_ARRAYSIZE(status), "局数待定 · %s", phase);
+        const float stage_width = TextWidth(status, font);
+        const float stage_font = font * std::min(1.f, (2.f * center_half_width - .5f * font) / stage_width);
+        CenteredText(draw, center, top + 2.55f * font, stage_font, status);
+
+        const char *menu_label = "比赛菜单  Esc";
+        const float button_width = ImGui::CalcTextSize(menu_label).x + 2.f * ImGui::GetStyle().FramePadding.x;
+        ImGui::SetCursorScreenPos({center - button_width * .5f, top + 3.68f * font});
+        menu = ImGui::SmallButton(menu_label);
+    }
+    ImGui::End();
+    ImGui::PopStyleVar();
+    return menu;
+}
 
 void AddTextInTheCenterOfRect(ImDrawList *draw_list, const char *text_begin, const char *text_end, float left, float top, float right, float bottom, ImU32 col) {
     ImVec2 text_size = ImGui::CalcTextSize(text_begin, text_end);
@@ -211,6 +348,16 @@ void ShowHeaderPanel(const State &state) {
     static_assert(sizeof(state.red_robots) / sizeof(state.red_robots[0]) == sizeof(robot_names) / sizeof(robot_names[0]));
     int ids[] = {1, 2, 3, 4, 6, 7, 8, 9};
     int ids_size = std::size(ids);
+    const bool legacy = state.competition == RoboGo::app::Competition::Uc2026;
+    const auto format_health = [&](bool blue, int id, const RobotStatus &robot, bool show_bar) {
+        if (legacy && show_bar) {
+            ImFormatStringToTempBuffer(&text_begin, &text_end, "%u/%u", robot.health, robot.max_health);
+        } else if (auto hp = RoboGo::app::Health2027(state.robot_static_status, state.global_unit_status, blue, id); !legacy && hp) {
+            ImFormatStringToTempBuffer(&text_begin, &text_end, "%u", *hp);
+        } else {
+            ImFormatStringToTempBuffer(&text_begin, &text_end, "-");
+        }
+    };
     float robot_bar_spacing = 6.0f * ImGui::GetScale();
     ImU32 bg_color = IM_COL32(50, 50, 50, 255);
     float red_robot_bar_item_width = (red_robot_bar_right - red_robot_bar_left - robot_bar_spacing * static_cast<float>(ids_size - 1)) / static_cast<float>(ids_size);
@@ -236,14 +383,11 @@ void ShowHeaderPanel(const State &state) {
         ImFormatStringToTempBuffer(&text_begin, &text_end, "%d %s", id, robot_names[id - 1]);
         ImVec2 id_size = ImGui::CalcTextSize(text_begin, text_end);
         draw_list->AddText(ImVec2(bar_left + (red_robot_bar_item_width - id_size.x) / 2, robot_bar_top - 2 - id_size.y), IM_COL32(255, 255, 255, 255), text_begin, text_end);
-        if (show_health) {
-            ImFormatStringToTempBuffer(&text_begin, &text_end, "%d/%d", robot.health, robot.max_health);
-        } else {
-            ImFormatStringToTempBuffer(&text_begin, &text_end, "-");
-        }
+        format_health(false, id, robot, show_health);
         ImVec2 health_size = ImGui::CalcTextSize(text_begin, text_end);
         float health_text_y = robot_bar_bottom + 2;
         draw_list->AddText(ImVec2(bar_left + (red_robot_bar_item_width - health_size.x) / 2, health_text_y), IM_COL32(255, 255, 255, 255), text_begin, text_end);
+        if (!legacy) continue;
         // 显示允许发弹量
         ImFormatStringToTempBuffer(&text_begin, &text_end, "弹药:%d", robot.bullets);
         ImVec2 bullets_size = ImGui::CalcTextSize(text_begin, text_end);
@@ -269,14 +413,11 @@ void ShowHeaderPanel(const State &state) {
         ImFormatStringToTempBuffer(&text_begin, &text_end, "%d %s", id, robot_names[id - 1]);
         ImVec2 id_size = ImGui::CalcTextSize(text_begin, text_end);
         draw_list->AddText(ImVec2(bar_left + (blue_robot_bar_item_width - id_size.x) / 2, robot_bar_top - 2 - id_size.y), IM_COL32(255, 255, 255, 255), text_begin, text_end);
-        if (show_health) {
-            ImFormatStringToTempBuffer(&text_begin, &text_end, "%d/%d", robot.health, robot.max_health);
-        } else {
-            ImFormatStringToTempBuffer(&text_begin, &text_end, "-");
-        }
+        format_health(true, id, robot, show_health);
         ImVec2 health_size = ImGui::CalcTextSize(text_begin, text_end);
         float health_text_y = robot_bar_bottom + 2;
         draw_list->AddText(ImVec2(bar_left + (blue_robot_bar_item_width - health_size.x) / 2, health_text_y), IM_COL32(255, 255, 255, 255), text_begin, text_end);
+        if (!legacy) continue;
         // 显示允许发弹量
         ImFormatStringToTempBuffer(&text_begin, &text_end, "弹药:%d", robot.bullets);
         ImVec2 bullets_size = ImGui::CalcTextSize(text_begin, text_end);

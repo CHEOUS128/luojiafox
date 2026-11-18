@@ -1,6 +1,17 @@
 #include "mini_map.h"
+#include "hud_text.h"
+#include "app/ul_drawing.h"
 #include "keyboard_mouse_state_manager.h"
 
+void ShowAllianceVenueMap(ImTextureRef texture, const ImVec2 &size, bool blue) {
+    if (ImGui::Begin("AllianceVenueMap", nullptr, ImGuiWindowFlags_NoDecoration |
+                     ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoSavedSettings |
+                     ImGuiWindowFlags_NoBackground)) {
+        hud::Label(blue ? "联盟赛地图 · 蓝方" : "联盟赛地图 · 红方");
+        RoboGo::app::ul_drawing::Map({texture, size}, std::max(1.f, ImGui::GetContentRegionAvail().y), blue, false);
+    }
+    ImGui::End();
+}
 namespace {
 
 constexpr float kMapWidth = 280.0f;
@@ -71,7 +82,7 @@ void ShowMiniMap(const State &state,
     }
 
     ImDrawList *draw_list = ImGui::GetWindowDrawList();
-    ImDrawList *foreground_draw_list = ImGui::GetForegroundDrawList();
+    ImDrawList *border_draw_list = is_in_game_mode() ? ImGui::GetForegroundDrawList() : draw_list;
     ImVec2 window_pos = ImGui::GetWindowPos();
     ImVec2 window_size = ImGui::GetWindowSize();
     ImVec2 map_min = window_pos;
@@ -108,12 +119,15 @@ void ShowMiniMap(const State &state,
     }
     draw_list->AddRect(map_min, map_max, GetMapInnerBorderColor(team_known, is_red_team));
     // 外边框绘制在地图内容区域之外，避免改变地图坐标映射和点击标记范围。
-    foreground_draw_list->AddRect(outer_border_min,
+    const auto *vp = ImGui::GetMainViewport();
+    border_draw_list->PushClipRect(vp->Pos, ImVec2(vp->Pos.x + vp->Size.x, vp->Pos.y + vp->Size.y), false);
+    border_draw_list->AddRect(outer_border_min,
                                   outer_border_max,
                                   marker_mode_active ? kMapMarkerBorderColor : GetMapOuterBorderColor(team_known, is_red_team),
                                   0.0f,
                                   outer_border_thickness,
                                   0);
+    border_draw_list->PopClipRect();
 
     // 绘制单位位置
     float map_content_width = window_size.x;

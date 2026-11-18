@@ -1,5 +1,11 @@
 #include "video/rgba_frame_converter.h"
 #include "application.h"
+#include "app/ul_live_view.h"
+#include "app/local_session_replay.h"
+#include "app/trial_match.h"
+#include "panel/start_panel.h"
+#include <charconv>
+#include "embedded_ul_map.h"
 #include "app/latest_video_frame.h"
 
 #include <cctype>
@@ -19,8 +25,6 @@ using RoboGo::app::TextureSlot;
 using RoboGo::app::TextureView;
 using RoboGo::app::UiLogMessage;
 using RoboGo::app::VideoFrame;
-
-constexpr bool kDefaultInvertUdpVideo = true;
 
 std::string DefaultMqttServer() {
     // return "tcp://127.0.0.1:3333";// 模拟裁判系统
@@ -256,40 +260,48 @@ public:
                       std::lock_guard lock(custom_video_log_mutex_);
                       if (custom_video_log_queue_.size() >= 128) custom_video_log_queue_.pop_front();
                       custom_video_log_queue_.push_back(std::move(log_message));
-                  }),
-          mqtt_client_(io_context_, options.mqtt_host, options.mqtt_port, [this](const std::string &topic, const std::string &payload) {
-              if (topic == "CustomByteBlock") {
-                  CustomByteBlock message;
-                  if (message.ParseFromString(payload)) {
-                      const auto &bytes = message.data();
-                      custom_byte_block_decoder_worker_.enqueue_packet_bytes(std::span<const std::uint8_t>(
-                              reinterpret_cast<const std::uint8_t *>(bytes.data()), bytes.size()));
-                  } else {
-                      SPDLOG_WARN("CustomByteBlock protobuf parse failed bytes={}", payload.size());
-                  }
-              } else if (!message_queue_.try_emplace(topic, payload)) {
-                  messages_dropped_.fetch_add(1, std::memory_order_relaxed);
-              }
-          }),
-          video_stream_manager_(io_context_, boost::asio::ip::udp::endpoint(boost::asio::ip::udp::v4(), options.parsed_video_port), [this](const AVFrame *frame) {
-              auto video_frame = udp_frame_converter_.convert(frame);
-              if (video_frame.has_value()) {
-                  video_frame_queue_.Push(std::move(*video_frame));
-              } else if (frame == nullptr) {
-                  SPDLOG_ERROR("收到空视频帧指针，已丢弃");
-              } else {
-                  SPDLOG_ERROR("UDP 视频帧转换或方向处理失败 format={} width={} height={}",
-                               frame->format,
-                               frame->width,
-                               frame->height);
-              }
-          }, [this](const std::vector<uint8_t> &frame) {
-              // 队友画面旁路：官方 UDP 图传的原始 HEVC 字节，原样转发给队友。
-              // 没启用队友视角（既无 --teammate-* 也无 队友视角.ini）时 teammate_link_ 为空，这里什么都不做。
-              if (teammate_link_ != nullptr) {
-                  teammate_link_->push_frame(frame);
-              }
-          }) {
+                  }) {
+        const auto on_frame = [this](const AVFrame *frame) {
+            if (auto image = udp_frame_converter_.convert(frame)) {
+                video_frame_queue_.Push(std::move(*image));
+            } else {
+                SPDLOG_WARN("官方视频帧转换失败");
+            }
+        };
+        if (options.local_trial) {
+            mqtt_client_ = std::make_unique<RoboGo::io::MqttClient>(
+                [this, cup = options.competition](const std::string &topic, const std::string &payload) {
+                    if (cup != RoboGo::app::Competition::Ul2027) return;
+                    const std::lock_guard lock(trial_writer_mutex_);
+                    if (auto reply = trial_loadout_.Reply(topic, payload)) {
+                        OnMessage("RobotPerformanceSelectionSync", *reply);
+                    }
+                });
+            video_stream_manager_ = std::make_unique<RoboGo::video::VideoStreamManager>(on_frame);
+            replay_ = std::make_unique<RoboGo::app::LocalSessionReplay>(
+                [this](unsigned lane, RoboGo::app::local_capture::Bytes bytes) {
+                    if (lane == 0) {
+                        video_stream_manager_->receive_datagram(bytes.data(), bytes.size());
+                    } else {
+                        OnMessage("CustomByteBlock", std::string(
+                            reinterpret_cast<const char *>(bytes.data()), bytes.size()));
+                    }
+                },
+                [this]() {
+                    video_stream_manager_->restart_recording();
+                    custom_byte_block_decoder_worker_.restart_recording();
+                });
+            SPDLOG_INFO("本地试用：双路录像就绪，等待选择身份；网络服务未启动");
+            return;
+        }
+
+        mqtt_client_ = std::make_unique<RoboGo::io::MqttClient>(io_context_, options.mqtt_host,
+            options.mqtt_port, [this](const auto &topic, const auto &payload) { OnMessage(topic, payload); });
+        video_stream_manager_ = std::make_unique<RoboGo::video::VideoStreamManager>(io_context_,
+            boost::asio::ip::udp::endpoint(boost::asio::ip::udp::v4(), options.parsed_video_port),
+            on_frame, [this](const std::vector<uint8_t> &frame) {
+                if (teammate_link_) teammate_link_->push_frame(frame);
+            });
         // 队友链路放在最后初始化：没启用（既无 --teammate-* 也无 队友视角.ini）就完全不建，原有逻辑一行都不变。
         // 收到对方的码流 → 交给解码器 → 解出来的 RGBA 进队列，由主循环上传纹理。
         if (options.teammate_enabled) {
@@ -360,7 +372,7 @@ public:
     BackgroundServices &operator=(const BackgroundServices &) = delete;
 
     RoboGo::io::MqttClient &mqtt_client() {
-        return mqtt_client_;
+        return *mqtt_client_;
     }
 
     void SetUdpVideoInverted(const bool enabled) {
@@ -402,12 +414,43 @@ public:
         TakeLatestTeammateVideoFrame();
     }
 
+    void OnMessage(const std::string &topic, const std::string &payload) {
+        if (topic == "CustomByteBlock") {
+            CustomByteBlock message;
+            if (!message.ParseFromString(payload)) {
+                SPDLOG_WARN("CustomByteBlock protobuf parse failed bytes={}", payload.size());
+                return;
+            }
+            const auto &bytes = message.data();
+            custom_byte_block_decoder_worker_.enqueue_packet_bytes(std::span<const std::uint8_t>(
+                reinterpret_cast<const std::uint8_t *>(bytes.data()), bytes.size()));
+        } else if (!message_queue_.try_emplace(topic, payload, std::chrono::steady_clock::now())) {
+            messages_dropped_.fetch_add(1, std::memory_order_relaxed);
+        }
+    }
+
+    void StartLocalReplay(std::chrono::steady_clock::time_point start,
+                          RoboGo::app::Competition cup, int login_id) {
+        if (!replay_) return;
+        RoboGo::app::LocalSessionReplay::MatchTick tick;
+        if (cup == RoboGo::app::Competition::Ul2027) {
+            tick = [this, cup, login_id](int second) {
+                const std::lock_guard lock(trial_writer_mutex_);
+                trial_loadout_.Advance(login_id, second);
+                RoboGo::app::EmitTrialMatch(cup, login_id, second, [this](const auto &topic, const auto &payload) {
+                    OnMessage(topic, payload);
+                }, trial_loadout_.chassis);
+            };
+        }
+        replay_->Start(start, std::move(tick));
+    }
+
     void ProcessMessages(State &state) {
-        std::pair<std::string, std::string> message;
+        QueuedMessage message;
         const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(2);
         for (std::size_t handled = 0; handled < 128 && std::chrono::steady_clock::now() < deadline
                                       && message_queue_.try_dequeue(message); ++handled) {
-            HandleMqttMessage(state, mqtt_client_, message.first, message.second);
+            HandleMqttMessage(state, *mqtt_client_, message.topic, message.payload, {}, message.received_at);
         }
     }
 
@@ -459,12 +502,13 @@ public:
             return;
         }
         stopped_ = true;
-        mqtt_client_.stop();
+        replay_.reset(); // Join the recording producer before stopping either receive queue.
+        mqtt_client_->stop();
         // 先停收发线程，再停解码线程——接收线程会往解码队列里投帧。
         if (teammate_link_ != nullptr) {
             teammate_link_->stop();
         }
-        video_stream_manager_.stop();
+        video_stream_manager_->stop();
         io_context_.stop();
         if (io_thread_.joinable()) {
             io_thread_.join();
@@ -480,7 +524,15 @@ public:
 
 private:
     boost::asio::io_context io_context_;
-    moodycamel::ReaderWriterQueue<std::pair<std::string, std::string>> message_queue_{2048};
+    struct QueuedMessage {
+        std::string topic;
+        std::string payload;
+        std::chrono::steady_clock::time_point received_at;
+    };
+    moodycamel::ReaderWriterQueue<QueuedMessage> message_queue_{2048};
+    // Serialize local referee settings and the two local writers to the SPSC queue.
+    std::mutex trial_writer_mutex_;
+    RoboGo::app::UlTrialLoadout trial_loadout_;
     std::atomic<std::uint64_t> messages_dropped_{0};
     RoboGo::app::LatestVideoFrameMailbox<VideoFrame> video_frame_queue_;
     RoboGo::app::LatestVideoFrameMailbox<VideoFrame> custom_video_frame_queue_;
@@ -489,8 +541,9 @@ private:
     std::deque<UiLogMessage> custom_video_log_queue_;
     AvFrameRgbaConverter udp_frame_converter_;
     RoboGo::video::CustomByteBlockVideoDecoderWorker custom_byte_block_decoder_worker_;
-    RoboGo::io::MqttClient mqtt_client_;
-    RoboGo::video::VideoStreamManager video_stream_manager_;
+    std::unique_ptr<RoboGo::io::MqttClient> mqtt_client_;
+    std::unique_ptr<RoboGo::video::VideoStreamManager> video_stream_manager_;
+    std::unique_ptr<RoboGo::app::LocalSessionReplay> replay_;
     // 声明顺序有讲究：teammate_link_ 的接收线程会回调 teammate_video_receiver_，
     // 所以 receiver 必须先构造（先于 link 声明），析构时反而后销毁。
     std::unique_ptr<RoboGo::video::TeammateVideoReceiver> teammate_video_receiver_;
@@ -548,10 +601,10 @@ void CommitVideoPresentation(const PendingVideoPresentation &pending,
 [[nodiscard]] bool IsVideoDisplayReady(const TextureView &video_texture,
                                        const std::chrono::steady_clock::time_point last_frame_time,
                                        const std::chrono::steady_clock::duration fallback_timeout,
-                                       const std::chrono::steady_clock::time_point now) {
-    return video_texture.IsReady()
-           && last_frame_time != std::chrono::steady_clock::time_point::min()
-           && (now - last_frame_time) <= fallback_timeout;
+                                       const std::chrono::steady_clock::time_point now,
+                                       bool just_uploaded = false) {
+    return RoboGo::app::CanDrawVideoFrame(video_texture.IsReady(), just_uploaded, last_frame_time,
+                                          fallback_timeout, now);
 }
 
 void UpdateVideoLayoutPreference(State &state,
@@ -652,8 +705,6 @@ LaunchOptions ParseLaunchOptions(const std::vector<std::string> &args) {
     LaunchOptions options;
     options.mqtt_server = DefaultMqttServer();
     options.video_port = "3334";
-    options.invert_udp_video = kDefaultInvertUdpVideo;
-
     for (size_t i = 0; i < args.size(); ++i) {
         if (args[i] == "--mqtt_server" && i + 1 < args.size()) {
             options.mqtt_server = args[i + 1];
@@ -729,47 +780,65 @@ LaunchOptions ParseLaunchOptions(const std::vector<std::string> &args) {
 int RunApplication(platform::PlatformBackend &platform_backend, const LaunchOptions &options) {
     const auto main_start = std::chrono::steady_clock::now();
     SPDLOG_INFO("程序启动");
-    SPDLOG_INFO("解析启动参数 mqtt_server={} video_port={} invert_udp_video={}",
-                options.mqtt_server,
-                options.video_port,
-                options.invert_udp_video);
-    SPDLOG_INFO("网络端点已解析 mqtt_host={} mqtt_port={} video_port={}",
-                options.mqtt_host,
-                options.mqtt_port,
-                options.parsed_video_port);
-    // 队友视角的来源说明（日志初始化之后才能打，所以放在这里而不是 ParseLaunchOptions 里）
-    if (options.teammate_off) {
-        SPDLOG_INFO("队友视角已在 {} 里关闭（peer=off），本次不占用任何端口", kTeammateConfigFileName);
-    }
-    if (options.teammate_ini_unreadable) {
-        SPDLOG_WARN("发现 {} 但打不开（被占用/权限/路径），已忽略；本次用{}",
-                    kTeammateConfigFileName,
-                    options.teammate_from_command_line ? "命令行参数" : "内置默认 A 机");
-    }
-    if (options.teammate_from_command_line) {
-        SPDLOG_INFO("队友视角参数来自命令行：peer={} listen={}",
-                    options.teammate_peer,
-                    options.teammate_listen);
-    } else if (options.teammate_from_ini) {
-        SPDLOG_INFO("队友视角参数来自 {}：peer={} listen={}",
-                    kTeammateConfigFileName,
-                    options.teammate_peer,
-                    options.teammate_listen);
-    } else if (options.teammate_from_default) {
-        SPDLOG_INFO("队友视角使用内置默认（A 机）：peer={} listen={}；B 机在标题条上点「角色」切换",
-                    options.teammate_peer,
-                    options.teammate_listen);
+    SPDLOG_INFO("客户端赛事={} 数据来源={}", options.competition == Competition::Ul2027 ?
+        "2027 RMUL" : options.competition == Competition::Uc2026 ? "2026 RMUC" : "2027 RMUC",
+        options.local_trial ? "本地试用" : "正式登录");
+    if (!options.local_trial) {
+        SPDLOG_INFO("解析启动参数 mqtt_server={} video_port={} invert_udp_video={}",
+                    options.mqtt_server,
+                    options.video_port,
+                    options.invert_udp_video);
+        SPDLOG_INFO("网络端点已解析 mqtt_host={} mqtt_port={} video_port={}",
+                    options.mqtt_host,
+                    options.mqtt_port,
+                    options.parsed_video_port);
+        // 队友视角的来源说明（日志初始化之后才能打，所以放在这里而不是 ParseLaunchOptions 里）
+        if (options.teammate_off) {
+            SPDLOG_INFO("队友视角已在 {} 里关闭（peer=off），本次不占用任何端口", kTeammateConfigFileName);
+        }
+        if (options.teammate_ini_unreadable) {
+            SPDLOG_WARN("发现 {} 但打不开（被占用/权限/路径），已忽略；本次用{}",
+                        kTeammateConfigFileName,
+                        options.teammate_from_command_line ? "命令行参数" : "内置默认 A 机");
+        }
+        if (options.teammate_from_command_line) {
+            SPDLOG_INFO("队友视角参数来自命令行：peer={} listen={}",
+                        options.teammate_peer,
+                        options.teammate_listen);
+        } else if (options.teammate_from_ini) {
+            SPDLOG_INFO("队友视角参数来自 {}：peer={} listen={}",
+                        kTeammateConfigFileName,
+                        options.teammate_peer,
+                        options.teammate_listen);
+        } else if (options.teammate_from_default) {
+            SPDLOG_INFO("队友视角使用内置默认（A 机）：peer={} listen={}；B 机在标题条上点「角色」切换",
+                        options.teammate_peer,
+                        options.teammate_listen);
+        }
     }
 
+    const bool alliance = options.competition == Competition::Ul2027;
+    platform_backend.SetDesktopWindowKind(alliance ? platform::DesktopWindowKind::League
+                                                   : platform::DesktopWindowKind::Cup);
     if (!platform_backend.Initialize()) {
         return 1;
     }
 
-    set_game_input_capture_handler([&platform_backend](const bool enabled) {
-        platform_backend.SetGameInputCapture(enabled);
-    });
+    reset_client_session_input();
+    ResetStartPanelSession(options.competition);
+    // In a local trial the UI can still enter/exit the match view. Keep the
+    // desktop cursor free and never acquire hardware game-input capture.
+    if (!options.local_trial && !alliance) {
+        set_game_input_capture_handler([&platform_backend](bool enabled) {
+            platform_backend.SetGameInputCapture(enabled);
+        });
+    } else {
+        set_game_input_capture_handler({});
+    }
 
     State state = CreateInitialState();
+    state.competition = options.competition;
+    int session_result = 0;
 
     // 队友角色：A / B。地址跟着它走，切换后写回 exe 同目录的 ini。
     std::string teammate_peer = options.teammate_peer;
@@ -777,24 +846,25 @@ int RunApplication(platform::PlatformBackend &platform_backend, const LaunchOpti
     char teammate_role = options.teammate_role != 0 ? options.teammate_role : 'A';
     bool teammate_role_from_default = options.teammate_from_default;
 
-    auto mini_map_image = RoboGo::resource::LoadEmbeddedMapImage();
-    if (!mini_map_image.has_value()) {
-        SPDLOG_WARN("未能加载内嵌小地图，将回退为纯色小地图背景");
-    } else if (platform_backend.UploadTexture(TextureSlot::MiniMap, *mini_map_image)) {
-        SPDLOG_INFO("小地图纹理已上传 width={} height={}", mini_map_image->width, mini_map_image->height);
-    } else {
-        SPDLOG_ERROR("创建小地图纹理失败 width={} height={}", mini_map_image->width, mini_map_image->height);
-    }
+    const auto map_slot = alliance ? TextureSlot::UlMap : TextureSlot::MiniMap;
+    const auto map_image = alliance
+        ? resource::LoadEmbeddedImage({embedded_ul_map_data, embedded_ul_map_data_len}, "2027 高校联盟赛地图")
+        : resource::LoadEmbeddedMapImage();
+    if (!map_image) SPDLOG_WARN("场地图未能加载");
 
     {
         BackgroundServices background_services(options);
+        UlHudView hud;
+        bool trial_started = false;
+        int trial_second = -1;
+        auto trial_start = std::chrono::steady_clock::time_point{};
         std::chrono::steady_clock::time_point last_udp_frame_time = std::chrono::steady_clock::time_point::min();
         std::chrono::steady_clock::time_point last_custom_frame_time = std::chrono::steady_clock::time_point::min();
         std::chrono::steady_clock::time_point last_teammate_frame_time = std::chrono::steady_clock::time_point::min();
         bool prefer_custom_video_as_main = false;
         bool using_custom_video_as_main = false;
         // 队友画面的纯 UI 状态（未启用链路时永远保持默认值，不影响任何原有逻辑）
-        bool teammate_collapsed = false;
+        std::optional<bool> teammate_collapse_choice;
         bool teammate_take_main_screen = false;
         float teammate_zoom = 1.0f;
         // 没启用链路时那一条折叠提示条：第一次启动打一次日志就够了，不要每帧刷。
@@ -817,12 +887,53 @@ int RunApplication(platform::PlatformBackend &platform_backend, const LaunchOpti
         SPDLOG_INFO("程序启动完成 startup_ms={}", startup_ms);
 
         while (platform_backend.ProcessEvents()) {
+            auto &client = background_services.mqtt_client();
+            const auto conn = client.get_connection_state();
+            using Connection = RoboGo::io::MqttClient::ConnectionState;
+            // Trigger once per explicit login, not on transient reconnects.
+            const auto id = client.get_client_id();
+            int login_id = 0;
+            if (!id.empty()) {
+                const auto result = std::from_chars(id.data(), id.data()+id.size(), login_id);
+                if (result.ec != std::errc{} || result.ptr != id.data()+id.size()) login_id = 0;
+            }
+            if (options.local_trial && conn == Connection::Connected && login_id > 0) {
+                if (!trial_started) {
+                    trial_started = true;
+                    trial_start = std::chrono::steady_clock::now();
+                    background_services.StartLocalReplay(trial_start, options.competition, login_id);
+                    SPDLOG_INFO("本地试用开始 robot_id={}", login_id);
+                }
+                if (options.competition != Competition::Ul2027) {
+                    const int seconds = static_cast<int>(std::chrono::duration_cast<std::chrono::seconds>(
+                        std::chrono::steady_clock::now() - trial_start).count());
+                    if (seconds != trial_second) {
+                        trial_second = seconds;
+                        EmitTrialMatch(options.competition, login_id, seconds,
+                            [&](const auto &topic, const auto &payload) { background_services.OnMessage(topic, payload); });
+                    }
+                }
+            } else if (options.local_trial && trial_started) {
+                session_result = kReturnToLauncher;
+                break;
+            }
             background_services.ProcessMessages(state);
             background_services.DrainCustomVideoLogs(state);
             UpdateState(state);
-            PublishCustomControlIfDue(state, background_services.mqtt_client());
+            const bool alliance_signed_in = alliance && conn == Connection::Connected && login_id > 0;
+            if (alliance && hud.SelectIdentity(alliance_signed_in ? login_id : 0)) {
+                last_udp_frame_time = last_custom_frame_time = std::chrono::steady_clock::time_point::min();
+                teammate_take_main_screen = false;
+                teammate_collapse_choice.reset();
+                SPDLOG_INFO("联盟赛比赛主界面 seat={} local={}", hud.identity, options.local_trial);
+            }
+            if (!alliance && !options.local_trial) PublishCustomControlIfDue(state, client);
             if (!platform_backend.BeginFrame()) continue;
-            update_keyboard_mouse_state(background_services.mqtt_client());
+            if (alliance_signed_in && ImGui::IsKeyPressed(ImGuiKey_Escape, false)) {
+                hud.menu_open = !hud.menu_open;
+            } else if (!alliance) {
+                update_keyboard_mouse_state(client);
+            }
             const auto pending_video_presentation = UploadLatestVideoFrames(platform_backend, background_services);
 
             // Video probe counts successfully presented new textures. Compare
@@ -884,23 +995,23 @@ int RunApplication(platform::PlatformBackend &platform_backend, const LaunchOpti
 
             const TextureView udp_video_texture = platform_backend.GetTextureView(TextureSlot::UdpVideo);
             const TextureView custom_video_texture = platform_backend.GetTextureView(TextureSlot::CustomVideo);
-            const TextureView mini_map_texture = platform_backend.GetTextureView(TextureSlot::MiniMap);
+            if (map_image && !platform_backend.GetTextureView(map_slot).IsReady())
+                (void)platform_backend.UploadTexture(map_slot, *map_image);
+            const TextureView mini_map_texture = platform_backend.GetTextureView(map_slot);
 
-            // 两档判据都要在 UpdateVideoLayoutPreference 之前算好：
-            //   custom_video_display_ready —— 1 秒内有没有新帧（小窗/提示用，也是按 H 时的判据）
-            //   custom_video_hold_as_main  —— 5 秒内有没有新帧（自动抢主画面用）
-            // 只差这一档超时，就能让自定义流正常断包时主画面不来回切。
+            // 联盟赛允许本轮已上传的新图直接参加这一轮绘制；成功 Present 后再更新探针。
+            // 没有新图时，沿用每路既有的上一次显示提交时间与超时。
             const auto now = std::chrono::steady_clock::now();
             const bool udp_video_display_ready = IsVideoDisplayReady(
                     udp_video_texture,
                     last_udp_frame_time,
                     kUdpVideoFallbackTimeout,
-                    now);
+                    now, alliance_signed_in && pending_video_presentation.udp);
             const bool custom_video_display_ready = IsVideoDisplayReady(
                     custom_video_texture,
                     last_custom_frame_time,
                     kCustomVideoLiveTimeout,
-                    now);
+                    now, alliance_signed_in && pending_video_presentation.custom);
             const bool custom_video_hold_as_main = IsVideoDisplayReady(
                     custom_video_texture,
                     last_custom_frame_time,
@@ -908,31 +1019,23 @@ int RunApplication(platform::PlatformBackend &platform_backend, const LaunchOpti
                     now);
 
             // 自动抢主画面只看「继续用」这一档（5 秒）；手动按 H 仍然按 1 秒那档给提示。
-            UpdateVideoLayoutPreference(state,
-                                        udp_video_display_ready,
-                                        custom_video_display_ready,
-                                        custom_video_hold_as_main,
-                                        prefer_custom_video_as_main,
-                                        using_custom_video_as_main);
-
-            if (ImGui::IsKeyPressed(ImGuiKey_I, false) && !ImGui::GetIO().WantTextInput) {
-                ToggleUdpVideoInversion(state, background_services);
+            const bool shortcuts_enabled = !alliance || (alliance_signed_in && !hud.menu_open);
+            if (alliance) {
+                if (shortcuts_enabled && !ImGui::GetIO().WantTextInput && ImGui::IsKeyPressed(ImGuiKey_H, false))
+                    hud.industrial_main = !hud.industrial_main;
+                prefer_custom_video_as_main = using_custom_video_as_main = hud.industrial_main;
+            } else {
+                UpdateVideoLayoutPreference(state, udp_video_display_ready, custom_video_display_ready,
+                                            custom_video_hold_as_main, prefer_custom_video_as_main, using_custom_video_as_main);
             }
+            if (shortcuts_enabled && ImGui::IsKeyPressed(ImGuiKey_I, false) && !ImGui::GetIO().WantTextInput)
+                ToggleUdpVideoInversion(state, background_services);
 
             // ---- 队友视角按键 ----
             // K = 折叠/展开小窗；L = 接管/退出主画面；L 模式下滚轮 1x~4x 放大。
-            // 【只有链路真正启用时】才注册这些键：没启用时一个键都不碰，H/I/Esc 和发给机器人的键全部保持原样。
-            // 全部避开 WASD/QE/RF/GZXCVB/Shift 这些会发给机器人的键，也绝不使用 CTRL（固件会复位整车）。
             TeammateViewState teammate_view;
-            if (background_services.TeammateLinkEnabled()) {
-                const bool typing = ImGui::GetIO().WantTextInput;
-                if (ImGui::IsKeyPressed(ImGuiKey_K, false) && !typing) {
-                    teammate_collapsed = !teammate_collapsed;
-                    AppendSystemLog(state,
-                                    0,
-                                    teammate_collapsed ? "队友视角已折叠（按 K 展开）。"
-                                                       : "队友视角已展开（按 K 折叠）。");
-                }
+            const bool typing = ImGui::GetIO().WantTextInput || !shortcuts_enabled;
+            if (background_services.TeammateLinkEnabled() || (options.local_trial && options.teammate_enabled)) {
                 if (ImGui::IsKeyPressed(ImGuiKey_L, false) && !typing) {
                     teammate_take_main_screen = !teammate_take_main_screen;
                     teammate_zoom = 1.0f;
@@ -967,7 +1070,6 @@ int RunApplication(platform::PlatformBackend &platform_backend, const LaunchOpti
                                                          last_teammate_frame_time,
                                                          kTeammateVideoLiveTimeout,
                                                          teammate_now);
-                teammate_view.collapsed = teammate_collapsed;
                 teammate_view.take_main_screen = teammate_take_main_screen;
                 teammate_view.zoom = teammate_zoom;
                 teammate_view.role = teammate_role;
@@ -980,8 +1082,8 @@ int RunApplication(platform::PlatformBackend &platform_backend, const LaunchOpti
                 teammate_view.peer_address = link_stats.peer_address;
             } else {
                 // 队友链路没建起来：要么 ini 里明确关掉了，要么参数解析失败。
-                // 只打一次日志，不刷屏；K/L/滚轮照旧不注册。
-                if (!teammate_offline_hint_logged) {
+                // 只打一次。联盟赛仍可在本机展开小窗查看未连接的原因。
+                if (!options.local_trial && !teammate_offline_hint_logged) {
                     teammate_offline_hint_logged = true;
                     if (options.teammate_off) {
                         SPDLOG_INFO("队友视角已按 {} 的 peer=off 关闭（不出小窗，不占端口）",
@@ -992,6 +1094,15 @@ int RunApplication(platform::PlatformBackend &platform_backend, const LaunchOpti
                     }
                 }
                 teammate_view.enabled = false;
+            }
+            // With no manual choice the league HUD stays compact until the first picture arrives.
+            // Once K is pressed, keep that choice across a stream loss or reconnect.
+            teammate_view.collapsed = teammate_collapse_choice.value_or(alliance && !teammate_view.display_ready);
+            if ((alliance || teammate_view.enabled) && !typing && ImGui::IsKeyPressed(ImGuiKey_K, false)) {
+                teammate_view.collapsed = !teammate_view.collapsed;
+                teammate_collapse_choice = teammate_view.collapsed;
+                AppendSystemLog(state, 0, teammate_view.collapsed ? "队友视角已收起（按 K 展开）。"
+                                                                  : "队友视角已展开（按 K 收起）。");
             }
 
             const MainWindowActions ui_actions = ShowMainWindow(
@@ -1005,15 +1116,23 @@ int RunApplication(platform::PlatformBackend &platform_backend, const LaunchOpti
                     prefer_custom_video_as_main,
                     udp_video_display_ready,
                     custom_video_display_ready,
-                    custom_video_hold_as_main,
+                    alliance ? custom_video_display_ready : custom_video_hold_as_main,
                     background_services.IsUdpVideoInverted(),
                     mini_map_texture.texture_ref,
                     mini_map_texture.size,
-                    teammate_view);
+                    teammate_view, options.local_trial, hud.menu_open);
+            if (ui_actions.return_to_events) session_result = kReturnToLauncher;
+            if (ui_actions.close_menu) hud.menu_open = false;
+            if (ui_actions.open_menu) hud.menu_open = true;
+            platform_backend.SetMatchDisplayShortcuts(alliance_signed_in && !hud.menu_open);
+            if (ui_actions.toggle_main_video) hud.industrial_main = !hud.industrial_main;
             if (ui_actions.toggle_udp_video_inversion) {
                 ToggleUdpVideoInversion(state, background_services);
             }
-            if (ui_actions.switch_teammate_role) {
+            if (ui_actions.switch_teammate_role && options.local_trial) {
+                teammate_role = teammate_role == 'B' ? 'A' : 'B';
+                teammate_role_from_default = false;
+            } else if (ui_actions.switch_teammate_role) {
                 // 标题条上点了 [A]/[B]：切角色 = 换对方 IP，链路按新地址重连。
                 ApplyTeammateRole(background_services,
                                   teammate_role,
@@ -1023,7 +1142,11 @@ int RunApplication(platform::PlatformBackend &platform_backend, const LaunchOpti
                                   state);
             }
 
-            synchronize_game_input_capture();
+            if (!alliance) {
+                synchronize_game_input_capture();
+            } else if (is_in_game_mode() || is_marker_mode()) {
+                reset_client_session_input();
+            }
 
             ImGui::Render();
             if (platform_backend.RenderFrame(ImGui::GetDrawData())) {
@@ -1031,6 +1154,7 @@ int RunApplication(platform::PlatformBackend &platform_backend, const LaunchOpti
                                         last_udp_frame_time, last_custom_frame_time, last_teammate_frame_time,
                                         udp_frame_count, custom_frame_count, teammate_frame_count);
             }
+            if (session_result == kReturnToLauncher) break;
         }
 
         SPDLOG_INFO("开始关闭网络与后台线程");
@@ -1042,7 +1166,8 @@ int RunApplication(platform::PlatformBackend &platform_backend, const LaunchOpti
     }
 
     set_game_input_capture_handler({});
-    return 0;
+    reset_client_session_input();
+    return session_result;
 }
 
 }// namespace RoboGo::app

@@ -208,6 +208,8 @@ message GlobalUnitStatus {
   repeated int32  robot_bullets        = 12; // 己方机器人剩余累计发弹量
   optional uint32 total_damage_ally    = 13; // 己方累计总伤害
   optional uint32 total_damage_enemy   = 14; // 对方累计总伤害
+  optional uint32 total_CP_ally        = 15; // 2027：己方控制度
+  optional uint32 total_CP_enemy       = 16; // 2027：对方控制度
 }
 
 // 2.2.5 GlobalLogisticsStatus

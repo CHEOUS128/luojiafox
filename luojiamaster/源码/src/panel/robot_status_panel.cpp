@@ -1,4 +1,78 @@
 #include "robot_status_panel.h"
+#include "hud_text.h"
+
+namespace {
+template<class Message>
+std::optional<uint32_t> Received(const std::optional<Message> &message,
+                                 bool (Message::*present)() const, uint32_t (Message::*value)() const) {
+    if (message && ((*message).*present)()) return ((*message).*value)();
+    return std::nullopt;
+}
+
+std::string NumberOrWait(std::optional<uint32_t> value) {
+    return value ? std::to_string(*value) : "等待";
+}
+
+void AllianceMeter(const char *label, std::optional<uint32_t> current,
+                   std::optional<uint32_t> limit, const ImVec4 &color) {
+    hud::Text(ImGui::GetColorU32(color), "%s  %s / %s", label, NumberOrWait(current).c_str(), NumberOrWait(limit).c_str());
+    if (current && limit && *limit != 0) {
+        ImGui::PushStyleColor(ImGuiCol_PlotHistogram, color);
+        ImGui::ProgressBar(std::min(1.f, static_cast<float>(*current) / *limit), {-1.f, 3.f}, "");
+        ImGui::PopStyleColor();
+    }
+}
+
+void AllianceStatus(const State &state) {
+    const auto &s = state.robot_static_status;
+    const auto &d = state.robot_dynamic_status;
+    hud::Label("本车状态");
+    ImGui::Separator();
+    AllianceMeter("血量", Received(d, &RobotDynamicStatus::has_current_health, &RobotDynamicStatus::current_health),
+                  Received(s, &RobotStaticStatus::has_max_health, &RobotStaticStatus::max_health),
+                  {1.f,.68f,.64f,1.f});
+    AllianceMeter("缓冲能量", Received(d, &RobotDynamicStatus::has_current_buffer_energy, &RobotDynamicStatus::current_buffer_energy),
+                  Received(s, &RobotStaticStatus::has_max_buffer_energy, &RobotStaticStatus::max_buffer_energy),
+                  {.6f,.85f,1.f,1.f});
+    const auto level = Received(s, &RobotStaticStatus::has_level, &RobotStaticStatus::level);
+    const auto exp = Received(d, &RobotDynamicStatus::has_current_experience, &RobotDynamicStatus::current_experience);
+    const auto to_upgrade = Received(d, &RobotDynamicStatus::has_experience_for_upgrade, &RobotDynamicStatus::experience_for_upgrade);
+    hud::Text(hud::white, "等级 %s   经验 %s", NumberOrWait(level).c_str(), NumberOrWait(exp).c_str());
+    hud::Text(hud::white, "升级还需 %s", NumberOrWait(to_upgrade).c_str());
+    const auto ammo = Received(d, &RobotDynamicStatus::has_remaining_ammo, &RobotDynamicStatus::remaining_ammo);
+    hud::Text(hud::white, "允许发弹量  %s", NumberOrWait(ammo).c_str());
+    ImGui::Separator();
+    hud::Label("设备状态");
+    const auto &module = state.robot_module_status;
+    using M = RobotModuleStatus;
+    struct Module {
+        const char *name;
+        bool (M::*present)() const;
+        uint32_t (M::*value)() const;
+    };
+    constexpr Module modules[]{
+        {"主控", &M::has_main_controller, &M::main_controller}, {"电源", &M::has_power_manager, &M::power_manager},
+        {"图传", &M::has_video_transmission, &M::video_transmission}, {"RFID", &M::has_rfid, &M::rfid},
+        {"定位", &M::has_uwb, &M::uwb}, {"装甲板", &M::has_armor, &M::armor},
+        {"17毫米", &M::has_small_shooter, &M::small_shooter}, {"42毫米", &M::has_big_shooter, &M::big_shooter},
+        {"超级电容", &M::has_capacitor, &M::capacitor}, {"灯条", &M::has_light_strip, &M::light_strip},
+    };
+    int received = 0, online = 0;
+    ImGuiTextBuffer offline;
+    for (const auto &m : modules) {
+        auto value = Received(module, m.present, m.value);
+        if (!value) continue;
+        ++received;
+        if (*value == 1) ++online;
+        else offline.appendf("%s%s", offline.empty() ? "" : "、", m.name);
+    }
+    if (received == 0) hud::Label("等待设备上报", hud::muted);
+    else {
+        hud::Text(hud::white, "已上报 %d 项 · 在线 %d 项", received, online);
+        if (!offline.empty()) hud::Label((std::string("离线：") + offline.c_str()).c_str(), hud::white, true);
+    }
+}
+}
 
 void ShowProgressBar(const ImVec4 &bar_color, float ratio, float width, float height) {
     ImGui::PushStyleColor(ImGuiCol_PlotHistogram, bar_color);
@@ -10,6 +84,13 @@ void ShowProgressBar(const ImVec4 &bar_color, float ratio, float width, float he
 void ShowRobotStatusPanel(const State &state) {
     ImGuiWindowFlags window_flags = ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoBackground | ImGuiWindowFlags_NoSavedSettings;
     if (!ImGui::Begin("VehicleStatusPanel", nullptr, window_flags)) {
+        ImGui::End();
+        return;
+    }
+    if (state.competition == RoboGo::app::Competition::Ul2027) {
+        ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, {ImGui::GetStyle().ItemSpacing.x, 2.f});
+        AllianceStatus(state);
+        ImGui::PopStyleVar();
         ImGui::End();
         return;
     }

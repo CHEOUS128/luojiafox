@@ -1,0 +1,38 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 800" width="1200" height="800" role="img" aria-labelledby="title desc">
+<title id="title">2027 高校联盟赛 3V3 场地简图</title>
+<desc id="desc">围挡内沿 12 米 × 8 米，原点为规则图左上，图中一个单位代表 10 毫米。红方左上、蓝方右下。轮廓按联盟赛规则 V1.0.0 图3-5描绘，名称与层级核对图3-4、3-9、3-10。虚线框仅标隧道位置，不代表通道边界。</desc>
+<style>
+text{font-family:'Microsoft YaHei','Noto Sans CJK SC',sans-serif;text-anchor:middle;fill:#263a41}
+.name{font-size:31px;font-weight:bold}.minor{font-size:24px}.small{font-size:20px}.lift{fill:#c7d2d2;stroke:#7a9396;stroke-width:2}.control{fill:#deebe4;stroke:#538a74;stroke-width:3}.guide{fill:none;stroke:#4e6574;stroke-width:2.5;stroke-dasharray:8 5}
+</style>
+<rect width="1200" height="800" fill="#f6f5ef"/>
+<g id="team-areas">
+<rect id="red-supply" x="0" y="0" width="250" height="200" fill="#f5d7ce"/>
+<rect x="950" y="600" width="250" height="200" fill="#d7e6f4"/>
+<path d="M1 200H250V1 M950 799V600H1199" stroke="#899699" stroke-width="2" fill="none"/>
+</g>
+<g id="terrain">
+<rect id="red-highland" class="lift" x="250" y="94" width="200" height="406" rx="5"/>
+<rect class="lift" x="750" y="300" width="200" height="406" rx="5"/>
+<path class="lift" d="M250 0H450V13H366V103H334V13H250Z M750 800V787H834V697H866V787H950V800Z"/>
+<rect id="center" class="control" x="450" y="250" width="300" height="300"/>
+<rect class="control" x="290" y="260" width="120" height="120"/>
+<rect class="control" x="790" y="420" width="120" height="120"/>
+<rect x="2" y="2" width="74" height="43" rx="5" fill="#788384"/>
+<rect x="1124" y="755" width="74" height="43" rx="5" fill="#788384"/>
+</g>
+<g id="tunnel-markers">
+<rect class="guide" x="326" y="19" width="48" height="57" rx="5"/>
+<rect class="guide" x="826" y="724" width="48" height="57" rx="5"/>
+<path d="M377 47H477 M823 753H723" stroke="#4e6574" fill="none" stroke-width="2"/>
+<text x="543" y="56" class="minor">隧道位置</text><text x="657" y="762" class="minor">隧道位置</text>
+</g>
+<g id="labels">
+<text x="125" y="108" style="fill:#9a4236" class="name">红方补给区</text>
+<text x="1075" y="710" style="fill:#365f94" class="name">蓝方补给区</text>
+<text x="350" y="202" class="name">高地</text><text x="850" y="634" class="name">高地</text>
+<text x="350" y="330" class="minor">控制区</text><text x="850" y="490" class="minor">控制区</text>
+<text x="600" y="414" class="name">中央控制区</text>
+</g>
+<rect x="1.5" y="1.5" width="1197" height="797" fill="none" stroke="#344547" stroke-width="3"/>
+</svg>

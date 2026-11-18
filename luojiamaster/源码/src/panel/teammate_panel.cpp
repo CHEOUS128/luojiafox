@@ -1,4 +1,5 @@
 #include "teammate_panel.h"
+#include "hud_text.h"
 
 #include <cstdio>
 
@@ -29,10 +30,7 @@ void ShowCenteredText(const char *message) {
     ImGui::PopTextWrapPos();
 }
 
-// 队友画面是否倒置：
-//   官方 UDP 图传本身是 180° 倒的，我们平时靠 GPU 的 UV 翻转显示。
-//   队友那一路是把「原始字节」原样转过来的，所以对方握手告诉我们的
-//   「他那边画面倒不倒」就是这段字节的真实朝向，直接用，不要动。
+// 发送端转发原始视频，另外告诉我们操作手是否选了翻转。初始按原方向显示。
 bool PeerFrameInverted(const TeammateViewState &view) {
     return view.frame_inverted;
 }
@@ -71,21 +69,42 @@ float TeammateCollapsedHeight() {
 bool ShowTeammateViewport(const TeammateViewState &view,
                           const ImVec2 &pos,
                           const ImVec2 &size,
-                          const bool collapsed) {
-    if (!view.enabled) {
-        return false;
-    }
-
+                          bool alliance, bool local_trial) {
     ImGui::SetNextWindowPos(pos, ImGuiCond_Always);
     ImGui::SetNextWindowSize(size, ImGuiCond_Always);
     ImGuiWindowFlags flags = ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoDecoration
                              | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings;
+    if (alliance) flags |= ImGuiWindowFlags_NoBackground | ImGuiWindowFlags_NoScrollbar;
     if (!ImGui::Begin("TeammateViewPanel", nullptr, flags)) {
         ImGui::End();
         return false;
     }
 
-    ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(TitleColor(view)), "队友视角");
+    if (alliance && !view.enabled) {
+        hud::Label(view.collapsed ? "队友已关闭 · K 展开" : "队友视角 · K 收起", hud::muted);
+        if (!view.collapsed) {
+            ImGui::Separator();
+            hud::Label(local_trial ? "本地试用只有本车的两路录像。" : "队友连接已关闭。", hud::muted, true);
+        }
+        ImGui::End();
+        return false;
+    }
+    const bool role_b = view.role == 'B';
+    const char *role_label = view.role_from_default ? (role_b ? "[默认B]" : "[默认A]") : (role_b ? "[B]" : "[A]");
+    const char *status = LinkStatusText(view);
+    const char *title = view.collapsed ? "队友视角 · K 展开" : "队友视角 · K 收起";
+    const bool compact = alliance && ImGui::CalcTextSize(title).x + ImGui::CalcTextSize(role_label).x
+                         + ImGui::CalcTextSize(status).x + 12.f > ImGui::GetContentRegionAvail().x;
+    if (compact) role_label = role_b ? "[B]" : "[A]";
+    if (compact) title = view.collapsed ? "队友 K展开" : "队友 K收起";
+    if (alliance) hud::Label(title, view.live ? TitleColor(view) : hud::white);
+    else ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(TitleColor(view)), "队友视角");
+    if (!view.enabled) {
+        ImGui::Separator();
+        ImGui::TextWrapped("未连接 · 队友链路已关闭");
+        ImGui::End();
+        return false;
+    }
     if (ImGui::IsItemHovered()) {
         ImGui::SetTooltip("K 折叠/展开\nL 占主画面（再按退出，滚轮 1x~4x 放大）");
     }
@@ -93,12 +112,10 @@ bool ShowTeammateViewport(const TeammateViewState &view,
     // 角色标签：点一下在 A/B 之间切换（换对方的 IP），选择会写回 exe 同目录的 ini。
     // 只改队友链路的地址，不碰本机官方链路；切换后链路按新地址重连。
     // 用 ImGuiKey_MouseLeft 只认鼠标左键，不会被发给机器人的键影响。
-    const bool role_b = (view.role == 'B');
     ImGui::PushStyleColor(ImGuiCol_Text, role_b ? IM_COL32(150, 200, 255, 255)
                                                : IM_COL32(255, 190, 120, 255));
-    const char *role_label = view.role_from_default ? (role_b ? "[默认B]" : "[默认A]")
-                                                    : (role_b ? "[B]" : "[A]");
-    ImGui::TextUnformatted(role_label);
+    if (alliance) hud::Label(role_label, ImGui::GetColorU32(ImGuiCol_Text));
+    else ImGui::TextUnformatted(role_label);
     ImGui::PopStyleColor();
     if (ImGui::IsItemHovered() && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
         ImGui::End();
@@ -109,9 +126,19 @@ bool ShowTeammateViewport(const TeammateViewState &view,
                           role_b ? "A" : "B");
     }
     ImGui::SameLine(0.0f, 6.0f);
-    ImGui::TextDisabled("%s", LinkStatusText(view));
+    if (alliance) hud::Label(status, hud::muted);
+    else ImGui::TextDisabled("%s", status);
 
-    if (collapsed) {
+    if (view.collapsed) {
+        ImGui::End();
+        return false;
+    }
+    if (alliance && !view.display_ready) {
+        ImGui::Separator();
+        const char *message = local_trial ? "本地试用只有本车的两路录像。"
+                              : view.peer_connected || view.peer_served ? "已连接，等待队友图传。"
+                              : "等待队友连接。";
+        hud::Label(message, hud::muted, true);
         ImGui::End();
         return false;
     }
@@ -145,7 +172,7 @@ bool ShowTeammateViewport(const TeammateViewState &view,
     return false;
 }
 
-void ShowTeammateFullscreen(const TeammateViewState &view) {
+void ShowTeammateFullscreen(const TeammateViewState &view, bool menu_open) {
     if (!view.enabled || !view.take_main_screen) {
         return;
     }
@@ -154,7 +181,7 @@ void ShowTeammateFullscreen(const TeammateViewState &view) {
     // 直接画在背景层（和本车主画面同一层），HUD 面板照常显示在上面；
     // 状态条画在前景层，保证不会被 HUD 盖住。
     ImDrawList *draw_list = ImGui::GetBackgroundDrawList();
-    ImDrawList *foreground = ImGui::GetForegroundDrawList();
+    ImDrawList *foreground = menu_open ? draw_list : ImGui::GetForegroundDrawList();
     const bool has_image = view.display_ready && view.texture_ref.GetTexID() != ImTextureID_Invalid
                            && view.texture_size.x > 0.0f && view.texture_size.y > 0.0f;
 

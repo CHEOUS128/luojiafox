@@ -11,6 +11,9 @@ void ShowBottomPanel(const State &state) {
     };
 
     std::vector<StatusLine> status_lines;
+    if (state.match_notice && std::chrono::steady_clock::now() < state.match_notice->until) {
+        status_lines.push_back({state.match_notice->text, {.98f, .85f, .52f, 1.f}});
+    }
 
     // 复活状态显示
     if (state.robot_respawn_status.has_value()) {
@@ -97,12 +100,13 @@ void ShowBottomPanel(const State &state) {
         status_lines.push_back({std::move(counter_text), ImVec4(1.0f, 0.78f, 0.25f, 1.0f)});
     }
 
-    size_t line_count = std::max<size_t>(1, status_lines.size());
+    if (status_lines.empty()) return;
+    size_t line_count = status_lines.size();
     float panel_height = font_size * static_cast<float>(line_count)
                          + style.ItemSpacing.y * static_cast<float>(line_count - 1)
                          + style.WindowPadding.y * 2;
 
-    ImGuiWindowFlags window_flags = ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove |
+    ImGuiWindowFlags window_flags = ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove |
                                     ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoBackground;
     ImGui::SetNextWindowPos(ImVec2(0, viewport->Size.y - panel_height), ImGuiCond_Always);
     ImGui::SetNextWindowSize(ImVec2(viewport->Size.x, panel_height), ImGuiCond_Always);
@@ -114,7 +118,12 @@ void ShowBottomPanel(const State &state) {
 
     for (const auto &line: status_lines) {
         ImVec2 text_size = ImGui::CalcTextSize(line.text.c_str());
-        ImGui::SetCursorPosX((viewport->Size.x - text_size.x) / 2.0f);
+        ImGui::SetCursorPosX(std::max(0.f, (viewport->Size.x - text_size.x) / 2.0f));
+        if (state.competition == RoboGo::app::Competition::Ul2027) {
+            const ImVec2 p = ImGui::GetCursorScreenPos();
+            ImGui::GetWindowDrawList()->AddRectFilled({p.x - 5.f, p.y - 2.f},
+                    {p.x + text_size.x + 5.f, p.y + text_size.y + 2.f}, IM_COL32(10, 17, 23, 215), 4.f);
+        }
         ImGui::PushStyleColor(ImGuiCol_Text, line.color);
         ImGui::Text("%s", line.text.c_str());
         ImGui::PopStyleColor();

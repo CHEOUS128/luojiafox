@@ -212,6 +212,14 @@ namespace RoboGo::video {
         drain_packet_queue();
     }
 
+    void VideoShardsManager::request_stream_reset() {
+        std::deque<std::vector<uint8_t>> old_packets;
+        std::lock_guard lock(packet_mutex);
+        old_packets.swap(packet_queue);
+        queued_bytes = 0;
+        reset_pending = true;
+    }
+
     void VideoShardsManager::reset_stream() {
         drain_packet_queue();
         reset_stream_state();

@@ -4,6 +4,18 @@
 
 namespace RoboGo::app {
 
+enum class Competition { Uc2026, Ul2027, Uc2027 };
+
+inline constexpr const char *CompetitionName(Competition competition) {
+    switch (competition) {
+        case Competition::Uc2026: return "2026 超级对抗赛";
+        case Competition::Ul2027: return "2027 高校联盟赛";
+        case Competition::Uc2027: return "2027 超级对抗赛";
+    }
+    return "";
+}
+inline constexpr int kReturnToLauncher = 220;
+
 struct VideoFrame {
     std::vector<uint8_t> buffer;
     int width = 0;
@@ -37,6 +49,7 @@ enum class TextureSlot {
     MiniMap,
     // 队友第一视角（2027 互联功能），没有 --teammate-* 参数时永远不会被创建
     TeammateVideo,
+    UlMap,  // Read-only UL venue map. Never replaces the legacy minimap.
 };
 
 using VideoFrameHandler = std::function<void(VideoFrame &&frame)>;
@@ -53,6 +66,9 @@ struct TextureView {
 };
 
 struct LaunchOptions {
+    Competition competition = Competition::Ul2027;
+    bool local_trial = false;
+    bool uc_classic = false;
     std::string mqtt_server;
     std::string video_port;
     std::string mqtt_host;

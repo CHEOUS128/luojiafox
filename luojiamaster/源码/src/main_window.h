@@ -1,6 +1,7 @@
 #pragma once
 
 #include <pch.h>
+#include "app/application_types.h"
 #include "custom_control_payload.h"
 #include "io/mqtt_client.h"
 #include "panel/teammate_panel.h"
@@ -29,8 +30,26 @@ struct BuffWithTimestamp {
     std::chrono::steady_clock::time_point update_time;
 };
 
+struct TimedMatchNotice {
+    std::string text;
+    std::chrono::steady_clock::time_point until;
+};
+
+struct ReturnedPreference {
+    uint32_t value = 0;
+    std::chrono::steady_clock::time_point received_at;
+};
+
 struct State {
+    RoboGo::app::Competition competition = RoboGo::app::Competition::Uc2026;
+    uint64_t round_generation = 0;
+    struct UlRosterEvidence {
+        bool heavy_at_450 = false;
+        bool infantry_at_350 = false;
+    };
+    std::array<UlRosterEvidence, 2> ul_roster_caps{}; // red, blue; reset on a new round
     std::optional<GameStatus> game_status;
+    std::optional<TimedMatchNotice> match_notice;
     std::optional<GlobalUnitStatus> global_unit_status;
     std::optional<GlobalLogisticsStatus> global_logistics_status;
     std::optional<GlobalSpecialMechanism> global_special_mechanism;
@@ -46,6 +65,7 @@ struct State {
     std::optional<RadarInfoToClient> radar_info_to_client;
     std::optional<TechCoreMotionStateSync> tech_core_motion_state_sync;
     std::optional<RobotPerformanceSelectionSync> robot_performance_selection_sync;
+    std::optional<ReturnedPreference> shooter_return, chassis_return, sentry_return;
     std::chrono::steady_clock::time_point last_received_robot_performance_selection_sync;
     std::optional<DeployModeStatusSync> deploy_mode_status_sync;
     std::optional<RuneStatusSync> rune_status_sync;
@@ -103,6 +123,10 @@ State CreateInitialState();
 // 主窗口一帧里，用户通过界面触发、需要 application.cpp 去改状态的两件事。
 struct MainWindowActions {
     bool toggle_udp_video_inversion = false;  // 按 I / 点翻转按钮：切换官方 UDP 画面 180°
+    bool return_to_events = false;
+    bool close_menu = false;
+    bool open_menu = false;
+    bool toggle_main_video = false;
     bool switch_teammate_role = false;        // 点队友小窗标题条上的 [A]/[B]：换队友角色
 };
 
@@ -120,7 +144,7 @@ MainWindowActions ShowMainWindow(const State &state,
                                  bool udp_video_inverted,
                                  ImTextureRef mini_map_texture_ref,
                                  const ImVec2 &mini_map_texture_size,
-                                 const TeammateViewState &teammate_view);
+                                 const TeammateViewState &teammate_view, bool local_trial, bool alliance_menu_open);
 
 void UpdateState(State &state);
 
@@ -132,7 +156,8 @@ void HandleMqttMessage(State &state,
                        RoboGo::io::MqttClient &mqtt_client,
                        const std::string &topic,
                        const std::string &payload,
-                       const CustomByteBlockPacketHandler &custom_byte_block_packet_handler = {});
+                       const CustomByteBlockPacketHandler &custom_byte_block_packet_handler = {},
+                       std::chrono::steady_clock::time_point received_at = std::chrono::steady_clock::now());
 
 void AppendVehicleLog(State &state, int type, const std::string &text);
 

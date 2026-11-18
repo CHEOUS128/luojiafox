@@ -1,4 +1,5 @@
 #include "buff_panel.h"
+#include "hud_text.h"
 
 std::string GetBuffName(uint32_t buff_type, int32_t buff_level) {
     std::string name;
@@ -76,7 +77,9 @@ void ShowBuffPanel(const State &state) {
     float progress_bar_height = 3.0f;
 
     // Panel title
-    ImGui::TextColored(ImVec4(1.0f, 1.0f, 1.0f, 1.0f), "Buff 状态");
+    const bool alliance = state.competition == RoboGo::app::Competition::Ul2027;
+    if (alliance) hud::Label("本车增益");
+    else ImGui::TextUnformatted("Buff 状态");
     ImGui::Separator();
 
     ImGui::Spacing();
@@ -84,14 +87,9 @@ void ShowBuffPanel(const State &state) {
     // Get current robot ID
     uint32_t current_robot_id = state.robot_static_status.has_value() ? state.robot_static_status->robot_id() : 0;
 
-    if (state.active_buffs.empty()) {
-        ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "无激活的 Buff");
-        ImGui::End();
-        return;
-    }
-
     // Get current time for countdown
     auto now = std::chrono::steady_clock::now();
+    bool visible = false;
 
     // Display each buff for current robot only
     for (const auto &buff_entry: state.active_buffs) {
@@ -114,21 +112,28 @@ void ShowBuffPanel(const State &state) {
             continue;
         }
 
-        float time_ratio = static_cast<float>(remaining_time) /
-                           static_cast<float>(buff.buff_max_time());
+        visible = true;
 
         // Buff name with level included in the name
-        ImGui::TextColored(buff_color, "%s", buff_name.c_str());
+        if (alliance) hud::Label(buff_name.c_str(), ImGui::GetColorU32(buff_color));
+        else ImGui::TextColored(buff_color, "%s", buff_name.c_str());
 
         // Time progress bar
-        ImGui::PushStyleColor(ImGuiCol_PlotHistogram, buff_color);
-        ImGui::ProgressBar(time_ratio, ImVec2(content_avail.x, progress_bar_height), "");
-        ImGui::PopStyleColor();
-
-        // Time text
-        ImGui::Text("%d/%d 秒", remaining_time, buff.buff_max_time());
+        if (buff.buff_max_time() > 0) {
+            const float ratio = std::min(1.f, static_cast<float>(remaining_time) / buff.buff_max_time());
+            ImGui::PushStyleColor(ImGuiCol_PlotHistogram, buff_color);
+            ImGui::ProgressBar(ratio, ImVec2(content_avail.x, progress_bar_height), "");
+            ImGui::PopStyleColor();
+        }
+        if (alliance) hud::Text(hud::white, "剩余 %d 秒", remaining_time);
+        else if (!buff.buff_max_time()) ImGui::Text("剩余 %d 秒", remaining_time);
+        else ImGui::Text("%d/%u 秒", remaining_time, buff.buff_max_time());
 
         ImGui::Spacing();
+    }
+    if (!visible) {
+        if (alliance) hud::Label("暂无增益", hud::muted);
+        else ImGui::TextDisabled("无激活的 Buff");
     }
 
     ImGui::End();

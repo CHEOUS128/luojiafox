@@ -104,6 +104,9 @@ namespace {
 
 namespace RoboGo::io {
 
+    MqttClient::MqttClient(std::function<void(const std::string &, const std::string &)> trial_publication)
+        : local_only_(true), trial_publication_(std::move(trial_publication)) {}
+
     MqttClient::MqttClient(boost::asio::io_context &io_context,
                            std::string host_ip,
                            std::string port,
@@ -116,6 +119,7 @@ namespace RoboGo::io {
     }
 
     void MqttClient::set_server_endpoint(std::string host_ip, std::string port) {
+        if (local_only_) return;
         if (host_ip.empty() || port.empty()) {
             SPDLOG_WARN("忽略空的MQTT服务端地址 host={} port={}", host_ip, port);
             return;
@@ -155,14 +159,15 @@ namespace RoboGo::io {
     }
 
     void MqttClient::set_client_id(std::string client_id) {
-        SPDLOG_INFO("更新MQTT客户端ID old={} new={}", this->client_id, client_id);
         bool has_client_id = false;
         {
             std::lock_guard<std::mutex> lock(client_id_mutex);
+            SPDLOG_INFO("更新客户端身份 old={} new={} local={}", this->client_id, client_id, local_only_);
             this->client_id = std::move(client_id);
             has_client_id = !this->client_id.empty();
         }
-        connection_state.store(has_client_id ? ConnectionState::Connecting : ConnectionState::Idle, std::memory_order_release);
+        const auto active = local_only_ ? ConnectionState::Connected : ConnectionState::Connecting;
+        connection_state.store(has_client_id ? active : ConnectionState::Idle, std::memory_order_release);
         is_client_id_updated.store(true, std::memory_order_release);
     }
 
@@ -409,6 +414,11 @@ namespace RoboGo::io {
     }
 
     void MqttClient::publish(const std::string &topic, const std::string &message) {
+        if (local_only_) {
+            if (trial_publication_ && get_connection_state() == ConnectionState::Connected)
+                trial_publication_(topic, message);
+            return;
+        }
         std::string host_ip_cloned;
         std::string port_cloned;
         {

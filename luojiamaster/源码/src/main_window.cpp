@@ -1,4 +1,5 @@
 #include "main_window.h"
+#include "app/match_values.h"
 #include "keyboard_mouse_state_manager.h"
 #include "logging/logging.h"
 #include "panel/bottom_panel.h"
@@ -78,6 +79,12 @@ namespace {
         return ImVec2(available_size.y * image_aspect, available_size.y);
     }
 
+    MenuAction DrawCenteredMenu(const State &state, RoboGo::io::MqttClient &client, bool local_trial, bool waiting,
+                                bool over_alliance_hud = false) {
+        PositionMatchMenu();
+        return StartPanel(state, client, local_trial, over_alliance_hud, waiting);
+    }
+
     constexpr float kHeroRulerSpacingPx = 200.0f;
     constexpr ImU32 kRulerLineColor = IM_COL32(180, 80, 255, 120);
     constexpr ImU32 kRulerLabelColor = IM_COL32(255, 255, 255, 180);
@@ -137,13 +144,16 @@ MainWindowActions ShowMainWindow(const State &state,
                                  const bool udp_video_inverted,
                                  const ImTextureRef mini_map_texture_ref,
                                  const ImVec2 &mini_map_texture_size,
-                                 const TeammateViewState &teammate_view) {
+                                 const TeammateViewState &teammate_view, bool local_trial, bool alliance_menu_open) {
     const ImGuiViewport *viewport = ImGui::GetMainViewport();
     ImGuiStyle &style = ImGui::GetStyle();
     float font_size = ImGui::GetFontSize();
 
     // 队友画面按 L 接管主画面时，主背景让位给队友那一路（在下面统一画）。
     const bool teammate_as_main = teammate_view.enabled && teammate_view.take_main_screen;
+    const bool alliance = state.competition == RoboGo::app::Competition::Ul2027;
+    const bool menu_open = alliance ? alliance_menu_open : !is_in_game_mode();
+    const bool waiting_for_video = !udp_video_display_ready && !custom_video_display_ready;
 
     const ImTextureRef background_video_texture_ref = using_custom_video_as_main
                                                               ? custom_video_texture_ref
@@ -156,8 +166,16 @@ MainWindowActions ShowMainWindow(const State &state,
     // 主画面用「粗」超时：自定义流断包时继续显示最后一帧（最多 kCustomVideoFallbackTimeout），
     // 而不是留一片黑。所以按 H 之后切到自定义流，断包时画面只会冻住、不会消失。
     const bool main_image_available = using_custom_video_as_main
-                                              ? custom_video_hold_as_main
+                                              ? (alliance ? custom_video_display_ready : custom_video_hold_as_main)
                                               : udp_video_display_ready;
+    if (!menu_open && !teammate_as_main && !main_image_available) {
+        // Background layer: never intercept input or cover the existing login/menu.
+        const char *label = using_custom_video_as_main ? "等待工业相机图传" : "等待官方图传";
+        const auto size = ImGui::CalcTextSize(label);
+        const auto p = ImVec2(viewport->Pos.x + (viewport->Size.x - size.x) * 0.5f,
+                              viewport->Pos.y + viewport->Size.y * (alliance ? 0.5f : 0.15f) + style.ItemSpacing.y);
+        ImGui::GetBackgroundDrawList()->AddText(p, IM_COL32(201, 210, 215, 255), label);
+    }
     if (!teammate_as_main && main_image_available && background_video_texture_ref.GetTexID() != ImTextureID_Invalid) {
         ImDrawList *draw_list = ImGui::GetBackgroundDrawList();
         // 180° 旋转放在 GPU 做（UV 翻转），避免 CPU 逐像素交换整帧 1080p 数据。
@@ -165,7 +183,7 @@ MainWindowActions ShowMainWindow(const State &state,
         const bool main_video_inverted = using_custom_video_as_main ? false : udp_video_inverted;
         const ImVec2 uv0 = main_video_inverted ? ImVec2(1.0f, 1.0f) : ImVec2(0.0f, 0.0f);
         const ImVec2 uv1 = main_video_inverted ? ImVec2(0.0f, 0.0f) : ImVec2(1.0f, 1.0f);
-        if (background_video_size.x > 0.0f && background_video_size.y > 0.0f && using_custom_video_as_main) {
+        if (background_video_size.x > 0.0f && background_video_size.y > 0.0f && (alliance || using_custom_video_as_main)) {
             const ImVec2 fitted_size = FitImageSize(viewport->Size, background_video_size);
             main_image_min = ImVec2((viewport->Size.x - fitted_size.x) * 0.5f,
                                     (viewport->Size.y - fitted_size.y) * 0.5f);
@@ -181,27 +199,54 @@ MainWindowActions ShowMainWindow(const State &state,
         const bool is_hero = (robot_id == 1 || robot_id == 101);
         const bool is_deploy_mode = state.deploy_mode_status_sync.has_value()
                                     && state.deploy_mode_status_sync->status() == 1;
-        if (is_hero && is_deploy_mode && main_image_available) {
+        if (!alliance && is_hero && is_deploy_mode && main_image_available) {
             DrawHeroRulerLines(ImGui::GetBackgroundDrawList(),
                                main_image_min, main_image_max,
                                background_video_size, kHeroRulerSpacingPx);
         }
     }
 
+    if (alliance &&
+        mqtt_client.get_connection_state() != RoboGo::io::MqttClient::ConnectionState::Connected) {
+        const auto action = DrawCenteredMenu(state, mqtt_client, local_trial, waiting_for_video);
+        return {.return_to_events = action == MenuAction::ReturnToEvents};
+    }
+    // The first click after opening the menu must not hit an underlying HUD widget.
+    ImGui::PushItemFlag(ImGuiItemFlags_Disabled, menu_open && MatchMenuBounds().Contains(ImGui::GetMousePos()));
+    // Let a match-sized viewport enlarge readouts without making the video insets larger.
+    // Discrete pixel sizes keep dragging the window from creating a new font for every pixel.
+    const float usable_text = std::min(viewport->Size.y / 58.f, viewport->Size.x / 90.f);
+    const float match_font = std::clamp(2.f * std::floor(usable_text / 2.f), font_size, std::max(font_size, 38.f));
+    const float large_view = alliance ? std::clamp(4.f * (match_font / font_size - 1.f), 0.f, 1.f) : 0.f;
+    if (large_view > 0.f) {
+        ImGui::PushFont(nullptr, style.FontSizeBase * match_font / font_size);
+        font_size = ImGui::GetFontSize();
+    }
+    const float left_panel_top = alliance ? std::max(viewport->Size.y * (.09f + .01f * large_view), 4.f * ImGui::GetTextLineHeightWithSpacing() + 4.f)
+                                          : viewport->Size.y * .15f;
+    // Wider monitors leave more space for video once the side readouts reach a comfortable width.
+    const float left_panel_width = alliance ? std::min(viewport->Size.x * .30f, std::clamp(viewport->Size.x * (.20f - .02f * large_view), 14.f * font_size, 28.f * font_size))
+                                            : viewport->Size.x * .20f;
+    const auto id = alliance ? mqtt_client.get_client_id() : std::string{};
+    const bool blue = id == "101" || id == "103";
+    const bool heavy = id == "1" || id == "101";
     ImGui::SetNextWindowPos(ImVec2(0, 0), ImGuiCond_Always);
-    ImGui::SetNextWindowSize(ImVec2(viewport->Size.x, viewport->Size.y * 0.15f));
-    ShowHeaderPanel(state);
+    ImGui::SetNextWindowSize(ImVec2(viewport->Size.x, left_panel_top));
+    bool open_menu = false;
+    if (alliance) {
+        open_menu = ShowAllianceHeader(state, local_trial, blue, heavy);
+    } else ShowHeaderPanel(state);
 
-    float robot_status_panel_height = font_size * 10 + style.SeparatorSize + 4.0f * 4 + style.ItemSpacing.y * 10 + style.WindowPadding.y * 2;
+    const float legacy_status_height = font_size * 10 + style.SeparatorSize + 4.0f * 4 + style.ItemSpacing.y * 10 + style.WindowPadding.y * 2;
+    const float robot_status_panel_height = alliance ? std::min(legacy_status_height, (viewport->Size.y-left_panel_top)*.49f)
+                                                    : legacy_status_height;
     ImGui::SetNextWindowPos(ImVec2(0, viewport->Size.y - robot_status_panel_height), ImGuiCond_Always);
-    ImGui::SetNextWindowSize(ImVec2(viewport->Size.x * 0.2f, robot_status_panel_height));
+    ImGui::SetNextWindowSize(ImVec2(left_panel_width, robot_status_panel_height));
     ShowRobotStatusPanel(state);
 
-    const float left_panel_width = viewport->Size.x * 0.2f;
-    const float left_panel_top = viewport->Size.y * 0.15f;
-    const float left_panel_total_height = viewport->Size.y - viewport->Size.y * 0.2f - robot_status_panel_height;
+    const float left_panel_total_height = viewport->Size.y - (alliance ? left_panel_top : viewport->Size.y * .2f) - robot_status_panel_height;
     const float left_panel_spacing = style.ItemSpacing.y;
-    const float custom_video_panel_height = (left_panel_total_height - left_panel_spacing) * 0.5f;
+    const float custom_video_panel_height = std::max(1.f,(left_panel_total_height - left_panel_spacing) * (alliance ? .61f : .5f));
     const float log_panel_height = left_panel_total_height - left_panel_spacing - custom_video_panel_height;
     const ImTextureRef secondary_video_texture_ref = using_custom_video_as_main
                                                              ? video_texture_ref
@@ -212,12 +257,14 @@ MainWindowActions ShowMainWindow(const State &state,
     const bool secondary_video_display_ready = using_custom_video_as_main
                                                        ? udp_video_display_ready
                                                        : custom_video_display_ready;
-    const char *secondary_video_title = using_custom_video_as_main
+    const char *secondary_video_title = alliance ? (using_custom_video_as_main ? "官方图传" : "工业相机") : using_custom_video_as_main
                                                 ? "UDP 视频流"
                                                 : "本车视频";
     std::string secondary_video_unavailable_message;
     if (!secondary_video_display_ready) {
-        if (using_custom_video_as_main) {
+        if (alliance) {
+            secondary_video_unavailable_message = using_custom_video_as_main ? "等待官方图传" : "等待工业相机";
+        } else if (using_custom_video_as_main) {
             secondary_video_unavailable_message = prefer_custom_video_as_main
                                                           ? "UDP 视频流当前不可用。"
                                                           : "UDP 视频流当前不可用，主画面正在临时使用 CustomByteBlock 视频流；UDP 恢复后会自动切回。";
@@ -234,56 +281,57 @@ MainWindowActions ShowMainWindow(const State &state,
 
     ImGui::SetNextWindowPos(ImVec2(0, left_panel_top), ImGuiCond_Always);
     ImGui::SetNextWindowSize(ImVec2(left_panel_width, custom_video_panel_height));
+    bool toggle_main_video = false;
     const bool toggle_udp_video_inversion_requested = ShowCustomVideoPanel(
             secondary_video_texture_ref,
             secondary_video_size,
             secondary_video_title,
             secondary_video_display_ready,
             secondary_video_unavailable_message,
-            udp_video_inverted);
+            udp_video_inverted, !alliance || using_custom_video_as_main, alliance ? &toggle_main_video : nullptr);
 
     ImGui::SetNextWindowPos(ImVec2(0, left_panel_top + custom_video_panel_height + left_panel_spacing), ImGuiCond_Always);
     ImGui::SetNextWindowSize(ImVec2(left_panel_width, log_panel_height));
     ShowLogPanel(state);
 
-    if (is_in_game_mode()) {
+    MenuAction menu_action = MenuAction::None;
+    if (!alliance && is_in_game_mode()) {
         ImGui::SetNextWindowPos(ImVec2(0, 0), ImGuiCond_Always);
         ImGui::SetNextWindowSize(ImVec2(viewport->Size.x, viewport->Size.y));
         ShowCrosshair(state);
-    } else {
-        float width = 750 * ImGui::GetScale();
-        float height = 500 * ImGui::GetScale();
-        ImGui::SetNextWindowPos(ImVec2((viewport->Size.x - width) / 2, (viewport->Size.y - height) / 2), ImGuiCond_Always);
-        ImGui::SetNextWindowSize(ImVec2(width, height));
-        StartPanel(state, mqtt_client);
     }
 
-    float mini_map_width = viewport->Size.x * 0.2f;
-    float mini_map_height = mini_map_width / 28 * 15;
+    const float mini_map_width = left_panel_width;
+    const float mini_map_height = alliance ? std::min(viewport->Size.y * .33f, mini_map_width * 2.f/3.f + ImGui::GetTextLineHeightWithSpacing() + 2.f*style.WindowPadding.y)
+                                           : mini_map_width / 28 * 15;
     ImGui::SetNextWindowPos(ImVec2(viewport->Size.x - mini_map_width, viewport->Size.y - mini_map_height), ImGuiCond_Always);
     ImGui::SetNextWindowSize(ImVec2(mini_map_width, mini_map_height));
-    ShowMiniMap(state, mqtt_client, mini_map_texture_ref, mini_map_texture_size);
+    if (alliance) ShowAllianceVenueMap(mini_map_texture_ref, mini_map_texture_size, blue);
+    else ShowMiniMap(state, mqtt_client, mini_map_texture_ref, mini_map_texture_size);
 
     // 队友视角小窗：占右侧栏最上面那一块，BuffPanel 从它下面开始。
     // 默认就画（双击 exe 就有），标题条上的 [A]/[B] 点一下切角色。
-    float teammate_panel_width = viewport->Size.x * 0.2f;
+    float teammate_panel_width = left_panel_width;
     float teammate_panel_height = 0.0f;
     bool teammate_role_toggle_requested = false;
-    if (teammate_view.enabled) {
+    if (teammate_view.enabled || alliance) {
         const float collapsed_height = TeammateCollapsedHeight();
-        const float expanded_height = viewport->Size.x * 0.2f / 16.0f * 9.0f;
-        teammate_panel_height = teammate_view.collapsed ? collapsed_height : expanded_height;
-        const ImVec2 teammate_pos(viewport->Size.x - teammate_panel_width, viewport->Size.y * 0.15f);
+        const float expanded_height = std::min(teammate_panel_width * 9.f/16.f, viewport->Size.y * (alliance ? .29f : 1.f));
+        const float waiting_height = collapsed_height + 2.5f * ImGui::GetTextLineHeightWithSpacing();
+        teammate_panel_height = teammate_view.collapsed ? collapsed_height
+                              : alliance && !teammate_view.display_ready ? std::min(expanded_height, waiting_height)
+                              : expanded_height;
+        const ImVec2 teammate_pos(viewport->Size.x - teammate_panel_width, left_panel_top);
         teammate_role_toggle_requested =
                 ShowTeammateViewport(teammate_view,
                                      teammate_pos,
                                      ImVec2(teammate_panel_width, teammate_panel_height),
-                                     teammate_view.collapsed);
+                                     alliance, local_trial);
     }
 
-    float buff_panel_width = viewport->Size.x * 0.2f;
+    float buff_panel_width = left_panel_width;
     // 小窗和 Buff 面板之间留 6 像素，不然两块面板会贴在一起像被压扁了。
-    float buff_panel_top = viewport->Size.y * 0.15f + teammate_panel_height
+    float buff_panel_top = left_panel_top + teammate_panel_height
                            + (teammate_panel_height > 0.0f ? 6.0f : 0.0f);
     float buff_panel_height = viewport->Size.y - buff_panel_top - mini_map_height;
     if (buff_panel_height < 0.0f) {
@@ -295,24 +343,30 @@ MainWindowActions ShowMainWindow(const State &state,
 
     // L 接管主画面：画在所有面板的最上层。
     if (teammate_as_main) {
-        ShowTeammateFullscreen(teammate_view);
+        ShowTeammateFullscreen(teammate_view, menu_open);
     }
 
     ShowBottomPanel(state);
+    if (large_view > 0.f) ImGui::PopFont();
+    ImGui::PopItemFlag();
+    if (menu_open) menu_action = DrawCenteredMenu(state, mqtt_client, local_trial, waiting_for_video, alliance);
 
-    return MainWindowActions{toggle_udp_video_inversion_requested, teammate_role_toggle_requested};
+    if (!alliance && local_trial && is_in_game_mode()) {
+        const ImVec2 p(viewport->Pos.x + style.WindowPadding.x, viewport->Pos.y + style.WindowPadding.y);
+        ImGui::GetForegroundDrawList()->AddText(p, IM_COL32(246,207,105,255), "本地试用");
+    }
+    return MainWindowActions{.toggle_udp_video_inversion = toggle_udp_video_inversion_requested,
+                             .return_to_events = menu_action == MenuAction::ReturnToEvents,
+                             .close_menu = menu_action == MenuAction::Resume,
+                             .open_menu = open_menu,
+                             .toggle_main_video = toggle_main_video,
+                             .switch_teammate_role = teammate_role_toggle_requested};
 }
 
 void UpdateState(State &state) {
     auto now = std::chrono::steady_clock::now();
     const std::size_t previous_size = state.active_buffs.size();
-    std::erase_if(state.active_buffs,
-                  [now](const BuffWithTimestamp &buff_entry) {
-                      auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(
-                                             now - buff_entry.update_time)
-                                             .count();
-                      return elapsed >= static_cast<int>(buff_entry.buff.buff_left_time());
-                  });
+    RoboGo::app::ExpireHudTimers(state, now);
     const std::size_t removed = previous_size - state.active_buffs.size();
     if (removed > 0) {
         SPDLOG_DEBUG("清理过期Buff removed={} remaining={}", removed, state.active_buffs.size());
@@ -383,7 +437,8 @@ void HandleMqttMessage(State &state,
                        RoboGo::io::MqttClient &mqtt_client,
                        const std::string &topic,
                        const std::string &payload,
-                       const CustomByteBlockPacketHandler &custom_byte_block_packet_handler) {
+                       const CustomByteBlockPacketHandler &custom_byte_block_packet_handler,
+                       std::chrono::steady_clock::time_point received_at) {
     (void) mqtt_client;
     // MQTT 入站消息的统一分发入口：
     // 1. 根据 topic 选择对应的 protobuf 类型并反序列化 payload。
@@ -409,7 +464,7 @@ void HandleMqttMessage(State &state,
                 SPDLOG_INFO("比赛开始，空中支援剩余反制次数初始化为{}",
                             kInitialAirSupportCounterRemaining);
             }
-            state.game_status = game_status;
+            RoboGo::app::ApplyMatchClock(state, std::move(game_status));
         } else {
             log_parse_failure(topic);
         }
@@ -418,6 +473,10 @@ void HandleMqttMessage(State &state,
         if (global_unit_status.ParseFromString(payload)) {
             log_parse_success(topic, global_unit_status);
             state.global_unit_status = global_unit_status;
+            RoboGo::app::ObserveUlHealthCaps(state);
+            // The 2027 display reads the raw roster with the current identity;
+            // the old five-slot team mapping below applies only to the 2026 client.
+            if (state.competition != RoboGo::app::Competition::Uc2026) return;
 
             // GlobalUnitStatus 同时驱动左右双方血量/弹量面板，并把对方血量打包成
             // CustomControl 下发给机器人电控使用。
@@ -478,6 +537,7 @@ void HandleMqttMessage(State &state,
                 }
                 int red_index;
                 int blue_index;
+                if (index >= static_cast<int>(std::size(state.red_robots))) continue;
                 if (is_red_team) {
                     red_index = i;
                     blue_index = i + half_robot_bullets_size;
@@ -520,6 +580,23 @@ void HandleMqttMessage(State &state,
             tm *timeinfo = localtime(&now);
             strftime(log_entry.time, sizeof(log_entry.time), "%H:%M:%S", timeinfo);
             log_entry.type = 0;
+            if (state.competition == RoboGo::app::Competition::Ul2027) {
+                // 2027 Event 1 carries the defeated robot first, followed by the victor.
+                const auto robots = SplitByComma(event.param());
+                if (event.event_id() == 1 && robots) {
+                    const auto name = [](const std::string &id) {
+                        if (id == "1" || id == "101") return std::string(id == "1" ? "红方重装" : "蓝方重装");
+                        return GetRobotName(id);
+                    };
+                    log_entry.text = name(robots->second) + " 击败了 " + name(robots->first);
+                } else {
+                    log_entry.text = "比赛事件 " + std::to_string(event.event_id());
+                    if (!event.param().empty()) log_entry.text += " · " + event.param();
+                }
+                state.match_notice = TimedMatchNotice{log_entry.text, std::chrono::steady_clock::now() + std::chrono::seconds(5)};
+                AppendSystemLog(state, 0, log_entry.text);
+                return;
+            }
             switch (event.event_id()) {
                 case 1: {
                     // 击杀事件（参数 1 为被击杀者，参数 2 为击杀者，如"1,101"，代表蓝方英雄击击毁红方英雄）
@@ -711,6 +788,7 @@ void HandleMqttMessage(State &state,
         if (robot_static_status.ParseFromString(payload)) {
             log_parse_success(topic, robot_static_status);
             state.robot_static_status = robot_static_status;
+            RoboGo::app::ObserveUlHealthCaps(state);
         } else {
             log_parse_failure(topic);
         }
@@ -856,7 +934,13 @@ void HandleMqttMessage(State &state,
         if (robot_performance_selection_sync.ParseFromString(payload)) {
             log_parse_success(topic, robot_performance_selection_sync);
             state.robot_performance_selection_sync = robot_performance_selection_sync;
-            state.last_received_robot_performance_selection_sync = std::chrono::steady_clock::now();
+            state.last_received_robot_performance_selection_sync = received_at;
+            if (state.competition == RoboGo::app::Competition::Ul2027) {
+                const auto &sync = robot_performance_selection_sync;
+                if (sync.has_shooter()) state.shooter_return = ReturnedPreference{sync.shooter(), received_at};
+                if (sync.has_chassis()) state.chassis_return = ReturnedPreference{sync.chassis(), received_at};
+                if (sync.has_sentry_control()) state.sentry_return = ReturnedPreference{sync.sentry_control(), received_at};
+            }
         } else {
             log_parse_failure(topic);
         }

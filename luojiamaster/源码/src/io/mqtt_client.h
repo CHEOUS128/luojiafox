@@ -14,11 +14,14 @@ namespace RoboGo::io {
         };
 
     private:
+        // A local client has no executor and never constructs a network endpoint.
+        const bool local_only_ = false;
         mutable std::mutex endpoint_mutex;
         std::string host_ip;
         std::string port;
         std::atomic<std::uint64_t> endpoint_revision = 0;
         std::function<void(const std::string &topic, const std::string &payload)> on_receive_message;
+        std::function<void(const std::string &topic, const std::string &payload)> trial_publication_;
         std::atomic<bool> is_running = true;
         mutable std::mutex client_id_mutex;
         std::string client_id;
@@ -29,6 +32,8 @@ namespace RoboGo::io {
         std::shared_ptr<async_mqtt::client<async_mqtt::protocol_version::v3_1_1, async_mqtt::protocol::mqtt>> active_client;
 
     public:
+        // In-process trial session. Published data stays in this callback.
+        explicit MqttClient(std::function<void(const std::string &, const std::string &)> trial_publication = {});
         explicit MqttClient(boost::asio::io_context &io_context,
                             std::string host_ip,
                             std::string port,
