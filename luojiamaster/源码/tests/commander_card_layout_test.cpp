@@ -1,4 +1,5 @@
 #include "panel/replay_card_layout.h"
+#include "panel/cup_map_replay.h"
 #include <cmath>
 #include <iostream>
 
@@ -62,9 +63,92 @@ bool RunCases(ImVec2 origin, ImVec2 size, float font) {
     return true;
 }
 
+bool RunCupReplayCases() {
+    using namespace std::chrono_literals;
+    CupMapReplay replay;
+    struct Recording { int robot_id; };
+    struct Recordings {
+        std::array<Recording, 3> peers{};
+        int count = 0;
+    };
+    const std::chrono::steady_clock::time_point start{20s};
+    for (const int color : {0, 100}) {
+        for (const int role : {1, 3, 4}) {
+            const auto ids = CupMapReplay::PeerSeats(color + role);
+            std::array<int, 2> expected{};
+            int index = 0;
+            for (const int candidate : {1,3,4})
+                if (candidate != role) expected[index++] = color + candidate;
+            if (ids != expected) return false;
+            Recordings recordings;
+            recordings.peers[0].robot_id = ids[1];
+            recordings.count = 1;
+            if (ReplaySlotFor(recordings, ids[0]) != -1 || ReplaySlotFor(recordings, ids[1]) != 0)
+                return false;
+            recordings.peers[1].robot_id = ids[0];
+            recordings.count = 2;
+            if (ReplaySlotFor(recordings, ids[0]) != 1 || ReplaySlotFor(recordings, color + role) != -1)
+                return false;
+            replay.Reset(color + role, start);
+            if (!replay.Visible(start).empty()) return false;
+            const auto now = start + 1s;
+            if (replay.Visible(now).size() != 8) return false;
+            const auto paused = ids[0];
+            replay.TogglePosition(paused, now);
+            const auto lookup = [&](const auto &rows, int id) {
+                return std::find_if(rows.begin(), rows.end(), [id](const auto &row) {
+                    return row.number + 100 * row.team == id;
+                });
+            };
+            const auto& stale = replay.Visible(now + 3s);
+            const auto held = lookup(stale, paused);
+            if (held == stale.end() || held->age_seconds != 3) return false;
+            const auto& expired = replay.Visible(now + 10s);
+            if (expired.size() != 7 || lookup(expired, paused) != expired.end()
+                || lookup(expired,ids[1]) == expired.end()) return false;
+            replay.TogglePosition(paused, now + 11s);
+            const auto& resumed = replay.Visible(now + 12s);
+            if (resumed.size() != 8 || lookup(resumed,paused) == resumed.end()) return false;
+        }
+    }
+    for (const auto point : {ImVec2{.1f,.7f}, ImVec2{.71f,.23f}}) {
+        const auto red = CupMapReplay::FigureUV(point.x, point.y, true, false);
+        const auto blue = CupMapReplay::FigureUV(point.x, point.y, true, true);
+        const auto old_red = CupMapReplay::FigureUV(point.x, point.y, false, false);
+        const auto old_blue = CupMapReplay::FigureUV(point.x, point.y, false, true);
+        if (std::abs(red.x + blue.x - 1.f) > 1e-5f || std::abs(red.y + blue.y - 1.f) > 1e-5f ||
+            old_red.x != point.x || old_red.y != point.y || old_blue.x != point.x || old_blue.y != point.y)
+            return false;
+    }
+    Layout layout;
+    ReplayCanvas canvas;
+    canvas.lo = {100,50};
+    canvas.hi = {1670,930};
+    for (auto &pin : canvas.pins) {
+        pin.has_position = pin.inside = true;
+        pin.screen = {450,580};
+    }
+    Place(layout,canvas,-1,-1,20,2);
+    if (layout.boxes[0].Overlaps(layout.boxes[1])) return false;
+    const auto first = layout.boxes[0];
+    ImGui::GetIO().MousePos = first.GetCenter();
+    canvas.pins[0].screen.x += 250.f;
+    Place(layout,canvas,-1,0,20,2);
+    if (layout.boxes[0].Min.x != first.Min.x || layout.boxes[0].Min.y != first.Min.y) return false;
+    Place(layout,canvas,0,0,20,2);
+    if (layout.boxes[0].GetWidth() <= first.GetWidth() * 1.8f || layout.boxes[0].Overlaps(layout.boxes[1]))
+        return false;
+    for (auto &pin : canvas.pins) pin.has_position = pin.inside = false;
+    Place(layout,canvas,-1,-1,20,2);
+    for (int i = 0; i < 2; ++i)
+        if (layout.boxes[i].GetCenter().y < canvas.lo.y + (canvas.hi.y - canvas.lo.y)*.75f) return false;
+    return true;
+}
+
 int main() {
     ImGui::CreateContext();
-    const bool ok = RunCases({0,90},{1920,940},20) && RunCases({31,104},{1500,760},22);
+    const bool ok = RunCases({0,90},{1920,940},20) && RunCases({31,104},{1500,760},22)
+                    && RunCupReplayCases();
     ImGui::DestroyContext();
     std::cout << (ok ? "PASS" : "FAIL") << ": local replay cards, cluster, edges, hover, focus, docking\n";
     return ok ? 0 : 1;

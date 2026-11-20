@@ -1,4 +1,5 @@
 #include "mini_map.h"
+#include "panel/cup_map_panel.h"
 #include "hud_text.h"
 #include "app/ul_drawing.h"
 #include "keyboard_mouse_state_manager.h"
@@ -7,17 +8,63 @@ void ShowAllianceVenueMap(ImTextureRef texture, const ImVec2 &size, bool blue) {
     if (ImGui::Begin("AllianceVenueMap", nullptr, ImGuiWindowFlags_NoDecoration |
                      ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoSavedSettings |
                      ImGuiWindowFlags_NoBackground)) {
-        hud::Label(blue ? "联盟赛地图 · 蓝方" : "联盟赛地图 · 红方");
+        hud::Label(blue ? "联盟赛地图 · 蓝方  [M]" : "联盟赛地图 · 红方  [M]");
         RoboGo::app::ul_drawing::Map({texture, size}, std::max(1.f, ImGui::GetContentRegionAvail().y), blue, false);
     }
     ImGui::End();
 }
 
-void ShowCupVenueMap(ImTextureRef texture, const ImVec2 &size, bool blue, bool team_known) {
+void ShowAllianceExpandedMap(ImTextureRef texture, const ImVec2 &size, bool blue, bool local_trial) {
+    const auto *viewport = ImGui::GetMainViewport();
+    const float base = ImGui::GetFontSize();
+    const float requested = 2.f * std::floor(std::min(viewport->WorkSize.x / 85.f, viewport->WorkSize.y / 50.f) / 2.f);
+    const float font = std::clamp(requested, base, std::max(36.f, base));
+    ImGui::PushFont(nullptr, ImGui::GetStyle().FontSizeBase * font / base);
+    const float pad = ImGui::GetFontSize() * .72f;
+    const char *title = blue ? "联盟赛地图 · 蓝方" : "联盟赛地图 · 红方";
+    const char *hint = "M / Esc 收起";
+    const float max_height = std::max(1.f, viewport->WorkSize.y * .86f);
+    const float max_width = std::max(1.f, viewport->WorkSize.x * .90f);
+    const float header_width = ImGui::CalcTextSize(title).x + ImGui::CalcTextSize(hint).x
+                             + (local_trial ? ImGui::CalcTextSize("本地测试").x + pad : 0.f) + pad * 3.f;
+    const float header = ImGui::GetTextLineHeightWithSpacing() * (header_width > max_width ? 2.f : 1.f);
+    // The same 1200 x 800 figure fills both map views. Fit the panel around the figure
+    // so an ultrawide screen leaves the video visible on either side.
+    const float map_width = std::max(1.f, std::min(max_width - 2.f * pad,
+                                                (max_height - 2.f * pad - header) * 1.5f));
+    const ImVec2 panel{map_width + 2.f * pad, map_width / 1.5f + 2.f * pad + header};
+    const ImVec2 center{viewport->WorkPos.x + viewport->WorkSize.x * .5f,
+                        viewport->WorkPos.y + viewport->WorkSize.y * .5f};
+    ImGui::SetNextWindowPos(center, ImGuiCond_Always, {.5f,.5f});
+    ImGui::SetNextWindowSize(panel, ImGuiCond_Always);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, {pad,pad});
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, pad * .45f);
+    ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(.065f,.095f,.11f,.96f));
+    if (ImGui::Begin("AllianceExpandedMap", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove |
+                     ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoSavedSettings)) {
+        ImGui::TextUnformatted(title);
+        if (local_trial) {
+            ImGui::SameLine(0.f,pad);
+            ImGui::TextDisabled("本地测试");
+        }
+        const float hint_width = ImGui::CalcTextSize(hint).x;
+        if (ImGui::GetItemRectMax().x + pad + hint_width <= ImGui::GetWindowPos().x + panel.x - pad)
+            ImGui::SameLine(panel.x - pad - hint_width);
+        ImGui::TextDisabled("%s", hint);
+        RoboGo::app::ul_drawing::Map({texture,size}, std::max(1.f, ImGui::GetContentRegionAvail().y), blue, false);
+    }
+    ImGui::End();
+    ImGui::PopStyleColor();
+    ImGui::PopStyleVar(2);
+    ImGui::PopFont();
+}
+
+void ShowCupVenueMap(ImTextureRef texture, const ImVec2 &size, bool blue, bool team_known, CupMapReplay* local_replay) {
     if (ImGui::Begin("CupVenueMap", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove |
                      ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoBackground)) {
-        const char *label = !team_known ? "超级对抗赛地图" : blue ? "超级对抗赛地图 · 蓝方" : "超级对抗赛地图 · 红方";
+        const char *label = !team_known ? "超级对抗赛地图" : blue ? "场馆 · 蓝方  [M]" : "场馆 · 红方  [M]";
         hud::Label(label);
+        if (local_replay) { ImGui::SameLine(); ImGui::TextDisabled("位置：本地样例"); }
         const ImVec2 p = ImGui::GetCursorScreenPos();
         const ImVec2 area = ImGui::GetContentRegionAvail();
         if (texture.GetTexID() == ImTextureID_Invalid || size.x <= 0.f || size.y <= 0.f) {
@@ -27,6 +74,7 @@ void ShowCupVenueMap(ImTextureRef texture, const ImVec2 &size, bool blue, bool t
             const ImVec2 uv0 = blue ? ImVec2(1, 1) : ImVec2(0, 0);
             const ImVec2 uv1 = blue ? ImVec2(0, 0) : ImVec2(1, 1);
             ImGui::GetWindowDrawList()->AddImage(texture, box.a, box.b, uv0, uv1);
+            if (local_replay) DrawCupReplayMini(*local_replay,{box.a,box.b},true);
         }
     }
     ImGui::End();
@@ -71,7 +119,9 @@ ImU32 GetMapOuterBorderColor(bool team_known, bool is_red_team) {
     return is_red_team ? kMapOuterBorderRedColor : kMapOuterBorderBlueColor;
 }
 
-std::pair<ImVec2, ImVec2> GetMiniMapUvRect(const ImVec2 &texture_size) {
+}// namespace
+
+std::pair<ImVec2, ImVec2> LegacyMapFieldUV(const ImVec2 &texture_size) {
     constexpr float kMiniMapTextureLeft = 45.0f;
     constexpr float kMiniMapTextureTop = 31.0f;
     constexpr float kMiniMapTextureRight = 1226.0f;
@@ -86,12 +136,10 @@ std::pair<ImVec2, ImVec2> GetMiniMapUvRect(const ImVec2 &texture_size) {
     return {uv_min, uv_max};
 }
 
-}// namespace
-
 void ShowMiniMap(const State &state,
                  RoboGo::io::MqttClient &mqtt_client,
                  const ImTextureRef mini_map_texture_ref,
-                 const ImVec2 &mini_map_texture_size) {
+                 const ImVec2 &mini_map_texture_size, CupMapReplay* local_replay) {
     ImGuiWindowFlags window_flags = ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoBackground | ImGuiWindowFlags_NoSavedSettings;
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
 
@@ -133,7 +181,7 @@ void ShowMiniMap(const State &state,
 
     draw_list->AddRectFilled(map_min, map_max, kMapBackgroundColor);
     if (mini_map_texture_ref.GetTexID() != ImTextureID_Invalid && mini_map_texture_size.x > 0.0f && mini_map_texture_size.y > 0.0f) {
-        const auto [uv_min, uv_max] = GetMiniMapUvRect(mini_map_texture_size);
+        const auto [uv_min, uv_max] = LegacyMapFieldUV(mini_map_texture_size);
         draw_list->AddImage(mini_map_texture_ref, map_min, map_max, uv_min, uv_max);
         draw_list->AddRectFilled(map_min, map_max, kMapOverlayColor);
     }
@@ -155,7 +203,10 @@ void ShowMiniMap(const State &state,
     const char *text_begin, *text_end;
 
     // 只有确定己方阵营后才显示机器人位置
-    if (team_known && state.radar_info_to_client.has_value()) {
+    if (local_replay) {
+        DrawCupReplayMini(*local_replay,{map_min,map_max},false);
+        hud::Outline(draw_list,{map_min.x+3.f,map_min.y+2.f},hud::white,"[M] 位置：本地样例");
+    } else if (team_known && state.radar_info_to_client.has_value()) {
         const auto &radar_info = *state.radar_info_to_client;
 
         // robots_info 按顺序：对方 1,2,3,4,6,7 号 (索引 0-5)，己方 1,2,3,4,6,7 号 (索引 6-11)

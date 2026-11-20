@@ -11,6 +11,8 @@
 #include "embedded_uc_commander_map.h"
 #include "panel/commander_panel.h"
 #include "app/commander_benchmark.h"
+#include "panel/cup_map_replay.h"
+#include "app/cup_layout_benchmark.h"
 #include "app/latest_video_frame.h"
 
 #include <cctype>
@@ -287,7 +289,7 @@ public:
             peers_.swap(next);
         }
         if (options.local_trial) {
-            StartPeerReplay({});
+            StartPeerReplay(options.cup_layout_benchmark ? options.commander_video_dir : std::string{});
         }
         SPDLOG_INFO("队友视角已按登录身份建立 本机={} 队友数={} 来源={}", login_id, peers_.size(),
                     options.local_trial ? "本地测试" : manual ? "手工地址" : "岗位专线");
@@ -305,13 +307,13 @@ public:
         SPDLOG_INFO("本地指挥席 三路录像已启动 team={} source={}", team, options.commander_video_dir.empty() ? "embedded" : options.commander_video_dir);
     }
 
-    void ToggleCommanderPeer(std::size_t slot) {
-        if (!local_peers_ || peers_.size() != 3 || slot >= peers_.size()) return;
+    void ToggleReplayPeer(std::size_t slot) {
+        if (!local_peers_ || slot >= peers_.size()) return;
         auto &channel = peers_[slot];
         if (channel->paused) {
             // Replace the stopped decoder while that producer is parked. Its
             // next input begins with a keyframe and its mailbox starts empty.
-            channel = std::make_unique<PeerChannel>(channel->robot_id, channel->label, true);
+            channel = std::make_unique<PeerChannel>(channel->robot_id, channel->label, peers_.size() == 3);
             local_peers_->SetPaused(slot, false);
         } else {
             local_peers_->SetPaused(slot, true);
@@ -319,7 +321,7 @@ public:
             channel->decoder.stop();
             channel->mailbox.Clear();
         }
-        SPDLOG_INFO("本地指挥席 队友={} paused={}", channel->robot_id, channel->paused);
+        SPDLOG_INFO("本地录像 队友={} paused={}", channel->robot_id, channel->paused);
     }
 
     [[nodiscard]] const auto &Peers() const { return peers_; }
@@ -429,7 +431,9 @@ public:
 
 private:
     void StartPeerReplay(const std::string &video_dir) {
-        local_peers_ = std::make_unique<RoboGo::app::LocalPeerReplay>(peers_.size(),
+        std::vector<int> seats;
+        for (const auto &peer : peers_) seats.push_back(peer->robot_id);
+        local_peers_ = std::make_unique<RoboGo::app::LocalPeerReplay>(seats,
             [this](std::size_t slot, std::vector<std::uint8_t> &&frame) {
                 peers_[slot]->decoder.submit_frame(std::move(frame));
             }, video_dir);
@@ -599,6 +603,8 @@ LaunchOptions ParseLaunchOptions(const std::vector<std::string> &args) {
         } else if (args[i] == "--test-display-1080") {
             // Reuse the benchmark monitor choice for interactive fullscreen layout checks.
             options.benchmark_match_monitor = true;
+        } else if (args[i] == "--cup-layout-benchmark") {
+            options.cup_layout_benchmark = true;
         } else if (args[i] == "--commander-benchmark-1080-display") {
             options.benchmark_match_monitor = true;
             options.commander_benchmark = true;
@@ -660,6 +666,10 @@ int RunApplication(platform::PlatformBackend &platform_backend, const LaunchOpti
 
     const bool alliance = options.competition == Competition::Ul2027;
     const bool commander_allowed = options.local_trial && options.competition == Competition::Uc2027;
+    if (options.cup_layout_benchmark && (!commander_allowed || options.commander_benchmark || options.commander_video_dir.empty())) {
+        SPDLOG_ERROR("操作手地图对比需要 2027 超级对抗赛本地测试及录像目录");
+        return 1;
+    }
     if (options.commander_benchmark && (!commander_allowed || options.commander_video_dir.empty())) {
         SPDLOG_ERROR("指挥席性能测试需要 2027 超级对抗赛本地模式及三路压力录像目录");
         return 1;
@@ -714,6 +724,13 @@ int RunApplication(platform::PlatformBackend &platform_backend, const LaunchOpti
         UlHudView hud;
         bool commander_active = false;
         CommanderDeskState commander_state;
+        std::optional<CupMapReplay> cup_replay;
+        std::optional<uint32_t> cup_replay_round;
+        std::optional<CupLayoutBenchmark> cup_benchmark;
+        if (options.cup_layout_benchmark) {
+            cup_benchmark.emplace();
+            background_services.mqtt_client().set_client_id("103");
+        }
         std::optional<CommanderBenchmark> benchmark;
         if (options.commander_benchmark) benchmark.emplace(options.commander_comparison);
         bool trial_started = false;
@@ -774,6 +791,7 @@ int RunApplication(platform::PlatformBackend &platform_backend, const LaunchOpti
                     trial_started = true;
                     trial_start = std::chrono::steady_clock::now();
                     background_services.StartLocalReplay(trial_start, options.competition, login_id);
+                    if (!alliance && IsCupMapSeat(login_id)) enter_game_mode();
                     SPDLOG_INFO("本地测试开始 robot_id={}", login_id);
                 }
                 if (options.competition != Competition::Ul2027) {
@@ -793,15 +811,46 @@ int RunApplication(platform::PlatformBackend &platform_backend, const LaunchOpti
             background_services.DrainCustomVideoLogs(state);
             UpdateState(state);
             const bool alliance_signed_in = alliance && conn == Connection::Connected && login_id > 0;
-            if (alliance && hud.SelectIdentity(alliance_signed_in ? login_id : 0)) {
-                last_udp_frame_time = last_custom_frame_time = std::chrono::steady_clock::time_point::min();
-                SPDLOG_INFO("联盟赛比赛主界面 seat={} local={}", hud.identity, options.local_trial);
+            const bool cup_seat = !alliance && !commander_active && IsCupMapSeat(connected_identity);
+            const bool identity_changed = hud.SelectIdentity(alliance_signed_in || cup_seat ? connected_identity : 0);
+            if (identity_changed) {
+                if (alliance) last_udp_frame_time = last_custom_frame_time = std::chrono::steady_clock::time_point::min();
+                if (cup_seat && options.local_trial) cup_replay.emplace();
+                else cup_replay.reset();
+                cup_replay_round.reset();
+            }
+            if (cup_replay) {
+                const auto round = state.game_status ? state.game_status->current_round() : 0u;
+                if (cup_replay_round != round) {
+                    cup_replay->Reset(connected_identity, Clock::now());
+                    cup_replay_round = round;
+                    const auto &peers = background_services.Peers();
+                    for (std::size_t slot = 0; slot < peers.size(); ++slot) {
+                        if (peers[slot]->paused) {
+                            background_services.ToggleReplayPeer(slot);
+                            last_peer_frames[slot] = Clock::time_point::min();
+                        }
+                    }
+                }
             }
             if (!alliance && !options.local_trial) PublishCustomControlIfDue(state, client);
             if (!platform_backend.BeginFrame()) continue;
             const bool menu_open = alliance ? hud.menu_open : !is_in_game_mode();
             const auto &peer_channels = background_services.Peers();
-            const bool peer_keys = !commander_active && !peer_channels.empty() && !menu_open && !ImGui::GetIO().WantTextInput;
+            const auto &io = ImGui::GetIO();
+            const bool escape_pressed = ImGui::IsKeyPressed(ImGuiKey_Escape, false);
+            const bool map_was_open = hud.map_open;
+            if (cup_benchmark && cup_replay) {
+                hud.map_open = cup_benchmark->Map();
+                teammate_overview = !hud.map_open;
+                focused_peer = -1;
+            }
+            const bool map_owns_input = hud.HandleMapKeys(
+                io.KeyMods == 0 && ImGui::IsKeyPressed(ImGuiKey_M, false), escape_pressed, io.WantTextInput,
+                menu_open || is_marker_mode());
+            if (map_was_open != hud.map_open)
+                SPDLOG_INFO("操作手二维大图 {} seat={}", hud.map_open ? "打开" : "关闭", hud.identity);
+            const bool peer_keys = !commander_active && !map_owns_input && !peer_channels.empty() && !menu_open && !io.WantTextInput;
             if (peer_keys && ImGui::IsKeyPressed(ImGuiKey_K, false) && !teammate_overview)
                 teammates_collapsed = !teammates_collapsed;
             if (peer_keys && ImGui::IsKeyPressed(ImGuiKey_L, false)) {
@@ -809,7 +858,7 @@ int RunApplication(platform::PlatformBackend &platform_backend, const LaunchOpti
                 focused_peer = -1;
                 teammate_zoom = 1.0f;
             }
-            const bool leaving_overview_with_esc = teammate_overview && ImGui::IsKeyPressed(ImGuiKey_Escape, false);
+            const bool leaving_overview_with_esc = !map_owns_input && (!alliance || !menu_open) && teammate_overview && escape_pressed;
             if (leaving_overview_with_esc) {
                 teammate_overview = false;
                 focused_peer = -1;
@@ -817,10 +866,10 @@ int RunApplication(platform::PlatformBackend &platform_backend, const LaunchOpti
                 if (!alliance) reset_client_session_input();
             }
             TeammatePointerGuard::Step peer_input_step;
-            if (alliance_signed_in && ImGui::IsKeyPressed(ImGuiKey_Escape, false)) {
+            if (alliance_signed_in && !map_owns_input && !leaving_overview_with_esc && escape_pressed) {
                 hud.menu_open = !hud.menu_open;
             } else if (!commander_active && !alliance) {
-                peer_input_step = peer_input.Advance(teammate_overview, any_match_controls_held());
+                peer_input_step = peer_input.Advance(teammate_overview || map_owns_input, any_match_controls_held());
                 if (!options.local_trial) {
                     if (peer_input_step.release_cursor) platform_backend.SetGameInputCapture(false);
                     if (peer_input_step.restore_cursor)
@@ -908,7 +957,8 @@ int RunApplication(platform::PlatformBackend &platform_backend, const LaunchOpti
                     now);
 
             // 自动抢主画面只看「继续用」这一档（5 秒）；手动按 H 仍然按 1 秒那档给提示。
-            const bool shortcuts_enabled = !commander_active && !teammate_overview && (!alliance || (alliance_signed_in && !hud.menu_open));
+            const bool shortcuts_enabled = !commander_active && !map_owns_input && !teammate_overview &&
+                                           (!alliance || (alliance_signed_in && !hud.menu_open));
             if (alliance) {
                 if (shortcuts_enabled && !ImGui::GetIO().WantTextInput && ImGui::IsKeyPressed(ImGuiKey_H, false))
                     hud.industrial_main = !hud.industrial_main;
@@ -935,6 +985,7 @@ int RunApplication(platform::PlatformBackend &platform_backend, const LaunchOpti
                 const auto texture = platform_backend.GetTextureView(kPeerTextureSlots[slot]);
                 const auto link = channel->link ? channel->link->stats() : RoboGo::net::TeammateLinkStats{};
                 auto &view = teammate_view.peers[slot];
+                view.robot_id = channel->robot_id;
                 view.label = channel->label;
                 view.texture_ref = texture.texture_ref;
                 view.texture_size = texture.size;
@@ -970,7 +1021,7 @@ int RunApplication(platform::PlatformBackend &platform_backend, const LaunchOpti
                 if (commander_actions.return_to_events) session_result = kReturnToLauncher;
                 if (commander_actions.toggle_feed >= 0 && commander_actions.toggle_feed < teammate_view.count) {
                     const auto slot_index = static_cast<std::size_t>(commander_actions.toggle_feed);
-                    background_services.ToggleCommanderPeer(slot_index);
+                    background_services.ToggleReplayPeer(slot_index);
                     last_peer_frames[slot_index] = std::chrono::steady_clock::time_point::min();
                 }
             } else {
@@ -989,7 +1040,14 @@ int RunApplication(platform::PlatformBackend &platform_backend, const LaunchOpti
                     background_services.IsUdpVideoInverted(),
                     mini_map_texture.texture_ref,
                     mini_map_texture.size,
-                    teammate_view, options.local_trial, hud.menu_open);
+                    teammate_view, options.local_trial, hud.menu_open, map_owns_input,
+                    cup_replay ? &*cup_replay : nullptr, cup_replay ? &teammate_view : nullptr);
+                if (cup_replay && ui_actions.toggle_replay_feed >= 0 &&
+                    ui_actions.toggle_replay_feed < teammate_view.count) {
+                    const auto slot = static_cast<size_t>(ui_actions.toggle_replay_feed);
+                    background_services.ToggleReplayPeer(slot);
+                    last_peer_frames[slot] = Clock::time_point::min();
+                }
                 // The comparison command selects the same local seat as the start button.
                 if (benchmark) ui_actions.commander_team = 0;
                 if (commander_allowed && ui_actions.commander_team >= 0) {
@@ -1004,7 +1062,9 @@ int RunApplication(platform::PlatformBackend &platform_backend, const LaunchOpti
             if (ui_actions.return_to_events) session_result = kReturnToLauncher;
             if (ui_actions.close_menu) hud.menu_open = false;
             if (ui_actions.open_menu) hud.menu_open = true;
-            platform_backend.SetMatchDisplayShortcuts(!commander_active && connected_identity != 0 && (alliance ? !hud.menu_open : is_in_game_mode()));
+            platform_backend.SetMatchDisplayShortcuts(!commander_active && connected_identity != 0 &&
+                                                      (alliance ? !hud.menu_open : is_in_game_mode()),
+                                                      alliance || (cup_seat && !is_marker_mode()));
             if (ui_actions.toggle_main_video) hud.industrial_main = !hud.industrial_main;
             if (ui_actions.toggle_udp_video_inversion) {
                 ToggleUdpVideoInversion(state, background_services);
@@ -1028,6 +1088,20 @@ int RunApplication(platform::PlatformBackend &platform_backend, const LaunchOpti
                 CommitVideoPresentation(pending_video_presentation,
                                         last_udp_frame_time, last_custom_frame_time, last_peer_frames,
                                         udp_frame_count, custom_frame_count);
+            }
+            if (cup_benchmark) {
+                std::array<int, 2> seats{};
+                for (std::size_t i = 0; i < seats.size() && i < peer_channels.size(); ++i)
+                    seats[i] = peer_channels[i]->robot_id;
+                const auto size = ImGui::GetIO().DisplaySize;
+                const bool expected_view = connected_identity == 103 && !menu_open &&
+                    (cup_benchmark->Map() ? hud.map_open : teammate_overview && !map_owns_input);
+                cup_benchmark->Observe(platform_backend.IsFullscreen(), presented, static_cast<int>(size.x),
+                    static_cast<int>(size.y), ui_actions.map_drawn_mask, pending_video_presentation.peers, expected_view, seats);
+                if (cup_benchmark->Done()) {
+                    if (!cup_benchmark->Passed()) session_result = 1;
+                    break;
+                }
             }
             if (benchmark && commander_active) {
                 const auto rendered = Clock::now();

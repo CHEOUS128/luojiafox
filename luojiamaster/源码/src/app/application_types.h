@@ -73,6 +73,7 @@ struct LaunchOptions {
     bool local_trial = false;
     bool uc_classic = false;
     bool commander_benchmark = false;
+    bool cup_layout_benchmark = false;
     CommanderComparison commander_comparison = CommanderComparison::Arenas;
     bool benchmark_match_monitor = false;
     std::string commander_video_dir;

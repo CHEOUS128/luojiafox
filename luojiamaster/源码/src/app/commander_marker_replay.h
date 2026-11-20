@@ -18,24 +18,34 @@ public:
 
     void Start(Time now) {
         start_ = now;
-        blue3_paused_at_.reset();
+        paused_at_.fill(std::nullopt);
         visible_.clear();
         visible_.reserve(routes_.size());
     }
 
-    bool Blue3Paused() const { return blue3_paused_at_.has_value(); }
+    bool Blue3Paused() const { return PositionPaused(103); }
 
-    void ToggleBlue3(Time now) {
-        if (Blue3Paused()) blue3_paused_at_.reset();
-        else blue3_paused_at_ = now;
+    void ToggleBlue3(Time now) { TogglePosition(103, now); }
+
+    bool PositionPaused(int seat) const {
+        const auto index = RouteIndex(seat);
+        return index < routes_.size() && paused_at_[index].has_value();
+    }
+
+    void TogglePosition(int seat, Time now) {
+        const auto index = RouteIndex(seat);
+        if (index == routes_.size()) return;
+        auto& paused = paused_at_[index];
+        if (paused) paused.reset();
+        else paused = now;
     }
 
     const std::vector<arena::ReplayMarker>& Visible(Time now) {
         visible_.clear();
         if (!start_ || now < *start_) return visible_;
-        for (const auto& route : routes_) {
-            const Time through = route.team == 1 && route.number == 3 && Blue3Paused()
-                               ? std::min(now, *blue3_paused_at_) : now;
+        for (std::size_t i = 0; i < routes_.size(); ++i) {
+            const auto& route = routes_[i];
+            const Time through = paused_at_[i] ? std::min(now, *paused_at_[i]) : now;
             // Each 250 ms sample has a session-relative timestamp. A late UI
             // frame selects the latest available sample instead of queuing missed ones.
             const auto tick = (through - *start_) / sample_interval_;
@@ -80,7 +90,12 @@ private:
         {1, 7, .67f, .13f, .62f, .12f, 52,  .0539f,  .0520f,  .0499f},
     }};
     std::optional<Time> start_;
-    std::optional<Time> blue3_paused_at_;
+    static std::size_t RouteIndex(int seat) {
+        for (std::size_t i = 0; i < routes_.size(); ++i)
+            if (routes_[i].team * 100 + routes_[i].number == seat) return i;
+        return routes_.size();
+    }
+    std::array<std::optional<Time>,routes_.size()> paused_at_{};
     std::vector<arena::ReplayMarker> visible_;
 };
 } // namespace RoboGo::app

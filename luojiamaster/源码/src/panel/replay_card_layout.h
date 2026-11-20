@@ -14,10 +14,10 @@ struct Layout {
     int pressed = -1;
     bool valid = false;
 
-    int Hit(ImVec2 p, int focused) const {
+    int Hit(ImVec2 p, int focused, int card_count = 3) const {
         if (!valid) return -1;
-        if (focused >= 0 && boxes[focused].Contains(p)) return focused;
-        for (int i = 2; i >= 0; --i)
+        if (focused >= 0 && focused < card_count && boxes[focused].Contains(p)) return focused;
+        for (int i = card_count - 1; i >= 0; --i)
             if (boxes[i].Contains(p)) return i;
         return -1;
     }
@@ -42,7 +42,7 @@ inline ImRect Fit(ImVec2 pos, ImVec2 size, const ImRect &bounds) {
 // the others. Score visibility before leader length, and favor the previous
 // side so two nearby seats do not keep trading places.
 inline void Place(Layout &layout, const RoboGo::arena::ReplayCanvas &canvas, int focused,
-                  int hovered, float font) {
+                  int hovered, float font, int card_count = 3) {
     ImRect bounds(canvas.lo, canvas.hi);
     const float margin = std::max(0.f, std::min({font * .4f, bounds.GetWidth() * .03f, bounds.GetHeight() * .03f}));
     bounds.Expand(-margin);
@@ -52,8 +52,8 @@ inline void Place(Layout &layout, const RoboGo::arena::ReplayCanvas &canvas, int
     const float gap = font * 1.65f;
     std::array<int,3> order{0,1,2};
     const auto priority = [&](int i) { return i == hovered ? 0 : i == focused ? 1 : i + 2; };
-    std::sort(order.begin(),order.end(),[&](int a,int b){return priority(a) < priority(b);});
-    for (int n = 0; n < 3; ++n) {
+    std::sort(order.begin(),order.begin()+card_count,[&](int a,int b){return priority(a) < priority(b);});
+    for (int n = 0; n < card_count; ++n) {
         const int slot = order[n];
         const auto &pin = canvas.pins[slot];
         const bool on_map = pin.inside && pin.has_position;
@@ -77,7 +77,7 @@ inline void Place(Layout &layout, const RoboGo::arena::ReplayCanvas &canvas, int
         // Without a visible position, dock the recording at the lower edge.
         // A disconnected picture with a known position stays with its own piece.
         const ImVec2 p = on_map ? pin.screen :
-            ImVec2(bounds.Min.x + (slot+.5f)*w/3.f,bounds.Max.y + gap);
+            ImVec2(bounds.Min.x + (slot+.5f)*w/card_count,bounds.Max.y + gap);
         const std::array<ImVec2,8> candidates{{
             {p.x+gap,p.y-size.y-gap}, {p.x-size.x-gap,p.y-size.y-gap},
             {p.x+gap,p.y+gap}, {p.x-size.x-gap,p.y+gap},

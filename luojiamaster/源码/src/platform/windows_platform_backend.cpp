@@ -22,7 +22,8 @@ using RoboGo::platform::DesktopWindowKind;
 using Clock = std::chrono::steady_clock;
 constexpr unsigned kFrames = 2, kBackBuffers = 2, kDescriptors = 64;
 struct DisplayKey { UINT vkey; ImGuiKey imgui_key; };
-constexpr std::array<DisplayKey, 4> kDisplayKeys{{{'H', ImGuiKey_H}, {'I', ImGuiKey_I}, {'K', ImGuiKey_K}, {'L', ImGuiKey_L}}};
+constexpr std::array<DisplayKey, 5> kDisplayKeys{{
+    {'H', ImGuiKey_H}, {'I', ImGuiKey_I}, {'K', ImGuiKey_K}, {'L', ImGuiKey_L}, {'M', ImGuiKey_M}}};
 
 struct FrameContext {
     ComPtr<ID3D12CommandAllocator> allocator;
@@ -202,7 +203,7 @@ public:
         return !should_close_;
     }
 
-    void SetMatchDisplayShortcuts(bool enabled) override {
+    void SetMatchDisplayShortcuts(bool enabled, bool map_key) override {
         enabled = enabled && ImGui::GetCurrentContext() && !ImGui::GetIO().WantTextInput;
         if (display_shortcuts_ && !enabled && ImGui::GetCurrentContext()) {
             for (size_t i = 0; i < display_key_down_.size(); ++i) {
@@ -211,6 +212,7 @@ public:
             display_key_down_.fill(false);
         }
         display_shortcuts_ = enabled;
+        map_key_ = map_key;
         window_ime_.SetDisplayOnly(hwnd_, enabled && GetFocus() == hwnd_);
     }
 
@@ -446,6 +448,7 @@ private:
     WINDOWPLACEMENT windowed_placement_{sizeof(WINDOWPLACEMENT)};
     std::optional<ImGuiStyle> base_window_style_;
     bool display_shortcuts_ = false;
+    bool map_key_ = false;
     std::array<bool, kDisplayKeys.size()> display_key_down_{};
     WindowDisplayIme window_ime_;
 
@@ -838,6 +841,7 @@ void WindowsPlatformBackend::CleanupGpu(bool safe) {
 void WindowsPlatformBackend::CleanupWindow() {
     window_ime_.Restore();
     display_shortcuts_ = false;
+    map_key_ = false;
     display_key_down_.fill(false);
     if (hwnd_) { DestroyWindow(hwnd_); hwnd_ = nullptr; }
     if (window_class_registered_) { UnregisterClassW(window_class_.lpszClassName, window_class_.hInstance); window_class_registered_ = false; }
@@ -857,6 +861,7 @@ bool WindowsPlatformBackend::HandleMatchDisplayKey(const MSG &message) {
             key = MapVirtualKeyExW(scan, MAPVK_VSC_TO_VK_EX, GetKeyboardLayout(0));
         }
     }
+    if (key == 'M' && !map_key_) return false;
     const auto binding = std::find_if(kDisplayKeys.begin(), kDisplayKeys.end(),
                                       [key](const DisplayKey &item) { return item.vkey == key; });
     if (binding == kDisplayKeys.end()) return false;

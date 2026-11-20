@@ -124,8 +124,11 @@ struct MainWindowActions {
     bool toggle_main_video = false;
     int teammate_slot_clicked = -1;           // 左键在队友总览选中的槽位
     int commander_team = -1;                  // 本地观看席，0 红、1 蓝；无机器人身份
+    unsigned map_drawn_mask = 0;              // Source slots actually drawn by the overview or local map
+    int toggle_replay_feed = -1;              // Test recordings only
 };
 
+struct CupMapReplay;
 MainWindowActions ShowMainWindow(const State &state,
                                  RoboGo::io::MqttClient &mqtt_client,
                                  ImTextureRef video_texture_ref,
@@ -140,7 +143,9 @@ MainWindowActions ShowMainWindow(const State &state,
                                  bool udp_video_inverted,
                                  ImTextureRef mini_map_texture_ref,
                                  const ImVec2 &mini_map_texture_size,
-                                 const TeammateViewState &teammate_view, bool local_trial, bool alliance_menu_open);
+                                 const TeammateViewState &teammate_view, bool local_trial, bool alliance_menu_open,
+                                 bool map_open = false, CupMapReplay* local_cup_replay = nullptr,
+                                 const TeammateViewState* local_recordings = nullptr);
 
 void UpdateState(State &state);
 

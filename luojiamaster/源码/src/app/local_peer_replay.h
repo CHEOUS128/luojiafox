@@ -94,25 +94,34 @@ class LocalPeerReplay {
     }
 
 public:
-    LocalPeerReplay(std::size_t count, Sink sink, const std::string &video_dir = {}) : count_(count) {
-        if (count > lanes_.size()) throw std::invalid_argument("Maximum of three peer views");
+    LocalPeerReplay(std::span<const int> seat_ids, Sink sink, const std::string &video_dir = {})
+        : count_(seat_ids.size()) {
+        if (count_ > lanes_.size()) throw std::invalid_argument("Maximum of three peer views");
         const std::array<Bytes, 3> embedded{{
             {embedded_peer_view_one_data, embedded_peer_view_one_data_len},
             {embedded_peer_view_two_data, embedded_peer_view_two_data_len},
             {embedded_peer_view_three_data, embedded_peer_view_three_data_len}
         }};
-        for (std::size_t slot = 0; slot < count; ++slot) {
+        for (std::size_t slot = 0; slot < count_; ++slot) {
             auto &lane = lanes_[slot];
+            // Clip 1 is the front camera. Clips 2 and 3 are distinct industrial-camera recordings.
+            unsigned clip;
+            switch (seat_ids[slot]) {
+                case 1: case 101: clip = 1; break;
+                case 3: case 103: clip = 2; break;
+                case 4: case 104: clip = 3; break;
+                default: throw std::invalid_argument("No recorded clip for this seat");
+            }
             if (video_dir.empty()) {
-                lane.frames = ReadFrames(embedded[slot]);
+                lane.frames = ReadFrames(embedded[clip - 1]);
             } else {
-                auto path = platform_util::PathFromUtf8(video_dir) / ("peer-view-" + std::to_string(slot + 1) + ".bin");
+                auto path = platform_util::PathFromUtf8(video_dir) / ("peer-view-" + std::to_string(clip) + ".bin");
                 lane.file_bytes = ReadFile(path);
                 lane.frames = ReadFrames(lane.file_bytes);
             }
         }
         const auto interval = std::chrono::nanoseconds(1'000'000'000 / (video_dir.empty() ? 15 : 30));
-        for (std::size_t slot = 0; slot < count; ++slot) {
+        for (std::size_t slot = 0; slot < count_; ++slot) {
             auto &lane = lanes_[slot];
             lane.worker = std::jthread([&lane, slot, sink, interval](std::stop_token stop) {
                 Play(lane, slot, sink, interval, stop);

@@ -85,7 +85,7 @@ float ShowTeammateSidebar(const TeammateViewState &view, ImVec2 pos, float width
     return std::min(max_height, y - pos.y);
 }
 
-int ShowTeammateOverview(const TeammateViewState &view, bool menu_open, bool local_test) {
+int ShowTeammateOverview(const TeammateViewState &view, bool menu_open, bool local_test, unsigned& drawn_mask) {
     const int count = std::clamp(view.count, 0, static_cast<int>(view.peers.size()));
     if (!count) return -1;
     const bool focused = view.focused >= 0 && view.focused < count;
@@ -126,7 +126,8 @@ int ShowTeammateOverview(const TeammateViewState &view, bool menu_open, bool loc
         const int index = focused ? view.focused : column;
         const float x = top.x + column * (cell_width + pad);
         const ImRect rect({x, top.y + line + pad}, {x + cell_width, end.y - pad});
-        DrawTeammateTile(draw, view.peers[index], rect, columns == 1 ? view.zoom : 1.f, true);
+        if (DrawTeammateTile(draw, view.peers[index], rect, columns == 1 ? view.zoom : 1.f, true))
+            drawn_mask |= 1u << index;
         if (allow_click && rect.GetHeight() > 0.f) {
             ImGui::SetCursorScreenPos(rect.Min);
             ImGui::PushID(index);

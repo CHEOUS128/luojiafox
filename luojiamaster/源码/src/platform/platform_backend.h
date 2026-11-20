@@ -47,7 +47,7 @@ public:
 
     virtual void SetGameInputCapture(bool enabled) = 0;
     [[nodiscard]] virtual bool IsFullscreen() const { return false; }
-    virtual void SetMatchDisplayShortcuts(bool) {}
+    virtual void SetMatchDisplayShortcuts(bool, bool /*map_key*/ = false) {}
     virtual void RequestBenchmarkMonitor(bool) {}
     virtual void PreferPerformanceAdapter(bool) {}
     virtual void SetDesktopWindowKind(DesktopWindowKind) {}

@@ -282,3 +282,13 @@ python .\luojiamaster\源码\tests\prepare_commander_replays.py --client .\luoji
 ```
 
 要指定 Windows 已检测到的 1920×1080 屏，将上面的 `--commander-benchmark` 换成 `--commander-benchmark-1080-display`。程序不会更改 Windows 的分辨率。
+
+### 复测 7V7 操作手的两路录像
+
+沿用上面的 `$clips`。在仓库根目录运行下面一行，程序会以蓝方步兵 3 进入本地测试。按 F11 并保持窗口在前台，程序先显示原来的双画面，再自动打开 M 大地图。两档各预热 3 秒，记录 30 秒，复用 1 号和 4 号岗位对应的同两路实车录像。
+
+```powershell
+& .\luojiamaster\程序\luojiamaster.exe --local-trial --competition=uc2027 --test-display-1080 --cup-layout-benchmark --commander-video-dir $clips
+```
+
+在本次运行日志中找 `CUP_LAYOUT_RESULT` 和 `CUP_LAYOUT_COMPARE`。前者给出两个岗位实际显示的新画面数和最长停顿（毫秒），后者给出随车小窗相对双画面的比例。两个岗位都保留至少 95% 才通过。

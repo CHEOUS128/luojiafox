@@ -1,4 +1,5 @@
 #include "main_window.h"
+#include "panel/cup_map_panel.h"
 #include "app/match_values.h"
 #include "keyboard_mouse_state_manager.h"
 #include "logging/logging.h"
@@ -144,7 +145,8 @@ MainWindowActions ShowMainWindow(const State &state,
                                  const bool udp_video_inverted,
                                  const ImTextureRef mini_map_texture_ref,
                                  const ImVec2 &mini_map_texture_size,
-                                 const TeammateViewState &teammate_view, bool local_trial, bool alliance_menu_open) {
+                                 const TeammateViewState &teammate_view, bool local_trial, bool alliance_menu_open,
+                                 bool map_open, CupMapReplay* local_cup_replay, const TeammateViewState* local_recordings) {
     const ImGuiViewport *viewport = ImGui::GetMainViewport();
     ImGuiStyle &style = ImGui::GetStyle();
     float font_size = ImGui::GetFontSize();
@@ -154,14 +156,27 @@ MainWindowActions ShowMainWindow(const State &state,
     const bool menu_open = alliance ? alliance_menu_open : !is_in_game_mode();
     const bool waiting_for_video = !udp_video_display_ready && !custom_video_display_ready;
 
-    if (teammate_view.count > 0 && teammate_view.take_main_screen &&
+    const bool expanded_map = map_open;
+    if (!local_trial || alliance) {
+        local_cup_replay = nullptr;
+        local_recordings = nullptr;
+    }
+    // The cup map covers the viewport. Video decoding/presentation is advanced
+    // in the application loop, so the hidden full-size picture need not be drawn.
+    const auto id = mqtt_client.get_client_id();
+    const bool blue = id.size() == 3 && id.front() == '1';
+    if (expanded_map && !alliance)
+        return ShowCupExpandedMap(mini_map_texture_ref,mini_map_texture_size,cup_2027,blue,
+                                  local_cup_replay,local_recordings);
+    if (!expanded_map && teammate_view.count > 0 && teammate_view.take_main_screen &&
         mqtt_client.get_connection_state() == RoboGo::io::MqttClient::ConnectionState::Connected) {
-        const int clicked = ShowTeammateOverview(teammate_view, menu_open, local_trial);
+        unsigned drawn_mask = 0;
+        const int clicked = ShowTeammateOverview(teammate_view, menu_open, local_trial, drawn_mask);
         const auto action = menu_open ? DrawCenteredMenu(state, mqtt_client, local_trial, waiting_for_video, alliance)
                                       : MenuAction::None;
         return {.return_to_events = action == MenuAction::ReturnToEvents,
                 .close_menu = action == MenuAction::Resume,
-                .teammate_slot_clicked = clicked};
+                .teammate_slot_clicked = clicked, .map_drawn_mask = drawn_mask};
     }
 
     const ImTextureRef background_video_texture_ref = using_custom_video_as_main
@@ -220,6 +235,10 @@ MainWindowActions ShowMainWindow(const State &state,
         const auto action = DrawCenteredMenu(state, mqtt_client, local_trial, waiting_for_video);
         return {.return_to_events = action == MenuAction::ReturnToEvents};
     }
+    if (expanded_map) {
+        ShowAllianceExpandedMap(mini_map_texture_ref, mini_map_texture_size, blue, local_trial);
+        return {};
+    }
     // The first click after opening the menu must not hit an underlying HUD widget.
     ImGui::PushItemFlag(ImGuiItemFlags_Disabled, menu_open && MatchMenuBounds().Contains(ImGui::GetMousePos()));
     // Let a match-sized viewport enlarge readouts without making the video insets larger.
@@ -236,8 +255,6 @@ MainWindowActions ShowMainWindow(const State &state,
     // Wider monitors leave more space for video once the side readouts reach a comfortable width.
     const float left_panel_width = alliance ? std::min(viewport->Size.x * .30f, std::clamp(viewport->Size.x * (.20f - .02f * large_view), 14.f * font_size, 28.f * font_size))
                                             : viewport->Size.x * .20f;
-    const auto id = alliance || cup_2027 ? mqtt_client.get_client_id() : std::string{};
-    const bool blue = id.size() == 3 && id.front() == '1';
     const bool heavy = id == "1" || id == "101";
     ImGui::SetNextWindowPos(ImVec2(0, 0), ImGuiCond_Always);
     ImGui::SetNextWindowSize(ImVec2(viewport->Size.x, left_panel_top));
@@ -321,8 +338,8 @@ MainWindowActions ShowMainWindow(const State &state,
     ImGui::SetNextWindowPos(ImVec2(viewport->Size.x - mini_map_width, viewport->Size.y - mini_map_height), ImGuiCond_Always);
     ImGui::SetNextWindowSize(ImVec2(mini_map_width, mini_map_height));
     if (alliance) ShowAllianceVenueMap(mini_map_texture_ref, mini_map_texture_size, blue);
-    else if (cup_2027) ShowCupVenueMap(mini_map_texture_ref, mini_map_texture_size, blue, !id.empty());
-    else ShowMiniMap(state, mqtt_client, mini_map_texture_ref, mini_map_texture_size);
+    else if (cup_2027) ShowCupVenueMap(mini_map_texture_ref, mini_map_texture_size, blue, !id.empty(), local_cup_replay);
+    else ShowMiniMap(state, mqtt_client, mini_map_texture_ref, mini_map_texture_size, local_cup_replay);
 
     // 给地图和增益留出位置。宽屏上小窗高度封顶，左右两侧不会挤到主画面中间。
     const float sidebar_room = viewport->Size.y - left_panel_top - mini_map_height;

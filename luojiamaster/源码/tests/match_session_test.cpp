@@ -57,6 +57,46 @@ int main(int argc, char **argv) {
               !CanDrawVideoFrame(true, false, prior, kCustomVideoLiveTimeout, prior + seconds(4)),
               "custom video retains its own timeout");
     }
+    {
+        UlHudView hud;
+        check(!hud.HandleMapKeys(true, false, false) && !hud.map_open, "unsigned seat ignores M");
+        hud.SelectIdentity(3);
+        check(!hud.HandleMapKeys(true, false, true) && !hud.map_open, "typing M skips the map");
+        check(!hud.HandleMapKeys(true, true, false) && !hud.map_open, "closed map leaves Escape to the menu");
+        hud.menu_open = true;
+        check(!hud.HandleMapKeys(true, false, false) && !hud.map_open, "menu owns M while open");
+        hud.menu_open = false;
+        hud.industrial_main = true;
+        check(hud.HandleMapKeys(true, false, false) && hud.map_open, "M opens the map");
+        hud.SelectIdentity(3);
+        check(hud.HandleMapKeys(false, false, false) && hud.map_open, "map stays open for the same seat");
+        check(hud.HandleMapKeys(true, false, false) && !hud.map_open, "second M closes the map");
+        check(hud.industrial_main && !hud.menu_open, "closing the map restores the selected camera");
+        hud.HandleMapKeys(true, false, false);
+        check(hud.HandleMapKeys(false, true, false) && !hud.map_open && !hud.menu_open,
+              "Escape closes only the map");
+        check(!hud.HandleMapKeys(false, true, false), "next Escape is available for the normal menu");
+        hud.HandleMapKeys(true, false, false);
+        hud.SelectIdentity(101);
+        check(!hud.map_open && hud.industrial_main, "new seat starts on its usual match view");
+        hud.HandleMapKeys(true, false, false);
+        hud.SelectIdentity(0);
+        check(!hud.map_open && !hud.HandleMapKeys(true, false, false), "logout clears the map");
+    }
+    {
+        for (const int seat : {1, 3, 4, 101, 103, 104})
+            check(IsCupMapSeat(seat), "cup operator can open a map");
+        for (const int seat : {-1, 0, 2, 7, 100, 102, 107, 203})
+            check(!IsCupMapSeat(seat), "other identities keep their existing UI");
+        UlHudView hud;
+        hud.SelectIdentity(104);
+        check(!hud.HandleMapKeys(true, false, false, true) && !hud.map_open,
+              "cup menu and original marker mode retain the keyboard");
+        check(hud.HandleMapKeys(true, false, false, false) && hud.map_open,
+              "signed-in cup match opens its map");
+        check(hud.HandleMapKeys(false, true, false, false) && !hud.map_open && !hud.menu_open,
+              "cup Escape returns to match without also opening the menu");
+    }
     const std::string request_topic = "RobotPerformanceSelectionCommand";
     RobotPerformanceSelectionCommand request;
     UlTrialLoadout loadout;

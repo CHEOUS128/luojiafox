@@ -13,6 +13,7 @@ struct TeammatePeerView {
     bool peer_served = false;
     bool frame_inverted = false;
     bool paused = false;  // 本地测试中手动断开这一份录像
+    int robot_id = 0;
 };
 
 struct TeammateViewState {
@@ -32,4 +33,4 @@ bool DrawTeammateTile(ImDrawList *draw, const TeammatePeerView &peer, const ImRe
 float ShowTeammateSidebar(const TeammateViewState &view, ImVec2 top_left, float width, float max_height);
 
 // 返回被单击的槽位。菜单打开和联盟赛的单路查看都没有切换槽位的动作。
-int ShowTeammateOverview(const TeammateViewState &view, bool menu_open, bool local_test);
+int ShowTeammateOverview(const TeammateViewState &view, bool menu_open, bool local_test, unsigned& drawn_mask);

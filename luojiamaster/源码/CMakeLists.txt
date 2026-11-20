@@ -229,6 +229,7 @@ add_executable(luojiamaster WIN32
     src/panel/header_panel.cpp
     src/panel/log_panel.cpp
     src/panel/mini_map.cpp
+    src/panel/cup_map_panel.cpp
     src/panel/panel_layout.cpp
     src/panel/robot_status_panel.cpp
     src/panel/start_panel.cpp
