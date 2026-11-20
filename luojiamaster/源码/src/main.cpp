@@ -2,6 +2,7 @@
 #include "app/ul_preview.h"
 #include "app/video_stability_test.h"
 #include "logging/logging.h"
+#include "luojiamaster_brand.h"
 #include "platform/launcher_restart.h"
 #include "platform/platform_backend.h"
 
@@ -85,7 +86,15 @@ int RunMain(const std::vector<std::string> &args) {
             return 1;
         }
     }
-    app::LaunchOptions options = app::ParseLaunchOptions(args);
+    app::LaunchOptions options;
+    try {
+        options = app::ParseLaunchOptions(args);
+    } catch (const std::exception &e) {
+        logging::initialize(platform_backend->application_name(), false);
+        SPDLOG_ERROR("启动参数无效 {}", e.what());
+        logging::shutdown();
+        return 2;
+    }
     logging::initialize(platform_backend->application_name(), options.invert_udp_video);
     struct LogShutdown { ~LogShutdown() { logging::shutdown(); } } logs;
     try {
@@ -100,7 +109,7 @@ int RunMain(const std::vector<std::string> &args) {
         options.local_trial = choice.local_trial;
         options.uc_classic = choice.competition != app::Competition::Ul2027;
         SPDLOG_INFO("进入赛事 {} / {}", app::CompetitionName(choice.competition),
-                    choice.local_trial ? "本地试用" : "正式登录");
+                    choice.local_trial ? "本地测试" : "正式登录");
         const int result = app::RunApplication(*platform_backend, options);
         if (result != app::kReturnToLauncher) return result;
         // RunApplication has already stopped every service and released the window.
@@ -109,7 +118,7 @@ int RunMain(const std::vector<std::string> &args) {
     } catch (const std::exception &error) {
         SPDLOG_ERROR("客户端运行失败 {}", error.what());
 #ifdef _WIN32
-        MessageBoxW(nullptr, L"客户端窗口未能继续运行，请重开程序并查看本次日志。", L"luojiamaster", MB_OK | MB_ICONERROR);
+        MessageBoxW(nullptr, L"客户端窗口未能继续运行，请重开程序并查看本次日志。", LUOJIAMASTER_PRODUCT_W, MB_OK | MB_ICONERROR);
 #endif
         return 1;
     }

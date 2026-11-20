@@ -1,21 +1,8 @@
 #pragma once
 
-#include <pch.h>
+#include "app/application_types.h"
 
-// 队友画面链路（2027 赛季自定义客户端互联）：
-//   两台电脑各挂一条独立的单向 TCP，互相把「官方 UDP 图传的原始 HEVC 字节」原样转发。
-//   不动字节 → 画质与官方图传完全一致，也省掉一次编码。
-//
-// 线格式（大端）：
-//   [握手 8 字节]  magic 'R' 'M' 'T' 'M' + version(1) + flags(1) + reserved(2)
-//                  flags bit0 = 发送端画面是倒的（和 UDP 那一路共用同一个翻转开关）
-//   [帧]   payload_bytes(4) + flags(4) + payload
-//                  每帧都带 flags，所以任一方按 I 切换翻转，画面立刻跟着翻，不用重连。
-//   晚连上来的一方缺 VPS/SPS/PPS，所以服务端在握手后先把缓存的参数集补发一遍。
-//
-// 线程模型：
-//   主循环每帧调 push_frame()，只做一次队列入队（满了丢最旧），绝不阻塞。
-//   网络收发、参数集抽取、补发参数集都在本类自己的线程里，不占 io_context。
+// 同队视频专线。每对登录岗位各有独立收发线程和有界队列。接收回调在网络线程里运行。
 namespace RoboGo::net {
 
 struct TeammateEndpoint {
@@ -23,8 +10,16 @@ struct TeammateEndpoint {
     std::uint16_t port = 0;
 };
 
+struct TeamSeatPair {
+    app::Competition competition;
+    int local_robot_id;
+    int remote_robot_id;
+    bool loopback;
+};
+
 struct TeammateLinkConfig {
-    // 对方地址。host 为空表示不发送（只收）。
+    std::optional<TeamSeatPair> seats;
+    // 旧手工模式用 host:port；按岗位配对时自动寻找专线地址。
     TeammateEndpoint peer;
     // 本地监听端口。0 表示不接收。
     std::uint16_t listen_port = 0;
@@ -35,6 +30,11 @@ struct TeammateLinkConfig {
     // 建立连接的超时。
     std::chrono::milliseconds connect_timeout{2000};
 };
+
+std::vector<int> TeamSeatIds(app::Competition competition, int local_robot_id);
+const char *TeamSeatName(app::Competition competition, int robot_id);
+TeammateLinkConfig TeamSeatLinkConfig(app::Competition competition, int local_robot_id,
+                                      int remote_robot_id, bool loopback = false);
 
 struct TeammateLinkStats {
     // 发送侧
@@ -68,12 +68,10 @@ public:
     // 主循环调用：把一帧原始码流放进发送队列。队列满时丢最旧的那帧。
     void push_frame(const std::vector<std::uint8_t> &frame);
 
-    // 主循环调用：更新「我方画面是否倒置」，会随下一次握手告诉对方。
+    // 方向随每个视频包发送。
     void set_local_inverted(bool inverted);
 
-    // 主循环调用：换发送目标（标题条上切 A/B 角色时用）。
-    // 只改 peer，不动监听端口——监听 socket 只在启动时 bind 一次，热改要整条链路重建。
-    // 发送线程下一轮重连就用新地址；旧的待发帧会清掉，避免把画面发给刚换下去的那台。
+    // 旧手工地址诊断模式可切换对端。已登录岗位固定在相应席位。
     void set_peer(TeammateEndpoint peer);
 
     // 主循环调用：只读统计。

@@ -1,4 +1,5 @@
 #include "header_panel.h"
+#include "panel/brand_mark.h"
 #include "app/match_values.h"
 #include "panel/hud_text.h"
 
@@ -99,7 +100,7 @@ bool ShowAllianceHeader(const State &state, bool local_trial, bool blue, bool he
         auto *draw = ImGui::GetWindowDrawList();
         const auto &game = state.game_status;
         char seat[64] = {};
-        ImFormatString(seat, IM_ARRAYSIZE(seat), "%s · %s%s", local_trial ? "本地试用" : "高校联盟赛",
+        ImFormatString(seat, IM_ARRAYSIZE(seat), "%s · %s%s", local_trial ? "本地测试" : "高校联盟赛",
                        blue ? "蓝方" : "红方", heavy ? "重装" : "步兵");
         CenteredText(draw, center, top - .15f * font, .91f * font, seat);
         char clock[32] = "--:--";
@@ -110,6 +111,9 @@ bool ShowAllianceHeader(const State &state, bool local_trial, bool blue, bool he
         const bool paused = game && game->has_is_paused() && game->is_paused();
         CenteredText(draw, center, top + .76f * font, 1.76f * font, clock,
                      paused ? IM_COL32(255, 212, 118, 255) : IM_COL32_WHITE);
+        luojiamaster::brand::DrawHudMarkInGap(draw, center - center_half_width + .2f * font,
+                center - TextWidth(clock, 1.76f * font) * .5f - .32f * font,
+                top + 1.65f * font, 1.05f * font);
         constexpr std::array<const char *, 6> phases{"未开赛", "准备", "自检", "开赛倒计时", "比赛中", "结算"};
         const char *phase = "等待赛况";
         if (game && game->has_current_stage() && game->current_stage() < phases.size()) {
@@ -246,7 +250,13 @@ void ShowHeaderPanel(const State &state) {
     uint32_t gold = state.global_logistics_status.has_value() ? state.global_logistics_status->remaining_economy() : 0;
     ImGui::PushFont(ImGui::GetFont(), 18);
     ImFormatStringToTempBuffer(&text_begin, &text_end, "%d", gold);
-    draw_list->AddText(ImVec2(window_pos.x + (window_size.x - ImGui::CalcTextSize(text_begin, text_end).x) / 2, countdown_bottom + 10 * ImGui::GetScale()), IM_COL32(255, 215, 0, 255), text_begin);
+    const ImVec2 economyTextSize = ImGui::CalcTextSize(text_begin, text_end);
+    const ImVec2 economyPos{window_pos.x + (window_size.x - economyTextSize.x) * .5f,
+                            countdown_bottom + 10 * ImGui::GetScale()};
+    draw_list->AddText(economyPos, IM_COL32(255, 215, 0, 255), text_begin, text_end);
+    luojiamaster::brand::DrawHudMarkInGap(draw_list, countdown_left - 20.f * ImGui::GetScale(),
+            economyPos.x - .42f * economyTextSize.y, economyPos.y + .5f * economyTextSize.y,
+            economyTextSize.y);
     ImGui::PopFont();
 
     // 前哨站血条和基地血条

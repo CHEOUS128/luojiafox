@@ -1,0 +1,251 @@
+{
+  "complete": true,
+  "errors": [],
+  "framebuffer_sizes": [
+    [
+      1920,
+      1080
+    ]
+  ],
+  "lane_order": [
+    "1",
+    "3",
+    "4"
+  ],
+  "windows": [
+    {
+      "round": 1,
+      "mode": "light",
+      "presents": 3597,
+      "frames": [
+        1775,
+        1800,
+        1800
+      ],
+      "p95_ms": 18.437,
+      "longest_ms": 38.62,
+      "over33": 11,
+      "longest_lane_gaps_ms": [
+        82.949,
+        67.316,
+        60.586
+      ],
+      "markers": "off"
+    },
+    {
+      "round": 1,
+      "mode": "light",
+      "presents": 3595,
+      "frames": [
+        1775,
+        1800,
+        1800
+      ],
+      "p95_ms": 18.59,
+      "longest_ms": 39.538,
+      "over33": 11,
+      "longest_lane_gaps_ms": [
+        72.904,
+        68.358,
+        62.633
+      ],
+      "percent_of_off": [
+        100.0,
+        100.0,
+        100.0
+      ],
+      "markers": "on"
+    }
+  ],
+  "candidates": {
+    "on": {
+      "status": "pass",
+      "failed_checks": [],
+      "longest_video_freeze": {
+        "ms": 72.904,
+        "round": 1,
+        "lane": "1"
+      }
+    }
+  },
+  "seconds_per_window": 60,
+  "log_events": [
+    "2026-11-20 14:37:11.273 [info] COMMANDER_MARKERS_BEGIN round=1 mode=light markers=off width=1920 height=1080",
+    "2026-11-20 14:38:11.288 [info] COMMANDER_MARKERS_RESULT round=1 mode=light markers=off seconds=60 valid=true presents=3597 p95_ms=18.437 longest_ms=38.620 over33=11 f1=1775 f3=1800 f4=1800 gap1_ms=82.949 gap3_ms=67.316 gap4_ms=60.586",
+    "2026-11-20 14:38:16.322 [info] COMMANDER_MARKERS_BEGIN round=1 mode=light markers=on width=1920 height=1080",
+    "2026-11-20 14:39:16.336 [info] COMMANDER_MARKERS_RESULT round=1 mode=light markers=on seconds=60 valid=true presents=3595 p95_ms=18.590 longest_ms=39.538 over33=11 f1=1775 f3=1800 f4=1800 gap1_ms=72.904 gap3_ms=68.358 gap4_ms=62.633"
+  ],
+  "gpu": "NVIDIA GeForce RTX 4060 Laptop GPU",
+  "video_inputs": [
+    {
+      "file": "peer-view-1.bin",
+      "width": 1920,
+      "height": 1080,
+      "fps": 30,
+      "frames": 60,
+      "bytes": 1055056,
+      "sha256": "00839527312b38c41ace4fa199b9cd82834a2ead95e5fb7a09caee0049ed069e",
+      "source": "existing official feed"
+    },
+    {
+      "file": "peer-view-2.bin",
+      "width": 1920,
+      "height": 1080,
+      "fps": 30,
+      "frames": 120,
+      "bytes": 622368,
+      "sha256": "699756fe07bec816575dd4bf31aabe5e68c33cb292e45b5ee72190e962bd47fe",
+      "source": "industrial camera"
+    },
+    {
+      "file": "peer-view-3.bin",
+      "width": 1920,
+      "height": 1080,
+      "fps": 30,
+      "frames": 120,
+      "bytes": 1284772,
+      "sha256": "627e292981d066a49fcb020b736dbf0c135f3460a7122b11588c40e44c8957b3",
+      "source": "synthetic moving corner chart"
+    }
+  ],
+  "log_sha256": "76712652438280d417c2f2386b56568ee700cad5775987fd1fde24148da9dea9",
+  "executable_sha256": "43517e09c03ce5ddedd39343c5eec6db15e488444956711c8c95c9b52243ebf5",
+  "local_map_alignment": {
+    "scope": "Local images only. No official position reports or physical field measurements.",
+    "rule_image_size_px": [
+      903,
+      499
+    ],
+    "asset_geometry_raster_size_px": [
+      800,
+      458
+    ],
+    "asset_geometry_raster_origin_px": [
+      400,
+      229
+    ],
+    "asset_geometry_pixels_per_unit": 27,
+    "calibration": [
+      {
+        "landmark": "red platform center",
+        "model_centers_top_view_both": [
+          88,
+          229
+        ],
+        "rule_figure": [
+          92,
+          249
+        ],
+        "fit": true,
+        "predicted_rule_px": [
+          92.0,
+          249.0
+        ],
+        "error_px": 0.0
+      },
+      {
+        "landmark": "blue platform center",
+        "model_centers_top_view_both": [
+          712,
+          229
+        ],
+        "rule_figure": [
+          810,
+          249
+        ],
+        "fit": true,
+        "predicted_rule_px": [
+          810.0,
+          249.0
+        ],
+        "error_px": 0.0
+      },
+      {
+        "landmark": "lower middle round landmark",
+        "model_centers_top_view_both": [
+          316,
+          334
+        ],
+        "rule_figure": [
+          355,
+          370
+        ],
+        "fit": true,
+        "predicted_rule_px": [
+          355.0,
+          370.0
+        ],
+        "error_px": 0.0
+      },
+      {
+        "landmark": "lower right R pad center",
+        "model_centers_top_view_both": [
+          740,
+          356
+        ],
+        "rule_figure": [
+          844,
+          395
+        ],
+        "fit": false,
+        "predicted_rule_px": [
+          843.009,
+          395.352
+        ],
+        "error_px": 1.052
+      },
+      {
+        "landmark": "upper left R pad center",
+        "model_centers_top_view_both": [
+          60,
+          101
+        ],
+        "rule_figure": [
+          59,
+          101
+        ],
+        "fit": false,
+        "predicted_rule_px": [
+          58.985,
+          101.495
+        ],
+        "error_px": 0.495
+      },
+      {
+        "landmark": "upper middle round landmark",
+        "model_centers_top_view_both": [
+          484,
+          125
+        ],
+        "rule_figure": [
+          548,
+          128
+        ],
+        "fit": false,
+        "predicted_rule_px": [
+          547.006,
+          129.152
+        ],
+        "error_px": 1.522
+      },
+      {
+        "landmark": "red open hexagon center",
+        "model_centers_top_view_both": [
+          200,
+          229
+        ],
+        "rule_figure": [
+          220,
+          249
+        ],
+        "fit": false,
+        "predicted_rule_px": [
+          220.872,
+          249.0
+        ],
+        "error_px": 0.872
+      }
+    ],
+    "missing_mesh_equals_flat_rgba_sha256": "9cf68aeaaecdc76a96488c7fce7c03f71eb085de443d2b4441fa621d652f8a98"
+  }
+}

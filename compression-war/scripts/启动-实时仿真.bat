@@ -1,4 +1,5 @@
 @echo off
+setlocal
 chcp 936 >nul
 cd /d "%~dp0.."
 if not exist "cw_live.exe" (
@@ -6,9 +7,11 @@ if not exist "cw_live.exe" (
     pause
     exit /b 1
 )
-if "%~1"=="" (
+set "CW_DEMO_INPUT=%~1"
+if not defined CW_DEMO_INPUT if not exist "素材\car_raw.bgr" if exist "素材\演示-实车图传.mp4" set "CW_DEMO_INPUT=素材\演示-实车图传.mp4"
+if not defined CW_DEMO_INPUT (
     "cw_live.exe"
 ) else (
-    "cw_live.exe" --input "%~1"
+    "cw_live.exe" --input "%CW_DEMO_INPUT%"
 )
 if errorlevel 1 pause

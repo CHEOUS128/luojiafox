@@ -12,12 +12,32 @@ void enter_game_mode();
 
 void set_game_input_capture_handler(std::function<void(bool enabled)> handler);
 
-void update_keyboard_mouse_state(RoboGo::io::MqttClient &mqtt_client);
+enum class KeyboardMouseSample { Match, Neutral, ReleaseNow };
+
+// In a view-only screen, release held controls once, then keep reporting idle.
+// On return, wait for all held buttons/keys and discard the first cursor recenter.
+class TeammatePointerGuard {
+public:
+    struct Step {
+        KeyboardMouseSample sample = KeyboardMouseSample::Match;
+        bool release_cursor = false;
+        bool restore_cursor = false;
+    };
+    Step Advance(bool viewing, bool controls_held);
+private:
+    enum class Phase { Match, Watching, WaitRelease, Recenter };
+    Phase phase_ = Phase::Match;
+};
+
+bool any_match_controls_held();
+void update_keyboard_mouse_state(RoboGo::io::MqttClient &mqtt_client,
+                                 KeyboardMouseSample sample = KeyboardMouseSample::Match);
 
 using KeyboardMouseSink = std::function<void(const std::string &topic, const std::string &payload)>;
 
 // Same sampling, serialization and 13ms gate; an offline caller supplies a local sink.
-void update_keyboard_mouse_state(const KeyboardMouseSink &sink);
+void update_keyboard_mouse_state(const KeyboardMouseSink &sink,
+                                 KeyboardMouseSample sample = KeyboardMouseSample::Match);
 
 // Synchronize an entry/menu transition after UI construction, without sampling
 // MouseDelta or Escape again and without publishing a second control packet.

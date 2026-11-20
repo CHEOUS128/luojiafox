@@ -1,17 +1,19 @@
 #include "teammate_video_receiver.h"
 
 #include "logging/logging.h"
+#include "video/rgba_frame_converter.h"
 
 namespace RoboGo::video {
 
 namespace {
 
 // 一次解码会话：解析器 + 解码器 + 到 RGBA 的转换器。
-// 参数集变了（换分辨率、对端重开流）就整体重建。
+// 每个队友保留独立解码状态，输出尺寸变化时重新配置颜色转换。
 struct DecodeSession {
     AVCodecContext *codec_context = nullptr;
     AVPacket *packet = nullptr;
     AVFrame *frame = nullptr;
+    RgbaFrameConverter aligned_rgba;
     SwsContext *sws_context = nullptr;
     int source_width = 0;
     int source_height = 0;
@@ -75,58 +77,6 @@ struct DecodeSession {
     }
 };
 
-int StartCodeBytesAt(const std::vector<std::uint8_t> &data, const std::size_t position) {
-    if (position + 4 <= data.size() && data[position] == 0 && data[position + 1] == 0
-        && data[position + 2] == 0 && data[position + 3] == 1) {
-        return 4;
-    }
-    if (position + 3 <= data.size() && data[position] == 0 && data[position + 1] == 0
-        && data[position + 2] == 1) {
-        return 3;
-    }
-    return 0;
-}
-
-int NalTypeAt(const std::vector<std::uint8_t> &data, const std::size_t position) {
-    if (position >= data.size()) {
-        return -1;
-    }
-    return (data[position] >> 1) & 0x3F;
-}
-
-// 这一帧里有没有 VPS/SPS/PPS。有的话字节完全相同就说明参数集没变，
-// 不必重建解码上下文；变了就说明对端换了分辨率或重开了流。
-bool SameParameterSets(const std::vector<std::uint8_t> &lhs, const std::vector<std::uint8_t> &rhs) {
-    return !lhs.empty() && lhs == rhs;
-}
-
-void CollectParameterSetBytes(const std::vector<std::uint8_t> &frame, std::vector<std::uint8_t> &out) {
-    out.clear();
-    std::size_t position = 0;
-    while (position + 3 <= frame.size()) {
-        const int start_code_bytes = StartCodeBytesAt(frame, position);
-        if (start_code_bytes == 0) {
-            ++position;
-            continue;
-        }
-        const std::size_t nal_start = position;
-        const int nal_type = NalTypeAt(frame, position + static_cast<std::size_t>(start_code_bytes));
-        std::size_t next = position + static_cast<std::size_t>(start_code_bytes) + 1;
-        while (next + 3 <= frame.size() && StartCodeBytesAt(frame, next) == 0) {
-            ++next;
-        }
-        if (next + 3 > frame.size()) {
-            next = frame.size();
-        }
-        if (nal_type == 32 || nal_type == 33 || nal_type == 34) {
-            out.insert(out.end(),
-                       frame.begin() + static_cast<std::ptrdiff_t>(nal_start),
-                       frame.begin() + static_cast<std::ptrdiff_t>(next));
-        }
-        position = next;
-    }
-}
-
 bool EnsureSwsContext(DecodeSession &session, const AVFrame *frame) {
     const auto frame_format = static_cast<AVPixelFormat>(frame->format);
     if (session.sws_context != nullptr && session.source_width == frame->width
@@ -161,7 +111,7 @@ bool EnsureSwsContext(DecodeSession &session, const AVFrame *frame) {
 // 由 UI 层用同样的方式处理，这样缩放/放大时才不会重复翻转。
 bool ConvertToRgba(DecodeSession &session,
                    const AVFrame *frame,
-                   const TeammateVideoConfig &config,
+                   const TeammateVideoConfig &config, int preview_width,
                    app::VideoFrame &out) {
     if (frame->width <= 0 || frame->height <= 0) {
         return false;
@@ -172,6 +122,12 @@ bool ConvertToRgba(DecodeSession &session,
                     frame->height,
                     config.max_dimension);
         return false;
+    }
+    if (config.reuse_aligned_rgba && (frame->format == AV_PIX_FMT_YUV420P || frame->format == AV_PIX_FMT_NV12)) {
+        auto converted = session.aligned_rgba.Convert(frame, preview_width);
+        if (!converted) return false;
+        out = std::move(*converted);
+        return true;
     }
     if (!EnsureSwsContext(session, frame)) {
         return false;
@@ -226,6 +182,7 @@ struct TeammateVideoReceiver::Shared {
     std::atomic<std::uint64_t> frames_dropped{0};
     std::atomic<std::uint64_t> decode_errors{0};
     std::atomic<std::uint64_t> context_rebuilds{0};
+    std::atomic<int> preview_width{0};
     std::atomic<int> width{0};
     std::atomic<int> height{0};
 };
@@ -269,6 +226,11 @@ void TeammateVideoReceiver::submit_frame(std::vector<std::uint8_t> &&frame) {
     shared_->queue_cv.notify_one();
 }
 
+void TeammateVideoReceiver::SetPreviewWidth(int width) {
+    if (shared_->config.reuse_aligned_rgba)
+        shared_->preview_width.store(std::clamp(width, 0, shared_->config.max_dimension), std::memory_order_relaxed);
+}
+
 TeammateVideoStats TeammateVideoReceiver::stats() const {
     TeammateVideoStats result;
     result.frames_submitted = shared_->frames_submitted.load(std::memory_order_relaxed);
@@ -302,7 +264,7 @@ void TeammateVideoReceiver::stop() {
 void TeammateVideoReceiver::run() {
     // 用 unique_ptr 装会话：DecodeSession 持有裸指针，重建时必须彻底销毁旧的再建新的。
     std::unique_ptr<DecodeSession> session;
-    std::vector<std::uint8_t> current_parameter_sets;
+
     std::string open_error;
     bool opened = false;
     bool stream_started_logged = false;
@@ -338,15 +300,9 @@ void TeammateVideoReceiver::run() {
             continue;
         }
 
-        std::vector<std::uint8_t> parameter_sets;
-        CollectParameterSetBytes(frame_bytes, parameter_sets);
-
-        // 参数集变了（或第一次收到）→ 重建解码上下文。
-        // 这样对端中途换分辨率、或者重开一路流，这边都能自己恢复，不用重启客户端。
-        const bool needs_rebuild = !opened || (!parameter_sets.empty()
-                                              && !SameParameterSets(parameter_sets, current_parameter_sets));
-        if (needs_rebuild) {
-            opened = false;
+        // FFmpeg keeps VPS/SPS/PPS by ID, including sets split across camera packets.
+        // It applies SPS changes at the coded picture; EnsureSwsContext tracks the output size.
+        if (!opened) {
             session = std::make_unique<DecodeSession>();
             if (!session->open(open_error)) {
                 session.reset();
@@ -354,9 +310,6 @@ void TeammateVideoReceiver::run() {
                 continue;
             }
             opened = true;
-            if (!parameter_sets.empty()) {
-                current_parameter_sets = parameter_sets;
-            }
             shared_->context_rebuilds.fetch_add(1, std::memory_order_relaxed);
         }
 
@@ -397,17 +350,33 @@ void TeammateVideoReceiver::run() {
                 break;
             }
 
+            const int source_width = session->frame->width;
+            const int source_height = session->frame->height;
             app::VideoFrame video_frame;
-            const bool converted = ConvertToRgba(*session, session->frame, shared_->config, video_frame);
+            const auto busy_before = session->aligned_rgba.PoolBusyCount();
+            bool converted = false;
+            try {
+                converted = ConvertToRgba(*session, session->frame, shared_->config,
+                                          shared_->preview_width.load(std::memory_order_relaxed), video_frame);
+            } catch (const std::exception &error) {
+                av_frame_unref(session->frame);
+                report_error(std::string("队友视频转换异常: ") + error.what());
+                continue;
+            }
             av_frame_unref(session->frame);
             if (!converted) {
+                if (session->aligned_rgba.PoolBusyCount() != busy_before) {
+                    // All three outputs are still held by the consumer.
+                    shared_->frames_dropped.fetch_add(1, std::memory_order_relaxed);
+                    continue;
+                }
                 report_error("转换为 RGBA 失败");
                 continue;
             }
 
             shared_->frames_decoded.fetch_add(1, std::memory_order_relaxed);
-            shared_->width.store(video_frame.width, std::memory_order_relaxed);
-            shared_->height.store(video_frame.height, std::memory_order_relaxed);
+            shared_->width.store(source_width, std::memory_order_relaxed);
+            shared_->height.store(source_height, std::memory_order_relaxed);
             if (shared_->on_frame) {
                 if (shared_->running.load(std::memory_order_acquire)) shared_->on_frame(std::move(video_frame));
             }

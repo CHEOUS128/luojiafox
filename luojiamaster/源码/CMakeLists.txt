@@ -201,6 +201,10 @@ endfunction()
 
 set(EMBEDDED_RESOURCE_SOURCES "")
 add_embedded_resource("tests/fixtures/双路视频样本.bin" "embedded_ul_capture")
+add_embedded_resource("tests/fixtures/peer-view-1.bin" "embedded_peer_view_one")
+add_embedded_resource("tests/fixtures/peer-view-2.bin" "embedded_peer_view_two")
+add_embedded_resource("tests/fixtures/peer-view-3.bin" "embedded_peer_view_three")
+add_embedded_resource("resources/rmuc-2027-field.png" "embedded_uc_commander_map")
 add_embedded_resource("resources/rmul-2027-3v3-base.png" "embedded_ul_map")
 add_embedded_resource("resources/map.png" "embedded_map_png")
 add_embedded_resource("resources/zcool.ttf" "embedded_zcool_font")
@@ -210,6 +214,8 @@ add_embedded_resource("proto/messages.proto" "embedded_messages_proto")
 add_executable(luojiamaster WIN32
     src/main.cpp
     src/app/application.cpp
+    src/arena/arena_view.cpp
+    src/panel/commander_panel.cpp
     src/app/ul_preview.cpp
     src/app/video_stability_test.cpp
     src/app/imgui_setup.cpp
@@ -294,6 +300,15 @@ endif()
 
 include(CTest)
 if(BUILD_TESTING)
+    add_executable(commander_nav_test tests/commander_nav_test.cpp)
+    target_include_directories(commander_nav_test PRIVATE src)
+    add_test(NAME commander_nav_test COMMAND commander_nav_test)
+    add_executable(commander_marker_replay_test tests/commander_marker_replay_test.cpp)
+    target_include_directories(commander_marker_replay_test PRIVATE src)
+    add_test(NAME commander_marker_replay_test COMMAND commander_marker_replay_test)
+    add_executable(commander_measurement_test tests/commander_measurement_test.cpp)
+    target_include_directories(commander_measurement_test PRIVATE src)
+    add_test(NAME commander_measurement_test COMMAND commander_measurement_test)
     add_executable(latest_video_frame_test tests/latest_video_frame_test.cpp)
     target_include_directories(latest_video_frame_test PRIVATE src)
     if(MSVC)
@@ -325,7 +340,9 @@ if(BUILD_TESTING)
     add_executable(rgba_converter_test tests/rgba_converter_test.cpp src/video/rgba_frame_converter.cpp)
     add_executable(input_response_test tests/input_response_test.cpp src/keyboard_mouse_state_manager.cpp gen/messages.pb.cc)
     add_executable(match_session_test tests/match_session_test.cpp gen/messages.pb.cc)
-    foreach(test_target rgba_converter_test input_response_test match_session_test)
+    add_executable(teammate_seat_link_test tests/teammate_seat_link_test.cpp
+        src/net/teammate_link.cpp src/video/teammate_video_receiver.cpp src/video/rgba_frame_converter.cpp)
+    foreach(test_target rgba_converter_test input_response_test match_session_test teammate_seat_link_test)
         target_include_directories(${test_target} PRIVATE include gen src)
         target_precompile_headers(${test_target} PRIVATE include/pch.h)
         target_link_libraries(${test_target} PRIVATE spdlog::spdlog utf8_validity protobuf::libprotobuf-lite

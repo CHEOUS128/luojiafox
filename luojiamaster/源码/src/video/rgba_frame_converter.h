@@ -24,7 +24,9 @@ public:
     ~RgbaFrameConverter();
     RgbaFrameConverter(const RgbaFrameConverter &) = delete;
     RgbaFrameConverter &operator=(const RgbaFrameConverter &) = delete;
-    std::optional<app::VideoFrame> Convert(const AVFrame *frame);
+    // A positive max_width scales for a display tile in the same conversion pass.
+    // Source-frame decoding is complete before this method is called.
+    std::optional<app::VideoFrame> Convert(const AVFrame *frame, int max_width = 0);
     [[nodiscard]] RgbaConversionSample LastSample() const { return last_; }
     [[nodiscard]] std::uint64_t PoolBusyCount() const { return pool_busy_; }
 private:

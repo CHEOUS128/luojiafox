@@ -72,67 +72,29 @@ bool WriteFrame(TcpSocket &socket, const Bytes &payload, const std::uint32_t fla
     return payload.empty() || WriteAll(socket, payload.data(), payload.size());
 }
 
-int NalTypeAt(const Bytes &buffer, const std::size_t start_code_bytes) {
-    if (start_code_bytes >= buffer.size()) {
-        return -1;
-    }
-    return (buffer[start_code_bytes] >> 1) & 0x3F;
+int AnnexBPrefix(const Bytes &frame, std::size_t at) {
+    if (at + 3 > frame.size() || frame[at] || frame[at+1]) return 0;
+    if (frame[at+2] == 1) return 3;
+    return at + 4 <= frame.size() && !frame[at+2] && frame[at+3] == 1 ? 4 : 0;
 }
 
-int CachedNalType(const Bytes &parameter_set) {
-    if (parameter_set.size() >= 4 && parameter_set[2] == 0 && parameter_set[3] == 1) {
-        return NalTypeAt(parameter_set, 4);
-    }
-    return NalTypeAt(parameter_set, 3);
-}
+using ParameterSets = std::array<Bytes, 3>;
 
-// 扫描 Annex B 码流里所有的 VPS/SPS/PPS（HEVC NAL 32/33/34），整段缓存下来。
-// 晚连上来的一方没有这些参数集就解不出画面，所以每次连接建立时要把它们先补发一遍。
-void CollectParameterSets(const Bytes &frame, std::vector<Bytes> &parameter_sets) {
-    const std::size_t size = frame.size();
-    std::size_t position = 0;
-
-    while (position + 3 <= size) {
-        std::size_t start_code_bytes = 0;
-        if (position + 4 <= size && frame[position] == 0 && frame[position + 1] == 0
-            && frame[position + 2] == 0 && frame[position + 3] == 1) {
-            start_code_bytes = 4;
-        } else if (frame[position] == 0 && frame[position + 1] == 0 && frame[position + 2] == 1) {
-            start_code_bytes = 3;
-        } else {
-            ++position;
-            continue;
+// Camera headers precede the first coded slice. The common P/IDR packet
+// returns after inspecting its first byte. Only metadata NALs need scanning.
+void CacheHeaders(const Bytes &frame, ParameterSets &saved) {
+    std::size_t at = 0;
+    while (at < frame.size()) {
+        const int prefix = AnnexBPrefix(frame, at);
+        if (!prefix || at + prefix >= frame.size()) return;
+        const auto type = (frame[at+prefix] >> 1) & 63;
+        if (type < 32) return;
+        std::size_t next = at + prefix + 1;
+        while (next < frame.size() && !AnnexBPrefix(frame, next)) ++next;
+        if (type >= 32 && type <= 34 && next - at <= kMaxParameterSetBytes) {
+            saved[type-32].assign(frame.begin() + at, frame.begin() + next);
         }
-
-        const std::size_t nal_start = position;
-        const int nal_type = NalTypeAt(frame, position + start_code_bytes);
-
-        // 找下一个起始码作为本 NAL 的结尾
-        std::size_t next = position + start_code_bytes + 1;
-        while (next + 3 <= size) {
-            if (frame[next] == 0 && frame[next + 1] == 0
-                && (frame[next + 2] == 1
-                    || (next + 3 < size && frame[next + 2] == 0 && frame[next + 3] == 1))) {
-                break;
-            }
-            ++next;
-        }
-        if (next + 3 > size) {
-            next = size;
-        }
-
-        if ((nal_type == 32 || nal_type == 33 || nal_type == 34) && next > nal_start) {
-            const std::size_t nal_bytes = next - nal_start;
-            if (nal_bytes <= kMaxParameterSetBytes) {
-                // 同一类型的参数集只留最新的那一份
-                std::erase_if(parameter_sets, [nal_type](const Bytes &existing) {
-                    return CachedNalType(existing) == nal_type;
-                });
-                parameter_sets.emplace_back(frame.begin() + static_cast<std::ptrdiff_t>(nal_start),
-                                            frame.begin() + static_cast<std::ptrdiff_t>(next));
-            }
-        }
-        position = next;
+        at = next;
     }
 }
 
@@ -171,158 +133,236 @@ bool ConnectWithTimeout(boost::asio::io_context &io_context,
     return connected;
 }
 
-}// namespace
+constexpr std::array<int, 3> kSeats{1, 3, 4};
+constexpr std::array<const char *, 3> kTeamHosts{"10.77.0.1", "10.77.0.2", "10.77.0.3"};
+constexpr std::uint8_t kSeatVersion = 2;
+using tcp = boost::asio::ip::tcp;
+using Error = boost::system::error_code;
+using Handshake = std::array<std::uint8_t, kHandshakeSize>;
 
-struct TeammateLink::Shared {
-    TeammateLinkConfig config;
-    FrameHandler on_frame;
+int CompetitionCode(app::Competition competition) {
+    switch (competition) {
+        case app::Competition::Uc2026: return 0;
+        case app::Competition::Ul2027: return 1;
+        case app::Competition::Uc2027: return 2;
+    }
+    return -1;
+}
 
-    // 发送目标单独一份，允许主循环热改（切角色）。受 peer_mutex 保护。
-    // config.peer 只在构造时写一次，发送线程不再读它。
-    mutable std::mutex peer_mutex;
-    TeammateEndpoint peer;
-    // 每改一次 +1；发送线程发现号变了就断开当前连接、用新地址重连。
-    std::atomic<std::uint64_t> peer_generation{0};
+int SeatIndex(int id) {
+    const int role = id > 100 ? id - 100 : id;
+    const auto it = std::find(kSeats.begin(), kSeats.end(), role);
+    return it == kSeats.end() ? -1 : static_cast<int>(it - kSeats.begin());
+}
 
-    std::atomic<bool> running{true};
-    std::atomic<bool> local_inverted{false};
+// One deterministic port per competition, team and directed seat pair.
+// The receiving computer's physical address is independent of its logged-in role.
+std::uint16_t SeatPort(app::Competition competition, int sender, int receiver) {
+    return static_cast<std::uint16_t>(47710 + 18 * CompetitionCode(competition)
+                                    + (sender > 100 ? 9 : 0) + 3 * SeatIndex(sender) + SeatIndex(receiver));
+}
 
-    // 发送队列：主循环入队，发送线程出队
-    std::mutex queue_mutex;
-    std::condition_variable queue_cv;
-    std::deque<Bytes> send_queue;
+Handshake MakeHandshake(const std::optional<TeamSeatPair> &seats, bool inverted) {
+    Handshake packet{};
+    WriteU32BE(packet.data(), kHandshakeMagic);
+    packet[4] = seats ? kSeatVersion : kHandshakeVersion;
+    packet[5] = inverted ? kFlagInverted : 0;
+    if (seats) {
+        packet[5] |= static_cast<std::uint8_t>(CompetitionCode(seats->competition) << 1);
+        packet[6] = static_cast<std::uint8_t>(seats->local_robot_id);
+        packet[7] = static_cast<std::uint8_t>(seats->remote_robot_id);
+    }
+    return packet;
+}
 
-    // 服务端用来接收连接的 acceptor。
-    // 用 shared_ptr：接收线程在 accept() 阻塞时会长期持有它，stop() 从另一个线程 close()
-    // 也不会和析构撞车（否则就是 use-after-free，加了锁又会变成死锁）。
-    std::mutex acceptor_mutex;
-    std::shared_ptr<boost::asio::ip::tcp::acceptor> acceptor;
+bool MatchesPeer(const Handshake &packet, const std::optional<TeamSeatPair> &seats) {
+    if (ReadU32BE(packet.data()) != kHandshakeMagic) return false;
+    if (!seats) return packet[4] == kHandshakeVersion;
+    return packet[4] == kSeatVersion && (packet[5] >> 1) == CompetitionCode(seats->competition)
+        && packet[6] == seats->remote_robot_id && packet[7] == seats->local_robot_id;
+}
 
-    std::atomic<std::uint64_t> frames_queued{0};
-    std::atomic<std::uint64_t> frames_sent{0};
-    std::atomic<std::uint64_t> frames_dropped{0};
-    std::atomic<std::uint64_t> bytes_sent{0};
-    std::atomic<std::uint64_t> frames_received{0};
-    std::atomic<std::uint64_t> bytes_received{0};
-    std::atomic<bool> peer_connected{false};
-    std::atomic<bool> peer_served{false};
-    std::atomic<bool> peer_frame_inverted{false};
+using IPv4 = boost::asio::ip::address_v4;
 
-    mutable std::mutex peer_text_mutex;
-    std::string peer_address;
+std::optional<IPv4> LocalSeatAddress(boost::asio::io_context &io, const TeamSeatPair &seats) {
+    if (seats.loopback) return IPv4::loopback();
+    for (const auto *host : kTeamHosts) {
+        Error ec;
+        TcpSocket probe(io);
+        probe.open(tcp::v4(), ec);
+        if (ec) continue;
+        const auto address = boost::asio::ip::make_address_v4(host);
+        probe.bind({address, 0}, ec);
+        if (!ec) return address;
+    }
+    return {};
+}
+
+bool IsSeatAddress(const boost::asio::ip::address &address, const TeamSeatPair &seats) {
+    if (!address.is_v4()) return false;
+    if (seats.loopback) return address.to_v4() == IPv4::loopback();
+    return std::ranges::any_of(kTeamHosts, [&](const char *host) {
+        return address.to_v4() == boost::asio::ip::make_address_v4(host);
+    });
+}
+
+// stop() may interrupt a blocking socket operation, but only its owning thread closes it.
+struct SocketInterrupt {
+    using Handle = decltype(std::declval<TcpSocket &>().native_handle());
+    std::mutex mutex;
+    std::optional<Handle> handle;
+    void interrupt() {
+        std::lock_guard lock(mutex);
+        if (handle) ::shutdown(*handle, static_cast<int>(tcp::socket::shutdown_both));
+    }
+    struct Scope {
+        SocketInterrupt &owner;
+        Scope(SocketInterrupt &slot, TcpSocket &socket) : owner(slot) {
+            std::lock_guard lock(owner.mutex);
+            owner.handle = socket.native_handle();
+        }
+        ~Scope() {
+            std::lock_guard lock(owner.mutex);
+            owner.handle.reset();
+        }
+    };
 };
 
-TeammateLink::TeammateLink(TeammateLinkConfig config, FrameHandler on_frame)
-    : shared_(std::make_shared<Shared>()) {
-    shared_->config = std::move(config);
-    shared_->on_frame = std::move(on_frame);
-    shared_->peer = shared_->config.peer;
+}// namespace
 
-    // 接收线程总是启动：listen_port 为 0 时 run_receiver 自己会退出。
-    // 端口被占用（比如本机开了第二个实例）只影响「收」，不影响「发」——
-    // 默认启用后这条链路不能因为 bind 失败就整个不工作。
-    receiver_thread_ = std::thread([this]() { run_receiver(); });
-    if (!shared_->config.peer.host.empty() && shared_->config.peer.port != 0) {
-        try {
-            sender_thread_ = std::thread([this]() { run_sender(); });
-        } catch (const std::exception &error) {
-            // 极端情况（线程数耗尽）。绝不能把整个客户端带走：这条链路降级成只收不发。
-            SPDLOG_ERROR("队友链路：发送线程创建失败（{}），只收不发", error.what());
-        }
-    }
-    SPDLOG_INFO("队友链路已创建 peer={}:{} listen_port={}",
-                shared_->config.peer.host,
-                shared_->config.peer.port,
-                shared_->config.listen_port);
-}
-
-TeammateLink::~TeammateLink() {
-    stop();
-}
-
-void TeammateLink::push_frame(const Bytes &frame) {
-    if (!shared_->running.load(std::memory_order_relaxed) || frame.empty()) {
-        return;
-    }
-    {
-        std::lock_guard lock(shared_->queue_mutex);
-        // 队列满 → 丢最旧的一帧。绝不能为了队友让主链路卡住。
-        while (shared_->send_queue.size() >= shared_->config.send_queue_capacity) {
-            shared_->send_queue.pop_front();
-            shared_->frames_dropped.fetch_add(1, std::memory_order_relaxed);
-        }
-        shared_->send_queue.push_back(frame);
-        shared_->frames_queued.fetch_add(1, std::memory_order_relaxed);
-    }
-    shared_->queue_cv.notify_one();
-}
-
-void TeammateLink::set_local_inverted(const bool inverted) {
-    shared_->local_inverted.store(inverted, std::memory_order_relaxed);
-}
-
-void TeammateLink::set_peer(TeammateEndpoint peer) {
-    const std::string text = peer.host + ":" + std::to_string(peer.port);
-    {
-        std::lock_guard lock(shared_->peer_mutex);
-        shared_->peer = std::move(peer);
-        // 发送线程看见这个号变了就主动断开重连，不用等这次写失败。
-        shared_->peer_generation.fetch_add(1, std::memory_order_relaxed);
-    }
-    // 队列里还没发出去的帧是给上一个角色的，清掉。
-    {
-        std::lock_guard lock(shared_->queue_mutex);
-        shared_->frames_dropped.fetch_add(shared_->send_queue.size(), std::memory_order_relaxed);
-        shared_->send_queue.clear();
-    }
-    shared_->queue_cv.notify_all();
-    SPDLOG_INFO("队友链路：发送目标已改为 {}", text);
-}
-
-TeammateLinkStats TeammateLink::stats() const {
-    TeammateLinkStats result;
-    result.frames_queued = shared_->frames_queued.load(std::memory_order_relaxed);
-    result.frames_sent = shared_->frames_sent.load(std::memory_order_relaxed);
-    result.frames_dropped = shared_->frames_dropped.load(std::memory_order_relaxed);
-    result.bytes_sent = shared_->bytes_sent.load(std::memory_order_relaxed);
-    {
-        std::lock_guard lock(shared_->queue_mutex);
-        result.queued_now = shared_->send_queue.size();
-    }
-    result.peer_connected = shared_->peer_connected.load(std::memory_order_relaxed);
-    result.frames_received = shared_->frames_received.load(std::memory_order_relaxed);
-    result.bytes_received = shared_->bytes_received.load(std::memory_order_relaxed);
-    result.peer_served = shared_->peer_served.load(std::memory_order_relaxed);
-    result.peer_frame_inverted = shared_->peer_frame_inverted.load(std::memory_order_relaxed);
-    {
-        std::lock_guard lock(shared_->peer_text_mutex);
-        result.peer_address = shared_->peer_address;
+std::vector<int> TeamSeatIds(app::Competition competition, int local_robot_id) {
+    const int self = SeatIndex(local_robot_id);
+    const int count = competition == app::Competition::Ul2027 ? 2 : 3;
+    if (self < 0 || self >= count || CompetitionCode(competition) < 0) return {};
+    std::vector<int> result;
+    for (int slot = 0; slot < count; ++slot) {
+        if (slot != self) result.push_back(kSeats[slot] + (local_robot_id > 100 ? 100 : 0));
     }
     return result;
 }
 
-void TeammateLink::stop() {
-    if (stopped_) {
-        return;
+const char *TeamSeatName(app::Competition competition, int robot_id) {
+    switch (SeatIndex(robot_id)) {
+        case 0: return competition == app::Competition::Uc2026 ? "英雄 1 号" : "重装 1 号";
+        case 1: return "步兵 3 号";
+        case 2: return "步兵 4 号";
+        default: return "未分配岗位";
     }
-    stopped_ = true;
-    shared_->running.store(false, std::memory_order_relaxed);
-    shared_->queue_cv.notify_all();
-    {
-        std::lock_guard lock(shared_->acceptor_mutex);
-        if (shared_->acceptor) {
-            boost::system::error_code ignored;
-            shared_->acceptor->close(ignored);
-        }
-    }
-    if (sender_thread_.joinable()) {
-        sender_thread_.join();
-    }
-    if (receiver_thread_.joinable()) {
-        receiver_thread_.join();
-    }
-    SPDLOG_INFO("队友链路已停止");
 }
+
+TeammateLinkConfig TeamSeatLinkConfig(app::Competition competition, int local_robot_id,
+                                      int remote_robot_id, bool loopback) {
+    TeammateLinkConfig config;
+    const auto teammates = TeamSeatIds(competition, local_robot_id);
+    if (std::find(teammates.begin(), teammates.end(), remote_robot_id) == teammates.end()) return config;
+    config.seats = TeamSeatPair{competition, local_robot_id, remote_robot_id, loopback};
+    config.listen_port = SeatPort(competition, remote_robot_id, local_robot_id);
+    config.peer.port = SeatPort(competition, local_robot_id, remote_robot_id);
+    config.connect_timeout = std::chrono::milliseconds(400);
+    config.reconnect_delay = std::chrono::milliseconds(220);
+    return config;
+}
+
+struct TeammateLink::Shared {
+    TeammateLinkConfig config;
+    FrameHandler on_frame;
+    std::atomic<bool> running{true}, inverted{false}, connected{false}, served{false}, remote_inverted{false};
+    std::atomic<std::uint64_t> enqueued{0}, sent{0}, dropped{0}, tx_bytes{0}, received{0}, rx_bytes{0};
+    std::mutex mutex;
+    std::condition_variable cv;
+    std::deque<Bytes> queue;
+    ParameterSets parameter_sets;
+    TeammateEndpoint peer;
+    std::string remote_address;
+    std::atomic<unsigned> generation{0};
+    SocketInterrupt tx, rx;
+
+    void pause(std::chrono::milliseconds duration) {
+        std::unique_lock lock(mutex);
+        cv.wait_for(lock, duration, [&] { return !running.load(); });
+    }
+};
+
+TeammateLink::TeammateLink(TeammateLinkConfig config, FrameHandler on_frame) : shared_(std::make_shared<Shared>()) {
+    shared_->config = std::move(config);
+    shared_->config.send_queue_capacity = std::clamp<std::size_t>(shared_->config.send_queue_capacity, 1, 16);
+    shared_->on_frame = std::move(on_frame);
+    shared_->peer = shared_->config.peer;
+    auto guarded = [this](auto fn) {
+        try { (this->*fn)(); }
+        catch (const std::exception &ex) { SPDLOG_ERROR("队友视频线程停止 {}", ex.what()); }
+    };
+    try {
+        if (shared_->config.listen_port) receiver_thread_ = std::thread(guarded, &TeammateLink::run_receiver);
+        if (shared_->peer.port && (shared_->config.seats || !shared_->peer.host.empty()))
+            sender_thread_ = std::thread(guarded, &TeammateLink::run_sender);
+    } catch (...) {
+        stop();
+        throw;
+    }
+}
+
+TeammateLink::~TeammateLink() { stop(); }
+
+void TeammateLink::push_frame(const Bytes &frame) {
+    if (frame.empty() || frame.size() > kMaxPayloadBytes || !shared_->running) return;
+    {
+        std::lock_guard lock(shared_->mutex);
+        if (!shared_->running) return;
+        CacheHeaders(frame, shared_->parameter_sets);
+        if (shared_->queue.size() >= shared_->config.send_queue_capacity) {
+            shared_->queue.pop_front();
+            ++shared_->dropped;
+        }
+        shared_->queue.push_back(frame);
+        ++shared_->enqueued;
+    }
+    shared_->cv.notify_all();
+}
+
+void TeammateLink::set_local_inverted(bool inverted) { shared_->inverted = inverted; }
+
+void TeammateLink::set_peer(TeammateEndpoint peer) {
+    if (shared_->config.seats) return;
+    {
+        std::lock_guard lock(shared_->mutex);
+        shared_->peer = std::move(peer);
+        ++shared_->generation;
+        shared_->dropped += shared_->queue.size();
+        shared_->queue.clear();
+    }
+    shared_->tx.interrupt();
+    shared_->cv.notify_all();
+}
+
+TeammateLinkStats TeammateLink::stats() const {
+    std::lock_guard lock(shared_->mutex);
+    TeammateLinkStats out;
+    out.frames_queued = shared_->enqueued;
+    out.frames_sent = shared_->sent;
+    out.frames_dropped = shared_->dropped;
+    out.bytes_sent = shared_->tx_bytes;
+    out.queued_now = shared_->queue.size();
+    out.peer_connected = shared_->connected;
+    out.frames_received = shared_->received;
+    out.bytes_received = shared_->rx_bytes;
+    out.peer_served = shared_->served;
+    out.peer_frame_inverted = shared_->remote_inverted;
+    out.peer_address = shared_->remote_address;
+    return out;
+}
+
+void TeammateLink::stop() {
+    if (stopped_) return;
+    stopped_ = true;
+    shared_->running = false;
+    shared_->cv.notify_all();
+    shared_->rx.interrupt();
+    shared_->tx.interrupt();
+    if (sender_thread_.joinable()) sender_thread_.join();
+    if (receiver_thread_.joinable()) receiver_thread_.join();
+}
+
 
 bool TeammateLink::ParseEndpoint(const std::string &text, TeammateEndpoint &endpoint, std::string &error_message) {
     const std::size_t colon = text.rfind(':');
@@ -348,295 +388,193 @@ bool TeammateLink::ParseEndpoint(const std::string &text, TeammateEndpoint &endp
 }
 
 void TeammateLink::run_sender() {
-    // 注意是类型别名（using），不是 namespace 别名。
-    // MSVC 不接受在函数作用域里给 boost::asio::ip::tcp 起 namespace 别名（C2879）。
-    using tcp = boost::asio::ip::tcp;
-    boost::asio::io_context io_context;
-    std::vector<Bytes> parameter_sets;
-    std::uint64_t connect_failures = 0;
+    auto &s = *shared_;
+    const auto &seats = s.config.seats;
+    boost::asio::io_context io;
 
-    while (shared_->running.load(std::memory_order_relaxed)) {
-        // 每轮重连都重新读一次目标地址：标题条切角色时主循环会改它。
+    std::size_t candidate = 0;
+    while (s.running) {
         TeammateEndpoint peer;
-        std::uint64_t peer_generation = 0;
+        unsigned generation;
         {
-            std::lock_guard lock(shared_->peer_mutex);
-            peer = shared_->peer;
-            peer_generation = shared_->peer_generation.load(std::memory_order_relaxed);
+            std::lock_guard lock(s.mutex);
+            peer = s.peer;
+            generation = s.generation;
         }
-        boost::system::error_code address_error;
-        const auto address = boost::asio::ip::make_address(peer.host, address_error);
-        if (address_error) {
-            // 地址不合法（ini 里写错）不能退出线程：标题条切一下角色就该能恢复。
-            // 同一个坏地址只报一次，免得每秒刷屏。
-            static thread_local std::uint64_t last_bad_generation = ~std::uint64_t{0};
-            if (last_bad_generation != peer_generation) {
-                last_bad_generation = peer_generation;
-                SPDLOG_ERROR("队友链路：对方地址不合法 host={}（切一下角色或改 ini 即可恢复）", peer.host);
+        TcpSocket socket(io);
+        Error error;
+        if (seats) {
+            const auto local = LocalSeatAddress(io, *seats);
+            if (!local) {
+                s.pause(s.config.reconnect_delay);
+                continue;
             }
-            std::this_thread::sleep_for(shared_->config.reconnect_delay);
+            if (seats->loopback) {
+                peer.host = "127.0.0.1";
+            } else {
+                do { peer.host = kTeamHosts[candidate++ % kTeamHosts.size()]; } while (peer.host == local->to_string());
+            }
+            socket.open(tcp::v4(), error);
+            if (!error) socket.set_option(tcp::socket::do_not_route(true), error);
+            if (!error) socket.bind({*local, 0}, error);
+            if (error) {
+                s.pause(s.config.reconnect_delay);
+                continue;
+            }
+        }
+        const auto address = boost::asio::ip::make_address(peer.host, error);
+        if (error || !ConnectWithTimeout(io, socket, {address, peer.port}, s.config.connect_timeout)) {
+            s.pause(s.config.reconnect_delay);
             continue;
         }
-        const auto endpoint = tcp::endpoint(address, peer.port);
-
-        TcpSocket socket(io_context);
-        if (!ConnectWithTimeout(io_context, socket, endpoint, shared_->config.connect_timeout)) {
-            // 没插队友网线是常态（单机调试、平时单人用）：每秒都刷 WARN 会把日志淹掉，
-            // 第一次打，之后每 60 次（≈1 分钟）提醒一次。
-            ++connect_failures;
-            if (connect_failures == 1 || connect_failures % 60 == 0) {
-                SPDLOG_WARN("队友链路：连接 {}:{} 失败（已连续 {} 次），{}ms 后重试",
-                            peer.host,
-                            peer.port,
-                            connect_failures,
-                            shared_->config.reconnect_delay.count());
+        {
+            SocketInterrupt::Scope active(s.tx, socket);
+            if (!s.running) break;
+            socket.set_option(tcp::no_delay(true), error);
+            ApplySocketTimeouts(socket, kSocketTimeoutMs);
+            const auto hello = MakeHandshake(seats, s.inverted);
+            bool ok = WriteAll(socket, hello.data(), hello.size());
+            if (ok && seats) {
+                Handshake reply;
+                ok = ReadExact(socket, reply.data(), reply.size()) && MatchesPeer(reply, seats);
             }
-            std::this_thread::sleep_for(shared_->config.reconnect_delay);
-            continue;
-        }
-        connect_failures = 0;
-
-        boost::system::error_code option_error;
-        socket.set_option(tcp::no_delay(true), option_error);
-        ApplySocketTimeouts(socket, kSocketTimeoutMs);
-        SPDLOG_INFO("队友链路：已连接 {}:{}", peer.host, peer.port);
-        shared_->peer_connected.store(true, std::memory_order_relaxed);
-
-        // 握手：告诉对方我这边画面是不是倒的（仅作初始值，每帧还会再带一遍）
-        std::uint8_t handshake[kHandshakeSize] = {};
-        WriteU32BE(handshake, kHandshakeMagic);
-        handshake[4] = kHandshakeVersion;
-        handshake[5] = shared_->local_inverted.load(std::memory_order_relaxed) ? kFlagInverted : 0;
-        bool link_ok = WriteAll(socket, handshake, sizeof(handshake));
-
-        // 把缓存的参数集补发一遍，让刚启动的对方能立刻解码
-        if (link_ok) {
-            const std::uint32_t parameter_flags =
-                    shared_->local_inverted.load(std::memory_order_relaxed) ? kFlagInverted : 0;
-            for (const auto &parameter_set: parameter_sets) {
-                if (!WriteFrame(socket, parameter_set, parameter_flags)) {
-                    link_ok = false;
-                    break;
+            if (ok) {
+                s.connected = true;
+                SPDLOG_INFO("队友视频发送已连接 {}:{} 岗位={}", peer.host, peer.port,
+                            seats ? seats->remote_robot_id : 0);
+            }
+            // Send the complete VPS/SPS/PPS together. Resetting a receiver on each
+            // separate set would throw away the preceding set of the same stream.
+            if (ok) {
+                Bytes header;
+                {
+                    std::lock_guard lock(s.mutex);
+                    for (const auto &part : s.parameter_sets) header.insert(header.end(), part.begin(), part.end());
+                }
+                if (!header.empty()) ok = WriteFrame(socket, header, s.inverted ? kFlagInverted : 0);
+            }
+            auto last_write = std::chrono::steady_clock::now();
+            while (ok && s.running && generation == s.generation) {
+                Bytes frame;
+                {
+                    std::unique_lock lock(s.mutex);
+                    s.cv.wait_for(lock, kSendPopTimeout, [&] {
+                        return !s.queue.empty() || !s.running || generation != s.generation;
+                    });
+                    if (!s.running || generation != s.generation) break;
+                    if (!s.queue.empty()) {
+                        frame = std::move(s.queue.front());
+                        s.queue.pop_front();
+                    }
+                }
+                if (frame.empty()) {
+                    // An idle camera keeps its seat connection. A heartbeat is
+                    // consumed at the receiver and never reaches video decoding.
+                    if (!seats || std::chrono::steady_clock::now() - last_write < std::chrono::milliseconds(700)) continue;
+                }
+                ok = WriteFrame(socket, frame, s.inverted ? kFlagInverted : 0);
+                if (ok) {
+                    last_write = std::chrono::steady_clock::now();
+                    if (!frame.empty()) {
+                        ++s.sent;
+                        s.tx_bytes += frame.size();
+                    }
                 }
             }
-            if (!parameter_sets.empty()) {
-                SPDLOG_INFO("队友链路：已补发 {} 组参数集", parameter_sets.size());
-            }
+            s.connected = false;
         }
-
-        while (link_ok && shared_->running.load(std::memory_order_relaxed)) {
-            // 角色切换：立刻断开这条连接，外层循环会拿新地址重连。
-            if (shared_->peer_generation.load(std::memory_order_relaxed) != peer_generation) {
-                SPDLOG_INFO("队友链路：发送目标已切换，断开旧连接准备重连");
-                break;
-            }
-            Bytes frame;
-            {
-                std::unique_lock lock(shared_->queue_mutex);
-                shared_->queue_cv.wait_for(lock, kSendPopTimeout, [this]() {
-                    return !shared_->send_queue.empty()
-                           || !shared_->running.load(std::memory_order_relaxed);
-                });
-                if (shared_->send_queue.empty()) {
-                    continue;
-                }
-                frame = std::move(shared_->send_queue.front());
-                shared_->send_queue.pop_front();
-            }
-
-            // 顺手把参数集缓存下来，供以后新连上来的对方使用
-            CollectParameterSets(frame, parameter_sets);
-
-            const std::uint32_t frame_flags =
-                    shared_->local_inverted.load(std::memory_order_relaxed) ? kFlagInverted : 0;
-            if (!WriteFrame(socket, frame, frame_flags)) {
-                SPDLOG_WARN("队友链路：发送失败，准备重连");
-                link_ok = false;
-                break;
-            }
-            shared_->frames_sent.fetch_add(1, std::memory_order_relaxed);
-            shared_->bytes_sent.fetch_add(frame.size(), std::memory_order_relaxed);
-        }
-
-        shared_->peer_connected.store(false, std::memory_order_relaxed);
-        boost::system::error_code ignored;
-        socket.shutdown(tcp::socket::shutdown_both, ignored);
-        socket.close(ignored);
-        if (shared_->running.load(std::memory_order_relaxed)) {
-            std::this_thread::sleep_for(shared_->config.reconnect_delay);
-        }
+        s.pause(s.config.reconnect_delay);
     }
-    SPDLOG_INFO("队友链路：发送线程已退出");
+    s.connected = false;
 }
 
 void TeammateLink::run_receiver() {
-    using tcp = boost::asio::ip::tcp;
-    if (shared_->config.listen_port == 0) {
-        SPDLOG_INFO("队友链路：未配置监听端口，只发不收");
-        return;
-    }
-    boost::asio::io_context io_context;
-
-    // 默认启用后，47700 被占（本机第二个实例、别的客户端）是现场常态。
-    // 逐级往上试 10 个端口，先 bind 上手最重要；实在占不到就每 5 秒重试一次。
-    constexpr std::uint16_t kMaxPortProbes = 10;
-    std::shared_ptr<tcp::acceptor> acceptor;
-    std::uint16_t bound_port = 0;
-    while (shared_->running.load(std::memory_order_relaxed)) {
-        for (std::uint16_t offset = 0; offset < kMaxPortProbes; ++offset) {
-            if (!shared_->running.load(std::memory_order_relaxed)) {
-                break;
-            }
-            const auto candidate = static_cast<std::uint16_t>(shared_->config.listen_port + offset);
-            if (candidate < shared_->config.listen_port) {
-                // 往上试会越过 65535 绕回小端口（甚至绕到 0 = 让系统随便挑），没意义，直接判失败。
-                break;
-            }
-            auto attempt = std::make_shared<tcp::acceptor>(io_context);
-            boost::system::error_code error;
-            attempt->open(tcp::v4(), error);
-            if (!error) {
-                attempt->set_option(boost::asio::socket_base::reuse_address(true), error);
-            }
-            if (!error) {
-                attempt->bind(tcp::endpoint(tcp::v4(), candidate), error);
-            }
-            if (!error) {
-                attempt->listen(boost::asio::socket_base::max_listen_connections, error);
-            }
-            if (!error) {
-                acceptor = std::move(attempt);
-                bound_port = candidate;
-                break;
-            }
-            if (offset == 0) {
-                SPDLOG_WARN("队友链路：监听端口 {} 被占用（{}），自动往上换一个",
-                            candidate,
-                            error.message());
-            }
-        }
-        if (acceptor != nullptr) {
-            break;
-        }
-        SPDLOG_WARN("队友链路：{}~{} 端口全被占用，5 秒后重试（只影响收画面）",
-                    shared_->config.listen_port,
-                    static_cast<unsigned>(shared_->config.listen_port)
-                            + static_cast<unsigned>(kMaxPortProbes) - 1u);
-        std::this_thread::sleep_for(std::chrono::seconds(5));
-    }
-    if (acceptor == nullptr) {
-        return;
-    }
-    if (bound_port != shared_->config.listen_port) {
-        SPDLOG_WARN("队友链路：实际监听端口是 {}（不是 {}）——队友要填这个端口才能连进来",
-                    bound_port,
-                    shared_->config.listen_port);
-    }
-    boost::system::error_code error;
-    // 非阻塞 + 轮询：这样 stop() 从别的线程 close() 之后，这里下一轮就能退出去。
-    // （Linux 上 close() 并不会唤醒另一个线程里阻塞中的 accept()，会卡死 join。）
-    acceptor->non_blocking(true, error);
-    SPDLOG_INFO("队友链路：正在监听端口 {}", bound_port);
-    {
-        std::lock_guard lock(shared_->acceptor_mutex);
-        shared_->acceptor = acceptor;
-    }
-
-    while (shared_->running.load(std::memory_order_relaxed)) {
-        TcpSocket socket(io_context);
-        boost::system::error_code accept_error;
-        // 本地多持一份 shared_ptr：stop() 关掉 acceptor 后我们这里还安全。
-        acceptor->accept(socket, accept_error);
-        if (accept_error) {
-            if (shared_->running.load(std::memory_order_relaxed)) {
-                // 没人连进来是常态，不要刷日志
-                if (accept_error != boost::asio::error::would_block) {
-                    SPDLOG_WARN("队友链路：accept 失败 message={}", accept_error.message());
-                    std::this_thread::sleep_for(std::chrono::milliseconds(200));
-                } else {
-                    std::this_thread::sleep_for(std::chrono::milliseconds(30));
-                }
-            }
+    auto &s = *shared_;
+    const auto &seats = s.config.seats;
+    boost::asio::io_context io;
+    while (s.running) {
+        std::optional<IPv4> local = seats ? LocalSeatAddress(io, *seats) : std::optional<IPv4>(IPv4::any());
+        if (!local) {
+            s.pause(s.config.reconnect_delay);
             continue;
         }
-
-        boost::system::error_code option_error;
-        // acceptor 是非阻塞的，新 socket 可能继承这个属性，明确改回阻塞再走超时读写。
-        socket.non_blocking(false, option_error);
-        socket.set_option(tcp::no_delay(true), option_error);
-        ApplySocketTimeouts(socket, kSocketTimeoutMs);
-
-        std::string peer_text = "unknown";
-        try {
-            const auto remote = socket.remote_endpoint();
-            peer_text = remote.address().to_string() + ":" + std::to_string(remote.port());
-        } catch (const std::exception &) {
+        tcp::acceptor acceptor(io);
+        Error error;
+        // A seat's port must exactly match the agreed direction. Manual legacy
+        // connections retain their existing fallback to the next available port.
+        std::uint32_t port = s.config.listen_port;
+        const std::uint32_t last = std::min<std::uint32_t>(65535, port + (seats ? 0 : 9));
+        for (; port <= last; ++port) {
+            acceptor.open(tcp::v4(), error);
+#ifdef _WIN32
+            if (!error) {
+                const BOOL exclusive = TRUE;
+                if (::setsockopt(acceptor.native_handle(), SOL_SOCKET, SO_EXCLUSIVEADDRUSE,
+                                 reinterpret_cast<const char *>(&exclusive), sizeof(exclusive)) != 0)
+                    error.assign(WSAGetLastError(), boost::asio::error::get_system_category());
+            }
+#else
+            if (!error) acceptor.set_option(tcp::acceptor::reuse_address(true), error);
+#endif
+            if (!error) acceptor.bind({*local, static_cast<std::uint16_t>(port)}, error);
+            if (!error) acceptor.listen(4, error);
+            if (!error) acceptor.non_blocking(true, error);
+            if (!error) break;
+            Error ignored;
+            acceptor.close(ignored);
         }
-        {
-            std::lock_guard lock(shared_->peer_text_mutex);
-            shared_->peer_address = peer_text;
+        if (port > last) {
+            s.pause(s.config.reconnect_delay);
+            continue;
         }
-        shared_->peer_served.store(true, std::memory_order_relaxed);
-        SPDLOG_INFO("队友链路：对方已连接 {}", peer_text);
-
-        // 握手
-        std::uint8_t handshake[kHandshakeSize] = {};
-        if (ReadExact(socket, handshake, sizeof(handshake))) {
-            if (ReadU32BE(handshake) != kHandshakeMagic) {
-                SPDLOG_WARN("队友链路：握手魔数不匹配，断开 {}", peer_text);
-                boost::system::error_code ignored;
-                socket.close(ignored);
+        SPDLOG_INFO("队友视频监听 {}:{} 岗位={}", local->to_string(), port, seats ? seats->remote_robot_id : 0);
+        while (s.running) {
+            TcpSocket socket(io);
+            acceptor.accept(socket, error);
+            if (error) {
+                if (error != boost::asio::error::would_block && error != boost::asio::error::try_again) break;
+                s.pause(std::chrono::milliseconds(30));
                 continue;
             }
-            if (handshake[4] != kHandshakeVersion) {
-                SPDLOG_WARN("队友链路：协议版本不一致 local={} peer={}（两端客户端需要同一版本）",
-                            kHandshakeVersion,
-                            handshake[4]);
+            const auto remote = socket.remote_endpoint(error);
+            if (error || (seats && !IsSeatAddress(remote.address(), *seats))) continue;
+            SocketInterrupt::Scope active(s.rx, socket);
+            if (!s.running) break;
+            socket.non_blocking(false, error);
+            socket.set_option(tcp::no_delay(true), error);
+            ApplySocketTimeouts(socket, kSocketTimeoutMs);
+            Handshake hello;
+            if (!ReadExact(socket, hello.data(), hello.size()) || !MatchesPeer(hello, seats)) continue;
+            if (seats) {
+                const auto reply = MakeHandshake(seats, s.inverted);
+                if (!WriteAll(socket, reply.data(), reply.size())) continue;
             }
-            shared_->peer_frame_inverted.store((handshake[5] & kFlagInverted) != 0,
-                                               std::memory_order_relaxed);
-            SPDLOG_INFO("队友链路：握手成功 版本={} 对方画面倒置={}",
-                        handshake[4],
-                        (handshake[5] & kFlagInverted) != 0 ? "是" : "否");
-        } else {
-            SPDLOG_WARN("队友链路：握手读取失败 {}", peer_text);
-            boost::system::error_code ignored;
-            socket.close(ignored);
-            continue;
-        }
-
-        std::uint8_t header[8];
-        while (shared_->running.load(std::memory_order_relaxed)) {
-            if (!ReadExact(socket, header, sizeof(header))) {
-                break;
+            {
+                std::lock_guard lock(s.mutex);
+                s.remote_address = remote.address().to_string() + ":" + std::to_string(remote.port());
+                s.remote_inverted = (hello[5] & kFlagInverted) != 0;
+                s.served = true;
             }
-            const std::uint32_t payload_bytes = ReadU32BE(header);
-            const std::uint32_t frame_flags = ReadU32BE(header + 4);
-            // 每帧都刷新朝向：对方按 I 之后画面立刻跟着翻，不用重连。
-            shared_->peer_frame_inverted.store((frame_flags & kFlagInverted) != 0,
-                                               std::memory_order_relaxed);
-            if (payload_bytes == 0 || payload_bytes > kMaxPayloadBytes) {
-                SPDLOG_WARN("队友链路：非法的负载长度 {}，断开 {}", payload_bytes, peer_text);
-                break;
+            SPDLOG_INFO("队友视频接收已配对 {} 岗位={}", remote.address().to_string(), seats ? seats->remote_robot_id : 0);
+            std::uint8_t header[8];
+            while (s.running && ReadExact(socket, header, sizeof(header))) {
+                const std::uint32_t size = ReadU32BE(header);
+                if (size == 0 && seats) continue;
+                if (size == 0 || size > kMaxPayloadBytes) break;
+                Bytes frame(size);
+                if (!ReadExact(socket, frame.data(), frame.size()) || !s.running) break;
+                s.remote_inverted = (ReadU32BE(header + 4) & kFlagInverted) != 0;
+                ++s.received;
+                s.rx_bytes += size;
+                if (s.on_frame) s.on_frame(std::move(frame));
             }
-            Bytes payload(payload_bytes);
-            if (!ReadExact(socket, payload.data(), payload.size())) {
-                break;
-            }
-            shared_->frames_received.fetch_add(1, std::memory_order_relaxed);
-            shared_->bytes_received.fetch_add(payload.size(), std::memory_order_relaxed);
-            // 解码由上层在自己的线程里做，这里只做一次搬运
-            if (shared_->on_frame) {
-                shared_->on_frame(std::move(payload));
+            {
+                std::lock_guard lock(s.mutex);
+                s.served = false;
+                s.remote_address.clear();
+                s.remote_inverted = false;
             }
         }
-
-        SPDLOG_INFO("队友链路：对方断开 {}", peer_text);
-        boost::system::error_code ignored;
-        socket.shutdown(tcp::socket::shutdown_both, ignored);
-        socket.close(ignored);
     }
-    SPDLOG_INFO("队友链路：接收线程已退出");
 }
-
 }// namespace RoboGo::net

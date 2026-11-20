@@ -1,26 +1,33 @@
 # 客户端工具和现场接线
 
-这里是当前2026现役工程唯一的现场组网说明。普通使用看 [客户端 README](../README.md)。2027 RMUL接入方式和角色变化另行核对，本轮不改变现有A/B队友行为。
+队友电脑用一条单独的有线网络互看画面。三个赛事都跟随登录的阵营和岗位自动配对。下文保留了 2026 实车使用的官方端接线，并说明这版两台和三台客户端怎么接。普通使用看 [客户端 README](../README.md)。 指挥席的三路录像、场馆、棋子可以直接从 EXE 的「2027 超级对抗赛 → 本地测试 → 指挥手」体验。安装场馆看[部署教程](../部署教程/README.md#22-电脑需要什么)。
 
 ## 两个入口分别做什么
 
 | 入口 | 用途 |
 | --- | --- |
-| `维护工具.bat` | 查看本机配置、检查真实对端、手工选择A/B/off，以及经确认修改专用队友网卡或添加防火墙规则 |
+| `维护工具.bat` | 查看网卡和版本、检查队友专线、恢复自动配对或关闭互看、设置专线地址和防火墙 |
 | `离线测试.bat` | 用小份真实双路录流检查解码、显示和窗口；只进入独立离线测试，不创建正常客户端网络服务 |
-| `内部/` | 两个入口调用的实现，平时不用单独打开 |
+| `内部/` | 维护和离线测试脚本，以及维护人员用的三维场馆转换工具 |
 
 维护菜单的检查与修改分开：
 
-1. **只看本机：** 网卡、角色ini、EXE校验值和现有规则。
-2. **检查对端：** 官方端及当前ini中的队友地址；拒绝把本机IP当作对端，避免“ping自己也算通过”。
-3. **选择角色：** 手工写入A、B或off；不替你启动或登录客户端。
+1. **只看本机：** 网卡、当前配对方式、EXE 校验值和现有规则。
+2. **检查对端：** 检查官方端口，再看专线上的其他地址能不能 ping 通、登录后的岗位连接是否建立。只有两台电脑时，第三个地址可以无响应。
+3. **设置配对方式：** 输入 `AUTO` 恢复按登录岗位找队友，或 `OFF` 关闭队友视频。正常使用直接登录即可。
 4. **设置队友网卡：** 显示网卡编号、MAC和现有地址，明确选择并再次确认。不能覆盖官方链路、上网网卡或其他业务网络。
 5. **添加放行规则：** 管理员权限下明确确认，仅添加本程序需要的局域网入站规则。
 
 离线测试读取 `源码/tests/fixtures/双路视频样本.bin`，官方UDP分片和300 B第二视角数据都经过真实解码，再提交显卡显示；不把普通彩色图片代替视频链路。默认样本是可复核的小片段，不是完整实车会话，也不代表相机到屏幕延迟已测完。
 
-**离线回放没有官方登录，也不向车辆发布键鼠。两个回放窗口各自播放，不能据此宣布A/B互联通过。** 原来的正常客户端双开/灌UDP脚本已退出日常入口；需要检验两机互联时，按下方真实网卡和真实画面逐项验收。
+双击客户端，选赛事 → 本地测试 → 阵营和岗位，可以在同一套比赛界面试 K、L 和点选画面。测试画面来自本地录像。要验证网线那一段，请分别在两台或三台电脑上登录，用各自的实际视频互看。
+
+## 队友专线怎么接
+
+- **两台电脑**用一根网线直连。各自给专门的队友网口设 `10.77.0.1` 和 `10.77.0.2`。
+- **三台电脑**把三个队友网口接到同一台独立交换机，第三台用 `10.77.0.3`。三台掩码都是 `255.255.255.0`，网关、DNS 留空。端口号和网线都不用随岗位调换。
+- 打开同一版客户端，选同一赛事、同一阵营，每个人登录自己的岗位。联盟赛重装 1 号和步兵 3 号互看。超级对抗赛三个岗位互看，2026 是英雄 1、步兵 3 和步兵 4，2027 把英雄改为重装 1。
+- 右边的小窗写明队友岗位，另一台没上线时留在原位置等。按 **K** 一起收起或展开。按 **L** 查看队友，超级对抗赛两路左右并排，单击其中一路放大，再点一次回来；再按 **L** 回本车。联盟赛按 **L** 直接看唯一的队友。
 
 ## 单车先接通官方端
 
@@ -100,13 +107,13 @@ C/D的WiFi可不连接；如连接赛事局域网，保持DHCP。路由器没有
 - 两套VT13分别插自己的官方端，记录设备管理器里的COM号，按官方端配置选择。
 - 赛事引擎及官方端防火墙设置按对应2026官方联网手册核对。客户端的放行工具只用于客户端，不能拿它代替官方端的接入检查。
 
-### 3 配PC-C和PC-D
+### 3 配 PC-C 和 PC-D 的客户端
 
 1. **先接官方线**，两台自带RJ45分别设 `.12.2`，各自检查自己那台 `.12.1:3333`。
 2. 再插USB队友网卡，C设 `10.77.0.1`，D设 `10.77.0.2`。可手填，或在维护菜单中明确选择网卡后确认。
-3. 两台客户端分别添加本程序必要规则：入站TCP47700、UDP3334和需要的ICMP回显。维护工具添加前会确认；不要因此关闭所有无关防护。
-4. 双击同一版本EXE，选「进入正式客户端」后选同一赛事。C保留A角色，D点标题 `[默认A]` 切为B，或用维护工具提前手工设置；该操作不负责官方登录。
-5. 角色选择后看EXE旁的 `队友视角.ini` 和日志。两台EXE的MD5必须一致。
+3. 在每台客户端放行本程序的入站 TCP `47710–47763` 和官方视频 UDP `3334`。右键管理员运行「维护工具」→ 菜单 5 可添加规则。旧版只放行 `47700`，升级后需要补一次新规则。
+4. 双击同一版本 EXE，选「2026 超级对抗赛」→「正式登录」，C、D 选同一阵营、各自不同岗位。角色跟着登录走。两台 EXE 的 MD5 可以用维护菜单 1 核对。
+5. 第三台暂未接入时，对应的小窗显示等待。看两台互传只需对应岗位的两张画面持续更新。
 
 ### 4 开引擎、官方端和客户端
 
@@ -115,7 +122,7 @@ C/D的WiFi可不连接；如连接赛事局域网，保持DHCP。路由器没有
 3. PC-A/PC-B启动官方选手端，连接引擎 `192.168.1.2`，分别选择对应机器人，确认官方图传正常。
 4. 两台官方端按 `P`，键鼠来源选“自定义客户端”。
 5. PC-C/D分别登录 `192.168.12.1:3333`，机器人ID各自与对应官方端一致；登录后按 `Esc`。
-6. 主画面应是本车，队友小窗应是另一台车。标题“双向已连”只是连接信息，还要确认画面来源及持续更新。
+6. 主画面应是本车，队友小窗应是另一台车。检查岗位名称，以及画面会不会跟着对应视频更新。
 
 分级验收：先每一对官方端/客户端自己出画，再连两台客户端互看，最后检查赛事数据和工业相机第二视角。哪一级失败就查新加的一段，不同时改多处。
 
@@ -128,32 +135,33 @@ C/D的WiFi可不连接；如连接赛事局域网，保持DHCP。路由器没有
 | 主控不在线 | 2.4G、WPA2、密码、DHCP网段；别把WiFi连到无关热点 |
 | `.12.1:3333`不通 | 官方端程序是否登录并监听；网卡地址是否正确；线是否接到了对应官方端 |
 | 客户端主画面黑 | 先看官方端自身画面，再查ID和客户端入站UDP3334 |
-| 队友未连接 | 检查真实对端10.77地址、角色、TCP47700；不要测试自己的IP |
+| 队友未连接 | 各机专线地址是否不同、赛事和阵营是否相同、登录岗位是否不同、客户端 TCP 47710–47763 是否放行 |
 | 有连接但没队友新图 | 对方官方源是否有图；发、收、解码计数在哪里先停；接收端是否在等恢复关键帧 |
-| 接受端口自动变成47701等 | 47700被占后会向上尝试9个端口；对方仍找47700不会自动知道新端口，先关重复实例或明确配对端口 |
+| 岗位等待，但网线能 ping 通 | 确认每台电脑只有一个正式客户端，菜单 1 显示按岗位配对。如显示手填或已关闭，用菜单 3 恢复自动，重开软件并重新登录 |
 | 图像越来越旧或主画面受影响 | 看CPU/GPU、队列、丢旧帧和新图计数；折叠小窗不会停止解码，可用off关闭队友功能后重启客户端 |
 | 工业相机第二视角不出图 | 先用 [Jetson只读检查](../../autoaim/README.md#日常开机与只读检查)，再看 [云台输出证据](../../lower-machine/README.md)；不靠键鼠或运动“保活” |
 
-对端端口检查可以用维护菜单，也可在PowerShell运行：
+从 PC-C 检查官方端和 PC-D 的专线地址，可在 PowerShell 运行
 
 ```powershell
 Test-NetConnection 192.168.12.1 -Port 3333
-Test-NetConnection 10.77.0.2 -Port 47700
+ping 10.77.0.2
 ```
 
-上例第二条用于C查D，D查C应换成 `10.77.0.1`。连接测试不是画面验收；`ping`失败也可能只是ICMP没放行，不能只凭它判网线坏。日志位于 `程序/logs/<会话>/robogo.log`，同时保留原始输出和发生时间。
+PC-D 查 PC-C 要改成 `10.77.0.1`。维护菜单 2 还会列出本机当前建立的岗位连接。画面要在客户端里亲眼核实。日志在 `程序/logs/<会话>/robogo.log`。
 
-## 角色配置与恢复
+## 配对设置与恢复
 
-大多数时候点击A/B即可。确需自定义地址时，EXE旁 `队友视角.ini` 为UTF-8，一行一项：
+正常情况下不用建配置文件，账号登录后自动配对。旧文件里只有 `role=A`、`role=B` 或默认 `listen=47700` 的电脑也会自动跟随岗位。局域网地址只决定电脑之间怎么连，比赛岗位只由登录决定。
+
+旧版两机现场记录使用 A/B 和 TCP `47700`。需要专门复核旧接口时，可以在 EXE 旁的 `队友视角.ini` 中明确填写单个对端，例如下面是本机 .1 找另一台 .2 的写法
 
 ```ini
-role=A
 peer=10.77.0.2:47700
 listen=47700
 ```
 
-优先级是命令行 `--teammate-*`、ini的 `peer=`、`role=`、内置默认A。显式写 `peer=` 后就以该地址为准，不能以为只改角色就必然改掉显式对端。`peer=off` 关闭队友连接和监听。联盟赛仍留一行提示，按 K 可查看原因。删除本机 ini 恢复默认。该文件是每台电脑的配置，不提交到Git。
+另一台对应写 `peer=10.77.0.1:47700`。手填模式最多一路。只填 `peer=` 时仅发送，只填非默认监听端口时仅接收。写 `peer=off` 可关闭互看。使用维护工具菜单 3 输入 `AUTO` 可恢复默认。这个文件是每台电脑自己的设置，不提交到 Git。
 
 收场后，需要恢复日常网络的网卡，在IPv4属性改为“自动获得IP地址/DNS”。只撤销本次新增的规则，不随意改其他程序配置。更换USB接口后Windows可能建立新网卡配置，要重新核对MAC、接口编号和IP。
 
@@ -185,3 +193,86 @@ listen=47700
 </details>
 
 只旁听车端串口时，按电控确认的数据口接RXD/GND，CH340的TXD与所有电源脚悬空。**12V、VCC、5V、3V3不接，不向C板发送键鼠。** 本页的网络工具不包含车端串口写入或固件烧录。
+
+## 开发者编译与离线复核
+
+准备 Visual Studio 2022 的C++桌面开发、Windows SDK、CMake和Ninja。项目提供FFmpeg静态库和多数依赖。Boost体积超过仓库限制，首次编译任选一种准备方式：
+
+- 从队内已编译的电脑复制整个 `源码/3rdparty_downloads/boost/`，连同里面的 `.unpacked` 标记。
+- 手动下载本工程指定的 [boost-1.91.0-1-cmake.tar.xz](https://github.com/boostorg/boost/releases/download/boost-1.91.0-1/boost-1.91.0-1-cmake.tar.xz)，放进 `源码/3rdparty_downloads/_archives/`，再运行该目录上一层的 `解压依赖.bat`。压缩包SHA256应为 `cc5dc5006ecbdf0051f90979be31b4eee5987d9ae14ae9fb9c03cfa43fa3cdad`，与CMakeLists一致；压缩包和Boost解压目录都不提交Git。
+
+正式编译入口只使用已经准备好的依赖，不在编译中自动下载。
+
+两处已有实测坑：配置用 `-DFETCHCONTENT_FULLY_DISCONNECTED=ON`；构建必须在VS开发环境里，否则可能链接不到Windows SDK的 `oleaut32.lib`。正式一键脚本会进入开发环境。中文路径通过短路径junction编译，链接必须指向本仓库源码，不能指到旧工作区。
+
+第一次在新电脑编译时，在仓库根目录的管理员PowerShell建立短路径；现有链接会交给编译脚本严格核对，指错时停止：
+
+```powershell
+$rm26Source = (Resolve-Path -LiteralPath '.\luojiamaster\源码').Path
+if (-not (Test-Path -LiteralPath 'C:\rm26build')) {
+    New-Item -ItemType Junction -Path 'C:\rm26build' -Target $rm26Source | Out-Null
+}
+```
+
+之后在仓库根目录的PowerShell运行。`-Verify`构建并执行已注册测试，`-SyncDelivery`在测试通过且客户端已退出后同步交付EXE：
+
+```powershell
+& '.\luojiamaster\源码\一键配置与编译.bat' -Verify -SyncDelivery
+if ($LASTEXITCODE -ne 0) { throw '编译、测试或同步未通过，请保留原始输出。' }
+```
+
+### 复核比赛界面与视频
+
+**用同一段录像和赛况核对正式入口。** 内置双路样本长 3.996 秒，包括 2783 条官方图传记录和 158 条工业相机记录。赛况每 39 秒循环一次，登录后的第一圈在第 16～18 秒停发官方画面、第 20～26 秒停发工业相机。可分别观察另一画面是否继续更新。
+
+上面的编译完成后，装有 Python 3 的 Windows 可在本机运行。两个 PowerShell 窗口都先进入仓库根目录。第一个窗口运行下面一行，看到 `READY` 后保留窗口。登录成功后播放 45 秒，结束时服务自行退出。
+
+```powershell
+python '.\luojiamaster\源码\tests\loopback_match_replay.py' --seconds 45
+```
+
+第二个窗口运行下面几行。它们将本版客户端放入新建的临时文件夹，并为这个副本关闭队友连接。选红方步兵 3 号，在登录框确认服务端是 `127.0.0.1:59335`，点「登录」。正式入口从本机网络收到与「本地测试」相同的两路录包和赛况。关掉客户端即可结束查看。
+
+```powershell
+$rmHudCheck = New-Item -ItemType Directory -Path (Join-Path $env:TEMP ("rmul-hud-" + [guid]::NewGuid()))
+Copy-Item -LiteralPath '.\luojiamaster\程序\luojiamaster.exe' -Destination $rmHudCheck.FullName
+Set-Content -LiteralPath (Join-Path $rmHudCheck.FullName '队友视角.ini') -Value 'peer=off' -Encoding Ascii
+& (Join-Path $rmHudCheck.FullName 'luojiamaster.exe') --competition=ul2027 --mqtt_server 'tcp://127.0.0.1:59335' --video_port 59336
+```
+
+现成码流放在 `源码/tests/fixtures/测试画面.h265`。图像转换复核只测转换环节，输出到临时目录：
+
+```powershell
+& '.\luojiamaster\源码\一键配置与编译.bat' -CI -Targets real_conversion_benchmark
+& '.\luojiamaster\源码\build\release\real_conversion_benchmark.exe' '.\luojiamaster\源码\tests\fixtures\测试画面.h265' "$env:TEMP\rm26-rgba.csv"
+```
+
+双路离线测试需要维护人员保存的真实 `network_capture.bin`，完整录流不入库；内置小样本可直接用工具离线测试。在源码目录运行，并替换自己的路径：
+
+```powershell
+.\build\release\luojiamaster.exe --offline-video-test --capture="D:\录包\network_capture.bin" --seconds=120 --replay-window-seconds=35 --performance --no-window-exercise --report-dir="D:\临时测试\新版"
+```
+
+`--performance-baseline` 选择旧转换路径和晚采样；在该档再加 `--early-input`，只比较采样位置。`--ui-work-ms=8` 是人工压力档。记录入口在任何正常网络服务创建前进入，不连接车辆。性能分析用 `源码/tests/analyze_video_performance.py`，长测用 `audit_long_video_performance.py`；历史缺项按原失败保留。
+
+源码变更后检查重复块，避免同一个 `std::thread` 重复赋值造成退出。中文路径文件和进程操作沿用 `platform_util`，不重新引入裸 `fopen/ofstream/system`。`.md`用UTF-8无BOM+LF，脚本按仓库编码约定维护。
+
+### 复测指挥席地图和三路录像
+
+在仓库根目录打开 PowerShell。需要 Python、压片平台的 FFmpeg 和队内原始视频素材。重做 1080p 三路样片用 5～9 秒、10～14 秒的工业相机原片和官方图传样片；压片平台的公开视频演示使用实车片段。实际测量时保持窗口在前台，按 F11 后程序开始计时，结束后自动退出。把测量日志路径交给 `luojiamaster/源码/tests/analyze_commander_benchmark.py` 就能复核。
+
+```powershell
+$clips = Join-Path $env:TEMP 'rmuc-command-1080p'
+python .\luojiamaster\源码\tests\prepare_commander_replays.py --client .\luojiamaster\源码 --compression-war .\compression-war --out $clips --profile benchmark
+& .\luojiamaster\程序\luojiamaster.exe --local-trial --competition=uc2027 --commander-benchmark --commander-video-dir $clips
+```
+
+复测立体棋子时，先用上面的素材脚本重新生成三路实车录像。以下命令依次测关棋子和开棋子，按 F11 开始，每档 60 秒，完成后窗口自动关闭。
+
+```powershell
+& .\luojiamaster\程序\luojiamaster.exe --local-trial --competition=uc2027 --commander-marker-benchmark --commander-benchmark-1080-display --commander-video-dir $clips
+```
+
+用 `analyze_commander_benchmark.py <本次日志文件路径> --markers` 可复核这两档。
+
+要指定 Windows 已检测到的 1920×1080 屏，将上面的 `--commander-benchmark` 换成 `--commander-benchmark-1080-display`。程序不会更改 Windows 的分辨率。

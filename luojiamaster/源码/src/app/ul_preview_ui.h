@@ -2,6 +2,7 @@
 
 #include "app/application_types.h"
 #include "app/ul_drawing.h"
+#include "panel/brand_mark.h"
 #include "app/window_checks.h"
 #include <algorithm>
 #include <cstdint>
@@ -67,8 +68,8 @@ inline Action Draw(UiState &s, const TextureView &udp, const TextureView &cbb,
     } else if(s.page!=Page::Desk) {
         Gap(std::clamp(vp->WorkSize.y*.08f,4.f,58.f));
         const float block=std::min(640.f,all); ImGui::Indent(std::max(1.f,(all-block)*.5f));
-        Kicker("LUOJIAFOX     /     珞珈狐战队");
-        Gap(9); Title(s.page==Page::Welcome?"欢迎使用 luojiamaster":"离线体验",std::clamp(all*.053f,26.f,42.f));
+        luojiamaster::brand::Masthead(s.page == Page::Welcome);
+        Gap(9); Title(s.page==Page::Welcome?"欢迎使用":"离线体验",std::clamp(all*.05f,22.f,32.f));
         Gap(4); ImGui::TextUnformatted(s.page==Page::Welcome?"自定义客户端    /    赛事入口":"无需登录    /    本机测试");
         Gap(16); Status(status);
         if(s.page==Page::Welcome) {

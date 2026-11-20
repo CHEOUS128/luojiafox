@@ -3,7 +3,7 @@
 #include "main_window.h"
 #include "io/mqtt_client.h"
 
-enum class MenuAction { None, Resume, SwitchLayout, ReturnToEvents };
+enum class MenuAction { None, Resume, SwitchLayout, ReturnToEvents, CommanderRed, CommanderBlue };
 void ResetStartPanelSession(RoboGo::app::Competition competition);
 void PositionMatchMenu();
 ImRect MatchMenuBounds();

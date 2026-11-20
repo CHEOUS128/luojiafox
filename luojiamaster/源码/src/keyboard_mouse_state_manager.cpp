@@ -145,48 +145,7 @@ void synchronize_game_input_capture() {
     }
 }
 
-void update_keyboard_mouse_state(RoboGo::io::MqttClient &mqtt_client) {
-    if (offline_input_test_active) {
-        throw std::logic_error("offline input tests must use the local KeyboardMouseSink overload");
-    }
-    update_keyboard_mouse_state(KeyboardMouseSink{[&mqtt_client](const std::string &topic, const std::string &payload) {
-        mqtt_client.publish(topic, payload);
-    }});
-}
-
-void update_keyboard_mouse_state(const KeyboardMouseSink &sink) {
-    const int frame = ImGui::GetFrameCount();
-    if (last_sampled_imgui_frame == frame) {
-        synchronize_game_input_capture();
-        return;
-    }
-    last_sampled_imgui_frame = frame;
-    ImGuiIO &io = ImGui::GetIO();
-    if (ImGui::IsKeyPressed(ImGuiKey_Escape, false)) {
-        game_mode_enabled = !game_mode_enabled;
-        SPDLOG_INFO("比赛模式切换 enabled={}", game_mode_enabled);
-    }
-    synchronize_game_input_capture();
-    if (!game_mode_enabled) return;
-    if (use_raw_mouse) {
-        // 游戏模式：使用平台层累积的真实位移（光标已被锁定并每帧重置，不会到边缘）
-        mouse_x += static_cast<int32_t>(raw_mouse_dx * mouse_sensitivity);
-        mouse_y += static_cast<int32_t>(raw_mouse_dy * mouse_sensitivity);
-        raw_mouse_dx = 0.0f;
-        raw_mouse_dy = 0.0f;
-    } else {
-        mouse_x += static_cast<int32_t>(io.MouseDelta.x * mouse_sensitivity);
-        mouse_y += static_cast<int32_t>(io.MouseDelta.y * mouse_sensitivity);
-    }
-    mouse_z += static_cast<int32_t>(io.MouseWheel);
-
-    const auto now = offline_input_test_active && offline_input_test_now
-        ? *offline_input_test_now : std::chrono::steady_clock::now();
-    if (now - last_publish_time < publish_interval) {
-        return;
-    }
-    last_publish_time = now;
-
+static std::bitset<32> ReadMatchKeys() {
     std::bitset<32> keyboard_value;
     // 注意：必须用 IsKeyDown（当前是否按住），不能用 IsKeyPressed（只在按下的那一瞬间为真）。
     // ACE 原版误用了 IsKeyPressed，周期采样时按键几乎总会被采成"未按下"，
@@ -207,14 +166,99 @@ void update_keyboard_mouse_state(const KeyboardMouseSink &sink) {
     keyboard_value[13] = ImGui::IsKeyDown(ImGuiKey_C);
     keyboard_value[14] = ImGui::IsKeyDown(ImGuiKey_V);
     keyboard_value[15] = ImGui::IsKeyDown(ImGuiKey_B);
-    KeyboardMouseControl keyboard_mouse_control;
-    keyboard_mouse_control.set_mouse_x(mouse_x);
-    keyboard_mouse_control.set_mouse_y(-mouse_y);
-    keyboard_mouse_control.set_mouse_z(mouse_z);
-    keyboard_mouse_control.set_left_button_down(io.MouseDown[0]);
-    keyboard_mouse_control.set_right_button_down(io.MouseDown[1]);
-    keyboard_mouse_control.set_keyboard_value(keyboard_value.to_ulong());
-    keyboard_mouse_control.set_mid_button_down(io.MouseDown[2]);
+    return keyboard_value;
+}
+
+static KeyboardMouseControl MakeInputMessage(int32_t x, int32_t y, int32_t wheel, uint32_t keys,
+                                            bool left, bool right, bool middle) {
+    KeyboardMouseControl message;
+    message.set_mouse_x(x);
+    message.set_mouse_y(y);
+    message.set_mouse_z(wheel);
+    message.set_left_button_down(left);
+    message.set_right_button_down(right);
+    message.set_keyboard_value(keys);
+    message.set_mid_button_down(middle);
+    return message;
+}
+
+bool any_match_controls_held() {
+    return ImGui::IsAnyMouseDown() || ReadMatchKeys().any();
+}
+
+TeammatePointerGuard::Step TeammatePointerGuard::Advance(bool viewing, bool controls_held) {
+    if (viewing) {
+        const bool entering = phase_ != Phase::Watching;
+        phase_ = Phase::Watching;
+        return {entering ? KeyboardMouseSample::ReleaseNow : KeyboardMouseSample::Neutral, entering, false};
+    }
+    if (phase_ == Phase::Watching || phase_ == Phase::WaitRelease) {
+        phase_ = controls_held ? Phase::WaitRelease : Phase::Recenter;
+        return {KeyboardMouseSample::Neutral, false, !controls_held};
+    }
+    if (phase_ == Phase::Recenter) {
+        phase_ = Phase::Match;
+        return {KeyboardMouseSample::Neutral};
+    }
+    return {};
+}
+
+void update_keyboard_mouse_state(RoboGo::io::MqttClient &mqtt_client, KeyboardMouseSample sample) {
+    if (offline_input_test_active) {
+        throw std::logic_error("offline input tests must use the local KeyboardMouseSink overload");
+    }
+    update_keyboard_mouse_state(KeyboardMouseSink{[&mqtt_client](const std::string &topic, const std::string &payload) {
+        mqtt_client.publish(topic, payload);
+    }}, sample);
+}
+
+void update_keyboard_mouse_state(const KeyboardMouseSink &sink, KeyboardMouseSample sample) {
+    const int frame = ImGui::GetFrameCount();
+    if (last_sampled_imgui_frame == frame) {
+        synchronize_game_input_capture();
+        return;
+    }
+    last_sampled_imgui_frame = frame;
+    const auto now = offline_input_test_active && offline_input_test_now
+        ? *offline_input_test_now : std::chrono::steady_clock::now();
+    if (sample != KeyboardMouseSample::Match) {
+        mouse_x = mouse_y = mouse_z = 0;
+        raw_mouse_dx = raw_mouse_dy = 0;
+        if (sample == KeyboardMouseSample::ReleaseNow || now - last_publish_time >= publish_interval) {
+            last_publish_time = now;
+            // The protocol has field presence: a released button is explicitly false.
+            static const auto idle = MakeInputMessage(0, 0, 0, 0, false, false, false).SerializeAsString();
+            if (sink) sink("KeyboardMouseControl", idle);
+        }
+        return;
+    }
+    ImGuiIO &io = ImGui::GetIO();
+    if (ImGui::IsKeyPressed(ImGuiKey_Escape, false)) {
+        game_mode_enabled = !game_mode_enabled;
+        SPDLOG_INFO("比赛模式切换 enabled={}", game_mode_enabled);
+    }
+    synchronize_game_input_capture();
+    if (!game_mode_enabled) return;
+    if (use_raw_mouse) {
+        // 游戏模式：使用平台层累积的真实位移（光标已被锁定并每帧重置，不会到边缘）
+        mouse_x += static_cast<int32_t>(raw_mouse_dx * mouse_sensitivity);
+        mouse_y += static_cast<int32_t>(raw_mouse_dy * mouse_sensitivity);
+        raw_mouse_dx = 0.0f;
+        raw_mouse_dy = 0.0f;
+    } else {
+        mouse_x += static_cast<int32_t>(io.MouseDelta.x * mouse_sensitivity);
+        mouse_y += static_cast<int32_t>(io.MouseDelta.y * mouse_sensitivity);
+    }
+    mouse_z += static_cast<int32_t>(io.MouseWheel);
+
+    if (now - last_publish_time < publish_interval) {
+        return;
+    }
+    last_publish_time = now;
+
+    const auto keyboard_value = ReadMatchKeys();
+    const auto keyboard_mouse_control = MakeInputMessage(mouse_x, -mouse_y, mouse_z, keyboard_value.to_ulong(),
+                                                      io.MouseDown[0], io.MouseDown[1], io.MouseDown[2]);
     std::string serialized;
     if (keyboard_mouse_control.SerializeToString(&serialized)) {
         SPDLOG_DEBUG("发送键鼠控制 mouse=({}, {}, {}) buttons=({},{},{}) keyboard=0x{:X}",

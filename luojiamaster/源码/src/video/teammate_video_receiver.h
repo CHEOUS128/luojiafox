@@ -11,7 +11,7 @@
 //   1) 它是无人值守的——裸调 avcodec_send_packet 后没有 drain，P 帧会被压在解码器里出不来；
 //   2) HEVC 的 cuvid 解码器拿到不完整的参数集会直接终止进程，硬解不适合这种「可能丢包」的链路；
 //   3) 队友链路中途可能换分辨率/重建流，需要能自己重建解码上下文。
-// 所以这里是一个独立的小解码器，软解 + 每次收完都 drain，参数集变化时重建上下文。
+// 所以这里是一个独立的小解码器，软解 + 每次收完都 drain，分开的 VPS、SPS、PPS 一起保留，输出尺寸变化时重建颜色转换。
 namespace RoboGo::video {
 
 struct TeammateVideoConfig {
@@ -19,6 +19,9 @@ struct TeammateVideoConfig {
     std::size_t input_queue_capacity = 16;
     // 分辨率上限，防坏流把内存吃光。
     int max_dimension = 4096;
+    // Commander's local lanes feed a latest-only mailbox and an uploader
+    // accepting padded rows; ordinary receivers keep packed RGBA ownership.
+    bool reuse_aligned_rgba = false;
 };
 
 struct TeammateVideoStats {
@@ -44,6 +47,8 @@ public:
     // 接收线程调用：只入队，不做重活。
     void submit_frame(std::vector<std::uint8_t> &&frame);
 
+    // Applies to a local aligned-output lane only. Zero restores native pixels.
+    void SetPreviewWidth(int width);
     [[nodiscard]] TeammateVideoStats stats() const;
 
     void stop();

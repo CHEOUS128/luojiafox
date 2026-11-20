@@ -4,6 +4,7 @@ $script:ClientRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
 $script:ProgramRoot = Join-Path $script:ClientRoot '程序'
 $script:ClientExe = Join-Path $script:ProgramRoot 'luojiamaster.exe'
 $script:PeerIni = Join-Path $script:ProgramRoot '队友视角.ini'
+$script:TeamAddresses = @('10.77.0.1','10.77.0.2','10.77.0.3')
 
 function Get-FileMd5 {
     param([string]$LiteralPath)
@@ -20,18 +21,14 @@ function Get-FileMd5 {
 
 function Get-TeammateSettings {
     param([string[]]$Lines = @())
-    $role = 'A'; $peerText = ''; $listenPort = 47700
+    $peerText = ''; $listenPort = 0
     foreach ($line in $Lines) {
         $trimmed = $line.Trim()
         if (-not $trimmed -or $trimmed.StartsWith('#')) { continue }
         $parts = $trimmed.Split(@('='), 2)
         if ($parts.Count -ne 2) { continue }
         $key = $parts[0].Trim(); $value = $parts[1].Trim()
-        if (($key -ceq 'role' -or $key -ceq '角色') -and $value) {
-            $first=$value.Substring(0,1).ToUpperInvariant()
-            $role=if($first -in @('A','B')){$first}else{'A'}
-        }
-        elseif ($key -ceq 'peer') { $peerText = $value }
+        if ($key -ceq 'peer') { $peerText = $value }
         elseif ($key -ceq 'listen') {
             $parsedPort = 0
             if (-not [int]::TryParse($value, [ref]$parsedPort) -or $parsedPort -lt 1 -or $parsedPort -gt 65535) { throw '队友视角.ini 的 listen 不是有效端口。' }
@@ -39,13 +36,18 @@ function Get-TeammateSettings {
         }
     }
     if ($peerText.ToLowerInvariant() -in @('off','0')) {
-        return [pscustomobject]@{ Enabled=$false; Role=$role; PeerHost=''; PeerPort=0; ListenPort=$listenPort }
+        return [pscustomobject]@{ Mode='Off'; PeerHost=''; PeerPort=0; ListenPort=0 }
     }
-    if (-not $peerText) { $peerText = if ($role -eq 'B') { '10.77.0.1:47700' } else { '10.77.0.2:47700' } }
+    if (-not $peerText -and $listenPort -notin @(0,47700)) {
+        return [pscustomobject]@{ Mode='Listen'; PeerHost=''; PeerPort=0; ListenPort=$listenPort }
+    }
+    if (-not $peerText) {
+        return [pscustomobject]@{ Mode='Auto'; PeerHost=''; PeerPort=0; ListenPort=0 }
+    }
     if ($peerText -notmatch '^(?<endpoint>[^:\s]+):(?<port>\d+)$') { throw '队友地址格式不能识别，本工具不猜对端。请检查 peer=地址:端口。' }
     $endpointHost = $matches.endpoint; $endpointPort = [int]$matches.port
     if ($endpointPort -lt 1 -or $endpointPort -gt 65535) { throw '队友端口超出范围。' }
-    [pscustomobject]@{ Enabled=$true; Role=$role; PeerHost=$endpointHost; PeerPort=$endpointPort; ListenPort=$listenPort }
+    [pscustomobject]@{ Mode='Manual'; PeerHost=$endpointHost; PeerPort=$endpointPort; ListenPort=$listenPort }
 }
 
 function Read-TeammateSettings {
@@ -71,7 +73,7 @@ function Get-AdapterProtectionReason {
     if (@($DefaultRoutes).Count -gt 0) { return '这块网卡有默认路由，不能用此工具修改。' }
     foreach ($address in $IPv4Addresses) {
         if ($address -like '192.168.12.*') { return '这是官方链路网卡，禁止修改。' }
-        if ($address -notlike '169.254.*' -and $address -notin @('10.77.0.1','10.77.0.2')) { return '这块网卡有其他业务地址，禁止修改。' }
+        if ($address -notlike '169.254.*' -and $address -notin $script:TeamAddresses) { return '这块网卡有其他业务地址，禁止修改。' }
     }
     return ''
 }
@@ -89,15 +91,21 @@ function Show-LocalStatus {
         [pscustomobject]@{ 编号=$adapter.ifIndex; 网卡=$adapter.Name; 状态=$adapter.Status; MAC=$adapter.MacAddress; IPv4=($addresses -join ', ') }
     } | Format-Table -AutoSize
     $settings = Read-TeammateSettings
-    if ($settings.Enabled) { Write-Host ('当前兼容设置：{0}机；实际队友对端 {1}:{2}；本机监听 {3}' -f $settings.Role,$settings.PeerHost,$settings.PeerPort,$settings.ListenPort) }
-    else { Write-Host '队友视角当前已关闭。' }
-    Write-Host 'A/B是当前双客户端的人工选择，不会自动识别身份。'
+    switch ($settings.Mode) {
+        Auto   { Write-Host '当前按登录岗位自动配对。队友专线用 10.77.0.1、.2 或 .3，每台选不同地址。' }
+        Manual {
+            $receive = if ($settings.ListenPort) { '本机监听 '+$settings.ListenPort } else { '仅发送' }
+            Write-Host ('当前手填单路：对端 {0}:{1}，{2}。菜单3可恢复自动。' -f $settings.PeerHost,$settings.PeerPort,$receive)
+        }
+        Listen { Write-Host ('当前只手工监听本机端口 {0}。菜单3可恢复自动。' -f $settings.ListenPort) }
+        Off    { Write-Host '队友视角已关闭。菜单3可恢复自动。' }
+    }
     if (Test-Path -LiteralPath $script:ClientExe) { Get-Item -LiteralPath $script:ClientExe | Select-Object Name,Length,LastWriteTime | Format-Table; Write-Host ('EXE MD5：'+(Get-FileMd5 -LiteralPath $script:ClientExe)) }
     else { Write-Host '[缺少] 程序/luojiamaster.exe' -ForegroundColor Red }
     try {
-        $names = @('RM26.Client.Teammate.TCP','RM26.Client.Official.UDP','RM26.Client.ICMP')
+        $names = @('RM.Client.Seats.TCP','RM26.Client.Teammate.TCP','RM26.Client.Official.UDP','RM26.Client.ICMP')
         $legacyNames = @('RM Teammate Video 47700','RM Client UDP 3334','RM ICMP Echo')
-        $rules = @(Get-NetFirewallRule | Where-Object { $_.Name -in $names -or $_.DisplayName -in $legacyNames })
+        $rules = @(Get-NetFirewallRule | Where-Object { $_.Name -in $names -or $_.Name -like 'RM.Client.Manual.*' -or $_.DisplayName -in $legacyNames })
         if ($rules.Count) { $rules | Select-Object DisplayName,Enabled,Direction,Action | Format-Table -AutoSize }
         else { Write-Host '[提示] 未发现本客户端的已知防火墙规则；可在菜单5单独设置。' }
     } catch { Write-Host ('[未核对] 无法读取防火墙：'+$_.Exception.Message) }
@@ -116,11 +124,13 @@ function Test-RemoteEndpoint {
         }
     }
     foreach ($address in $addresses) {
-        Write-Host ("`n{0}实际对端：{1}:{2}" -f $Label,$address,$Port)
+        if ($Port) { Write-Host ("{0} {1}:{2}" -f $Label,$address,$Port) }
+        else { Write-Host ("{0} {1}" -f $Label,$address) }
         $ping = New-Object Net.NetworkInformation.Ping
         try { $reply=$ping.Send($address,1000); Write-Host ('ping：'+$reply.Status) }
         catch { Write-Host ('ping未成功：'+$_.Exception.Message) }
         finally { $ping.Dispose() }
+        if (-not $Port) { continue }
         $tcp = New-Object Net.Sockets.TcpClient
         try {
             $pending=$tcp.ConnectAsync($address,$Port)
@@ -129,22 +139,38 @@ function Test-RemoteEndpoint {
         } catch { Write-Host ('[未连通] '+$_.Exception.GetBaseException().Message) -ForegroundColor Yellow }
         finally { $tcp.Dispose() }
     }
-    Write-Host '端口连通只证明网络可达，不等于已收到或解码视频；这里不发送MQTT或键鼠消息。'
+    if ($Port) { Write-Host '端口可达后，请到客户端看对应岗位的画面是否持续更新。' }
 }
 
 function Test-Peers {
-    Write-Host '将测试官方对端192.168.12.1:3333及INI中的队友对端。'
+    Write-Host '将检查官方端 192.168.12.1:3333 和队友专线。'
     if ((Read-Host '输入 TEST 才开始') -cne 'TEST') { return }
     Test-RemoteEndpoint -Label '官方' -EndpointHost '192.168.12.1' -Port 3333
     $settings=Read-TeammateSettings
-    if ($settings.Enabled) { Test-RemoteEndpoint -Label '队友' -EndpointHost $settings.PeerHost -Port $settings.PeerPort }
-    else { Write-Host '队友视角已关闭，不测试队友连接。' }
+    if ($settings.Mode -eq 'Off') { Write-Host '队友连接已关闭。'; return }
+    if ($settings.Mode -eq 'Listen') { Write-Host ('当前只监听端口 {0}，没有指定队友地址。' -f $settings.ListenPort); return }
+    if ($settings.Mode -eq 'Manual') {
+        Test-RemoteEndpoint -Label '手填单路' -EndpointHost $settings.PeerHost -Port $settings.PeerPort
+        return
+    }
+    $local = @(Get-NetIPAddress -AddressFamily IPv4 | Where-Object { $_.IPAddress -in $script:TeamAddresses } | ForEach-Object { $_.IPAddress })
+    if ($local.Count -ne 1) { Write-Host '先在本机队友专线上确认一个地址（10.77.0.1、.2 或 .3），再检查队友。'; return }
+    foreach ($peer in $script:TeamAddresses) {
+        if ($peer -ne $local[0]) { Test-RemoteEndpoint -Label '队友专线' -EndpointHost $peer -Port 0 }
+    }
+    $links = @(Get-NetTCPConnection -State Established -ErrorAction SilentlyContinue | Where-Object {
+        $_.LocalAddress -eq $local[0] -and $_.RemoteAddress -in $script:TeamAddresses -and
+        (($_.LocalPort -ge 47710 -and $_.LocalPort -le 47763) -or ($_.RemotePort -ge 47710 -and $_.RemotePort -le 47763))
+    })
+    if ($links.Count) { $links | Select-Object LocalAddress,LocalPort,RemoteAddress,RemotePort | Format-Table -AutoSize }
+    else { Write-Host '还没看到岗位连接。双方先登录同一赛事、同一阵营、不同岗位，再看对应的小窗是否有图。' }
+    Write-Host '只有两台电脑时，第三个地址可以无响应。'
 }
 
-function Set-CompatibilityRole {
+function Set-TeammateMode {
     if (Get-Process -Name luojiamaster -ErrorAction SilentlyContinue) { throw '先关闭正在运行的客户端，再改设置。' }
-    $selection=(Read-Host '选择兼容设置：A / B / OFF（关闭）').Trim().ToUpperInvariant()
-    if ($selection -notin @('A','B','OFF')) { throw '没有选择有效设置，未修改。' }
+    $selection=(Read-Host '选择队友模式：AUTO（跟随登录岗位）/ OFF（关闭）').Trim().ToUpperInvariant()
+    if ($selection -notin @('AUTO','OFF')) { throw '没有选择有效设置，未修改。' }
     Write-Host ('将替换程序/队友视角.ini中的现有角色及自定义peer设置为：'+$selection)
     if ((Read-Host ('再次输入 '+$selection+' 才写入')) -cne $selection) { return }
     if (-not (Test-Path -LiteralPath $script:ProgramRoot -PathType Container)) { throw '程序目录不存在。' }
@@ -154,7 +180,7 @@ function Set-CompatibilityRole {
         Copy-Item -LiteralPath $script:PeerIni -Destination (Join-Path $backupDir '队友视角.ini.bak') -Force
         Write-Host ('上一次设置备份：'+(Join-Path $backupDir '队友视角.ini.bak'))
     }
-    $content = if ($selection -eq 'OFF') { "# Compatibility: disabled`r`npeer=off`r`n" } else { "# Compatibility: manually selected`r`nrole=$selection`r`nlisten=47700`r`n" }
+    $content = if ($selection -eq 'OFF') { "peer=off`r`n" } else { "# Auto: follow the signed-in seat`r`n" }
     [IO.File]::WriteAllText($script:PeerIni,$content,(New-Object Text.UTF8Encoding($false)))
     Write-Host '[完成] 设置已写入；下次由你双击客户端生效。本工具不启动客户端。'
 }
@@ -172,12 +198,12 @@ function Set-SelectedTeammateAddress {
     $defaultRoutes=@(Get-NetRoute -InterfaceIndex $selectedIndex -AddressFamily IPv4 -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue)
     $reason=Get-AdapterProtectionReason -Adapter $adapter -IPv4Addresses @($ipv4 | ForEach-Object { $_.IPAddress }) -DefaultRoutes $defaultRoutes
     if ($reason) { throw $reason }
-    $role=(Read-Host '这块队友网卡使用A还是B地址').Trim().ToUpperInvariant()
-    if ($role -notin @('A','B')) { throw '角色无效，未修改。' }
-    $want=if($role -eq 'A'){'10.77.0.1'}else{'10.77.0.2'}
+    $number=(Read-Host '本机队友专线地址选几号（1 / 2 / 3），每台电脑选不同的号').Trim()
+    if ($number -notin @('1','2','3')) { throw '地址编号无效，未修改。' }
+    $want='10.77.0.'+$number
     Write-Host ('选中：编号{0}，{1}，MAC {2}，当前IPv4 {3}' -f $selectedIndex,$adapter.Name,$adapter.MacAddress,(@($ipv4 | ForEach-Object {$_.IPAddress}) -join ', '))
     Write-Host ('只将此网卡设为{0}/24，不设置网关；不改其他网卡或路由。' -f $want)
-    $confirmation=('{0} {1}' -f $selectedIndex,$role)
+    $confirmation=('{0} {1}' -f $selectedIndex,$want)
     if ((Read-Host ('输入 '+$confirmation+' 才确认')) -cne $confirmation) { return }
     # Recheck after the human confirmation: an address/interface may have changed.
     $current=@(Get-NetIPAddress -InterfaceIndex $selectedIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue)
@@ -201,19 +227,24 @@ function Set-SelectedTeammateAddress {
     if(-not $preferred){throw '新地址尚未确认可用，旧队友地址未删除。请检查是否存在地址冲突。'}
     # Remove only the old dedicated peer address, never every address/route.
     foreach ($old in $current) {
-        if ($old.IPAddress -in @('10.77.0.1','10.77.0.2') -and $old.IPAddress -ne $want) { $old | Remove-NetIPAddress -Confirm:$false }
+        if ($old.IPAddress -in $script:TeamAddresses -and $old.IPAddress -ne $want) { $old | Remove-NetIPAddress -Confirm:$false }
     }
     Get-NetIPAddress -InterfaceIndex $selectedIndex -AddressFamily IPv4 | Select-Object InterfaceAlias,IPAddress,PrefixLength,AddressState | Format-Table
-    Write-Host ('[完成] 网卡已设为'+$role+'地址；客户端角色仍需在菜单3手动选择相同A/B。')
+    Write-Host ('[完成] 队友专线地址为 '+$want+'。默认配置下，登录后自动找其他岗位。')
 }
 
 function Add-ClientFirewallRules {
     Require-Administrator
     if (-not (Test-Path -LiteralPath $script:ClientExe -PathType Leaf)) { throw '找不到程序/luojiamaster.exe，未设置规则。' }
-    Write-Host '将添加本程序的入站TCP47700、UDP3334及本地子网ICMP回显规则。不会关闭防火墙。'
+    Write-Host '将添加客户端的岗位视频 TCP 47710–47763、官方视频 UDP 3334 和本地子网 ping 规则。手填单路时也放行所填的本机监听端口。'
     if ((Read-Host '输入 FIREWALL 才设置') -cne 'FIREWALL') { return }
-    $specs=@(@{Name='RM26.Client.Teammate.TCP';Title='RM26 client teammate TCP47700';Protocol='TCP';Port=47700},
+    $specs=@(@{Name='RM.Client.Seats.TCP';Title='RM client seats TCP 47710-47763';Protocol='TCP';Port='47710-47763'},
              @{Name='RM26.Client.Official.UDP';Title='RM26 client official UDP3334';Protocol='UDP';Port=3334})
+    $settings = Read-TeammateSettings
+    if ($settings.Mode -in @('Manual','Listen') -and $settings.ListenPort) {
+        $port=$settings.ListenPort
+        $specs+=@{Name="RM.Client.Manual.$port";Title="RM client manual TCP $port";Protocol='TCP';Port=$port}
+    }
     foreach($spec in $specs) {
         if (Get-NetFirewallRule -Name $spec.Name -ErrorAction SilentlyContinue) { Write-Host ('[保留] 同名规则已存在，请用菜单1核对启用状态：'+$spec.Name);continue }
         New-NetFirewallRule -Name $spec.Name -DisplayName $spec.Title -Group 'RM26 Client' -Direction Inbound -Action Allow -Profile Any -Program $script:ClientExe -Protocol $spec.Protocol -LocalPort $spec.Port -RemoteAddress LocalSubnet | Out-Null
@@ -227,13 +258,13 @@ function Add-ClientFirewallRules {
 
 function Show-MaintenanceMenu {
     while ($true) {
-        Write-Host "`n维护工具：只维护当前基础版，不设置赛季或新角色。"
+        Write-Host "`n客户端维护工具"
         Write-Host '1 查看本机状态和版本    2 测试实际对端连接'
-        Write-Host '3 手动设置兼容A/B或关闭  4 指定网卡后设置队友IP'
+        Write-Host '3 恢复自动配对或关闭    4 指定网卡后设置队友IP'
         Write-Host '5 添加客户端防火墙规则  0 退出'
         try {
             switch ((Read-Host '输入菜单编号').Trim()) {
-                '1' { Show-LocalStatus }; '2' { Test-Peers }; '3' { Set-CompatibilityRole }
+                '1' { Show-LocalStatus }; '2' { Test-Peers }; '3' { Set-TeammateMode }
                 '4' { Set-SelectedTeammateAddress }; '5' { Add-ClientFirewallRules }; '0' { return }
                 default { Write-Host '请输0到5。' }
             }

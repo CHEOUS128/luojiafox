@@ -2,7 +2,7 @@
 
 **先用这个入口跑实时画面。** 视频按原速度输入，实际经过缩小、H.264编码、封包、限速、接收解码和窗口显示，处理耗时由这台Windows电脑实际测量。
 
-本目录是独立试验平台，不是车上需要运行的第五段程序。把已选方案接到其他车，按 [客户端部署教程](../luojiamaster/部署教程/README.md) 对齐Jetson封包、C板DMA转发和客户端；C板旁路的仿真通过不能代替真实出口验证。
+想看不同压缩方案的画质、帧率和延迟，用本目录的独立仿真。想看三路队友录像和三维场馆，打开[自定义客户端的本地测试](../luojiamaster/README.md)。公开演示使用实车图传录像，新电脑生成样片的方法见下方「第一次用」。把已选方案接到其他车，按 [客户端部署教程](../luojiamaster/部署教程/README.md) 对齐Jetson封包、C板DMA转发和客户端；C板旁路的仿真通过不能代替真实出口验证。
 
 2026-11-09双包基线已完成验收并经CH确认，作为后续压缩与还原方案比较的里程碑。
 
@@ -39,7 +39,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File '.\scripts\运行-策略对�
 
 1. Visual Studio 2022的“使用C++的桌面开发”，含Windows SDK、CMake和Ninja。
 2. 带`libx264`编码器的`ffmpeg.exe`，放在本目录根部。基线使用7.1.1-essentials，可从队内获取已验证版本。SHA256：`b90225987bdd042cca09a1efb5e34e9848f2d1dbf5fbcd388753a44145522997`。
-3. 已有普通视频；没有视频时运行下面的演示生成脚本即可，**不需要接车或获取工业相机原片**。
+3. 仓库自带队内实车图传样片 `luojiamaster/源码/tests/fixtures/测试画面.h265`。下面的脚本把约 2 秒的原录像循环成 15 秒 MP4，新电脑也能展示。1.18 GB 的工业相机原片只在完整回归时使用。
 
 在仓库根目录打开PowerShell，执行：
 
@@ -49,7 +49,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File '.\scripts\编译-实时仿�
 if ($LASTEXITCODE) { throw '编译失败，请查看上方原始错误' }
 powershell -NoProfile -ExecutionPolicy Bypass -File '.\scripts\生成演示视频.ps1'
 if ($LASTEXITCODE) { throw '演示视频准备失败' }
-& '.\scripts\启动-实时仿真.bat' '.\素材\演示-四角运动.mp4'
+& '.\scripts\启动-实时仿真.bat' '.\素材\演示-实车图传.mp4'
 ```
 
 打开窗口后点“开始”。编译脚本会在缺失时建立`C:\rm26cw → 当前仓库根`的junction，并在编译前核对指向；已有链接指向别处时直接报错，不覆盖。构建源为`C:\rm26cw\compression-war`。
@@ -60,7 +60,7 @@ if ($LASTEXITCODE) { throw '演示视频准备失败' }
 & '.\scripts\启动-实时仿真.bat' 'D:\视频\比赛录像.mp4'
 ```
 
-已有相机原片时也可不带参数启动：优先打开`素材\car_raw.bgr`（1280×1024 BGR24、20 fps）；缺失则弹出文件选择窗口。参数只在停止时调整，支持停止、重新播放、循环和右栏原生1:1查看。
+双击「启动-实时仿真」或「启动-B方案」时，优先播放本机 `素材\car_raw.bgr`（1280×1024、20 fps），其次使用上一步生成的实车 MP4。都没有时弹出文件选择窗口。参数在停止时调整，支持停止、重播、循环和右栏原生 1:1 查看。
 
 ## 看什么，怎么判断跑对
 
@@ -113,14 +113,15 @@ powershell -NoProfile -ExecutionPolicy Bypass -File '.\scripts\验证-双包实�
 compression-war/
 ├── README.md             当前入口与双包约束
 ├── docs/                 实时说明、离线指南、当前验收
-├── evidence/             一份固定基线证据及文件摘要
+├── evidence/             双包基线、策略对比精选证据和文件摘要
 ├── 档案/                 旧档与更正索引
 ├── scripts/              实时编译、演示、启动、验证；旧离线脚本保留
 ├── src/                  实时与离线管线、封包、限速、宽字符平台封装
 ├── live_rx/              实时接收解码快照及来源SHA256
 ├── rx/                   精简PCH，供原始客户端解码器编译
+├── profiles/             基线和各候选方案参数
 ├── tests/                协议与解码一致性检查
-└── tools/                旧离线播放器工具
+└── tools/                方案比较、素材生成与离线播放器工具
 ```
 
 后续处理从`Engine(Config, Processor preprocess, Processor reconstruct)`扩展，实际工作必须在运行线程内执行并计时。B已作为实车成功组合保留；后续策略继续与原始双包对照比较。文件系统/子进程继续使用`platform_util`宽字符封装；脚本与文档编码约定见仓库交接要求。

@@ -3,11 +3,15 @@
 #include "platform/window_display_ime.h"
 #include "platform/imgui_dx12_backend.h"
 #include "app/imgui_setup.h"
+#include "arena/arena_gpu.h"
 #include "keyboard_mouse_state_manager.h"
 #include "logging/logging.h"
 #include "resources.h"
+#include "luojiamaster_brand.h"
 #include <wrl/client.h>
 #include <d3d12sdklayers.h>
+#include <dxgi1_6.h>
+#include "platform/platform_util.h"
 #pragma comment(lib, "imm32")
 
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND, UINT, WPARAM, LPARAM);
@@ -18,7 +22,7 @@ using RoboGo::platform::DesktopWindowKind;
 using Clock = std::chrono::steady_clock;
 constexpr unsigned kFrames = 2, kBackBuffers = 2, kDescriptors = 64;
 struct DisplayKey { UINT vkey; ImGuiKey imgui_key; };
-constexpr std::array<DisplayKey, 3> kDisplayKeys{{{'H', ImGuiKey_H}, {'I', ImGuiKey_I}, {'K', ImGuiKey_K}}};
+constexpr std::array<DisplayKey, 4> kDisplayKeys{{{'H', ImGuiKey_H}, {'I', ImGuiKey_I}, {'K', ImGuiKey_K}, {'L', ImGuiKey_L}}};
 
 struct FrameContext {
     ComPtr<ID3D12CommandAllocator> allocator;
@@ -83,7 +87,7 @@ struct TextureSet {
 
 class WindowsPlatformBackend final : public RoboGo::platform::PlatformBackend {
 public:
-    const char *application_name() const override { return "luojiamaster-windows"; }
+    const char *application_name() const override { return LUOJIAMASTER_PRODUCT "-windows"; }
     void EnableOfflineTestMode(bool value) override {
         offline_test_ = value;
         if (value) {
@@ -105,6 +109,9 @@ public:
         if (offline_test_ && hwnd_) ShowWindow(hwnd_, action == 1 ? SW_MAXIMIZE : action == 2 ? SW_MINIMIZE : SW_RESTORE);
     }
     RoboGo::platform::RenderDiagnostics GetRenderDiagnostics() const override { return diagnostics_; }
+    void RequestBenchmarkMonitor(bool match) override { benchmark_monitor_ = match; }
+    void PreferPerformanceAdapter(bool prefer) override { prefer_performance_ = prefer; }
+    bool IsFullscreen() const override { return borderless_; }
     void SetDesktopWindowKind(DesktopWindowKind kind) override { window_kind_ = kind; }
 
     bool Initialize() override {
@@ -112,7 +119,7 @@ public:
         main_scale_ = ImGui_ImplWin32_GetDpiScaleForMonitor(MonitorFromPoint(POINT{0, 0}, MONITOR_DEFAULTTOPRIMARY));
         window_class_ = {sizeof(window_class_), CS_CLASSDC, StaticWndProc, 0L, 0L, GetModuleHandleW(nullptr),
                          LoadIcon(GetModuleHandleW(nullptr), MAKEINTRESOURCE(IDI_APP_ICON)), nullptr, nullptr, nullptr,
-                         L"luojiamaster", nullptr};
+                         LUOJIAMASTER_PRODUCT_W, nullptr};
         if (!RegisterClassExW(&window_class_)) { RecordFailure("register_window", HRESULT_FROM_WIN32(GetLastError())); return false; }
         window_class_registered_ = true;
         RECT initial{100, 100, 1380, 900};
@@ -130,7 +137,24 @@ public:
                 initial.bottom = initial.top + height;
             }
         }
-        hwnd_ = CreateWindowW(window_class_.lpszClassName, L"luojiamaster", WS_OVERLAPPEDWINDOW,
+        if (benchmark_monitor_) {
+            RECT monitor_rect{};
+            EnumDisplayMonitors(nullptr, nullptr, [](HMONITOR monitor, HDC, LPRECT, LPARAM out) -> BOOL {
+                MONITORINFO info{sizeof(MONITORINFO)};
+                if (!GetMonitorInfoW(monitor, &info) || info.rcMonitor.right - info.rcMonitor.left != 1920 ||
+                    info.rcMonitor.bottom - info.rcMonitor.top != 1080) return TRUE;
+                *reinterpret_cast<RECT*>(out) = info.rcWork;
+                return FALSE;
+            }, reinterpret_cast<LPARAM>(&monitor_rect));
+            if (IsRectEmpty(&monitor_rect)) {
+                SPDLOG_ERROR("本机没有检测到 1920×1080 显示器");
+                CleanupWindow();
+                return false;
+            }
+            initial = {monitor_rect.left + 16, monitor_rect.top + 16,
+                       monitor_rect.left + 1296, monitor_rect.top + 816};
+        }
+        hwnd_ = CreateWindowW(window_class_.lpszClassName, LUOJIAMASTER_PRODUCT_W, WS_OVERLAPPEDWINDOW,
                               initial.left, initial.top, initial.right - initial.left, initial.bottom - initial.top,
                               nullptr, nullptr, window_class_.hInstance, this);
         if (!hwnd_) { RecordFailure("create_window", HRESULT_FROM_WIN32(GetLastError())); CleanupWindow(); return false; }
@@ -224,6 +248,7 @@ public:
         const float clear[4] = {0, 0, 0, 1};
         commands->ClearRenderTargetView(rtv_handles_[back], clear, 0, nullptr);
         commands->OMSetRenderTargets(1, &rtv_handles_[back], FALSE, nullptr);
+        RoboGo::arena::SetRenderTarget(rtv_handles_[back], back_buffers_[back]->GetDesc(), srv_heap_.Get());
         auto *heap = srv_heap_.Get(); commands->SetDescriptorHeaps(1, &heap);
         try { ImGui_ImplDX12_RenderDrawData(draw_data, commands); }
         catch (const RoboGo::platform::GpuBackendError &e) { RecordFailure(e.stage(), static_cast<HRESULT>(e.hresult())); unfenced_work_ = true; AbortFrame(); recovery_requested_ = true; return false; }
@@ -239,6 +264,7 @@ public:
         const UINT64 fence_value = ++last_signal_;
         if (!Check("signal", queue_->Signal(fence_.Get(), fence_value))) { AbandonFrame(); recovery_requested_ = true; return false; }
         unfenced_work_ = false; last_submitted_ = fence_value; active_->fence = fence_value;
+        RoboGo::arena::ConfirmUpload(fence_value, fence_->GetCompletedValue());
         for (auto &set : textures_) {
             if (set.pending >= 0) {
                 auto &slot = set.slots[set.pending];
@@ -274,7 +300,8 @@ public:
         return Upload(slot, frame.Pixels(), frame.ByteSize(), frame.width, frame.height, frame.RowPitch());
     }
     bool UploadTexture(RoboGo::app::TextureSlot slot, const RoboGo::resource::DecodedImage &image) override {
-        if (slot != RoboGo::app::TextureSlot::MiniMap && slot != RoboGo::app::TextureSlot::UlMap) return false;
+        if (slot != RoboGo::app::TextureSlot::MiniMap && slot != RoboGo::app::TextureSlot::UlMap
+            && slot != RoboGo::app::TextureSlot::UcCommanderFlat) return false;
         return Upload(slot, image.pixels.data(), image.pixels.size(), image.width, image.height);
     }
     RoboGo::app::TextureView GetTextureView(RoboGo::app::TextureSlot slot) const override {
@@ -296,6 +323,9 @@ private:
             case RoboGo::app::TextureSlot::MiniMap: return 2;
             case RoboGo::app::TextureSlot::TeammateVideo: return 3;
             case RoboGo::app::TextureSlot::UlMap: return 4;
+            case RoboGo::app::TextureSlot::TeammateVideo2: return 5;
+            case RoboGo::app::TextureSlot::TeammateVideo3: return 6;
+            case RoboGo::app::TextureSlot::UcCommanderFlat: return 7;
         }
         return 0;
     }
@@ -401,12 +431,17 @@ private:
     LRESULT WndProc(HWND, UINT, WPARAM, LPARAM);
     bool HandleMatchDisplayKey(const MSG &message);
     void ToggleBorderless();
+    void SetActiveFullscreenLayer(bool active);
     bool UsesPerMonitorLayout() const {
         return window_kind_ == DesktopWindowKind::League || window_kind_ == DesktopWindowKind::EventPicker;
     }
     void UpdateWindowDpi(float scale);
     DesktopWindowKind window_kind_ = DesktopWindowKind::Classic;
+    bool prefer_performance_ = false;
+    bool benchmark_monitor_ = false;
     bool borderless_ = false;
+    bool windowed_topmost_ = false;
+    bool changing_fullscreen_layer_ = false;
     LONG_PTR windowed_style_ = 0;
     WINDOWPLACEMENT windowed_placement_{sizeof(WINDOWPLACEMENT)};
     std::optional<ImGuiStyle> base_window_style_;
@@ -415,7 +450,7 @@ private:
     WindowDisplayIme window_ime_;
 
     std::array<FrameContext, kFrames> frames_;
-    std::array<TextureSet, 5> textures_;
+    std::array<TextureSet, 8> textures_;
     std::vector<uint8_t> map_pixels_;
     int map_width_ = 0, map_height_ = 0;
     ComPtr<ID3D12Device> device_;
@@ -458,7 +493,29 @@ bool WindowsPlatformBackend::CreateGpu() {
             debug->EnableDebugLayer(); SPDLOG_INFO("GPU offline D3D12 debug layer enabled");
         } else SPDLOG_WARN("GPU offline debug layer unavailable; continuing without it");
     }
-    if (!Check("create_device", D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device_))) || !device_) return false;
+    ComPtr<IDXGIFactory6> adapters;
+    HRESULT created = E_FAIL;
+    if (prefer_performance_ && SUCCEEDED(CreateDXGIFactory1(IID_PPV_ARGS(&adapters)))) {
+        for (UINT i = 0; ; ++i) {
+            ComPtr<IDXGIAdapter1> candidate;
+            if (FAILED(adapters->EnumAdapterByGpuPreference(i, DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE,
+                                                           IID_PPV_ARGS(&candidate)))) break;
+            DXGI_ADAPTER_DESC1 desc{};
+            if (FAILED(candidate->GetDesc1(&desc)) || (desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE)) continue;
+            created = D3D12CreateDevice(candidate.Get(), D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device_));
+            if (SUCCEEDED(created)) break;
+        }
+    }
+    if (FAILED(created))
+        created = D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device_));
+    if (!Check("create_device", created) || !device_) return false;
+    if (adapters) {
+        ComPtr<IDXGIAdapter1> actual;
+        DXGI_ADAPTER_DESC1 desc{};
+        if (SUCCEEDED(adapters->EnumAdapterByLuid(device_->GetAdapterLuid(), IID_PPV_ARGS(&actual))) &&
+            SUCCEEDED(actual->GetDesc1(&desc)))
+            SPDLOG_INFO("指挥席使用显卡 {}", RoboGo::platform_util::PathToUtf8(desc.Description));
+    }
     device_->SetName(L"RM26 renderer device");
     ++diagnostics_.resource_creations;
     D3D12_DESCRIPTOR_HEAP_DESC heap{};
@@ -555,6 +612,7 @@ void WindowsPlatformBackend::MaintainGpu() {
     AbortFrame();
     if (recovery_requested_) return;
     if (!QueueIdle()) return;
+    RoboGo::arena::ResetDepth();
     for (auto &buffer : back_buffers_) buffer.Reset();
     back_buffers_valid_ = false;
     DXGI_SWAP_CHAIN_DESC1 desc{};
@@ -581,14 +639,14 @@ void WindowsPlatformBackend::RecoverGpu() {
         if (renderer_initialized_) ImGui_ImplDX12_Shutdown();
         renderer_initialized_ = false; CleanupGpu(true);
         recovery_requested_ = true; retry_at_ = Clock::now() + std::chrono::seconds(1);
-        SetWindowTextW(hwnd_, L"luojiamaster - 正在恢复画面");
+        SetWindowTextW(hwnd_, LUOJIAMASTER_PRODUCT_W L" - 正在恢复画面");
         return;
     }
     recovery_requested_ = false; resize_pending_ = false; occluded_ = false;
     retry_at_ = {};
     recovery_not_before_ = Clock::now() + std::chrono::milliseconds(250);
     ++diagnostics_.recoveries;
-    SetWindowTextW(hwnd_, L"luojiamaster");
+    SetWindowTextW(hwnd_, LUOJIAMASTER_PRODUCT_W);
     SPDLOG_INFO("GPU renderer recovered; preserved UI state, queued cached map restore");
 }
 
@@ -751,6 +809,7 @@ bool WindowsPlatformBackend::DrainForShutdown() {
 }
 
 void WindowsPlatformBackend::CleanupGpu(bool safe) {
+    RoboGo::arena::ReleaseGpu(safe);
     for (auto &set : textures_) {
         for (auto &slot : set.slots) {
             if (safe) slot.Release();
@@ -823,6 +882,18 @@ void WindowsPlatformBackend::UpdateWindowDpi(float scale) {
     style.FontScaleDpi = scale;
 }
 
+void WindowsPlatformBackend::SetActiveFullscreenLayer(bool active) {
+    if (!borderless_ || windowed_topmost_ || changing_fullscreen_layer_) return;
+    const bool raise = active && GetForegroundWindow() == hwnd_ && !IsIconic(hwnd_);
+    const bool topmost = (GetWindowLongPtrW(hwnd_, GWL_EXSTYLE) & WS_EX_TOPMOST) != 0;
+    if (topmost != raise) {
+        changing_fullscreen_layer_ = true;
+        SetWindowPos(hwnd_, raise ? HWND_TOPMOST : HWND_NOTOPMOST, 0, 0, 0, 0,
+                     SWP_NOACTIVATE | SWP_NOSIZE | SWP_NOMOVE | SWP_NOOWNERZORDER);
+        changing_fullscreen_layer_ = false;
+    }
+}
+
 void WindowsPlatformBackend::ToggleBorderless() {
     constexpr UINT resize_flags = SWP_NOACTIVATE | SWP_NOZORDER | SWP_NOOWNERZORDER | SWP_FRAMECHANGED;
     if (!borderless_) {
@@ -830,18 +901,31 @@ void WindowsPlatformBackend::ToggleBorderless() {
         if (!GetMonitorInfoW(MonitorFromWindow(hwnd_, MONITOR_DEFAULTTONEAREST), &monitor) ||
             !GetWindowPlacement(hwnd_, &windowed_placement_)) return;
         windowed_style_ = GetWindowLongPtrW(hwnd_, GWL_STYLE);
+        windowed_topmost_ = (GetWindowLongPtrW(hwnd_, GWL_EXSTYLE) & WS_EX_TOPMOST) != 0;
         const auto style = (windowed_style_ & ~(WS_OVERLAPPEDWINDOW | WS_MAXIMIZE | WS_MINIMIZE)) | WS_POPUP;
         if (!SetWindowLongPtrW(hwnd_, GWL_STYLE, style)) return;
         borderless_ = true;
         const auto &r = monitor.rcMonitor;
-        if (SetWindowPos(hwnd_, nullptr, r.left, r.top, r.right - r.left, r.bottom - r.top, resize_flags)) return;
+        if (SetWindowPos(hwnd_, nullptr, r.left, r.top, r.right - r.left, r.bottom - r.top, resize_flags)) {
+            SetActiveFullscreenLayer(true);
+            return;
+        }
         // If resizing failed, restore the actual window instead of leaving a
         // half-switched title-less window with the old dimensions.
     }
-    if (!SetWindowLongPtrW(hwnd_, GWL_STYLE, windowed_style_)) return;
+    // Placement/style changes send window messages synchronously. End fullscreen
+    // first so the activation handler cannot re-raise the restored window.
     borderless_ = false;
+    if (!SetWindowLongPtrW(hwnd_, GWL_STYLE, windowed_style_)) {
+        borderless_ = true;
+        return;
+    }
     SetWindowPos(hwnd_, nullptr, 0, 0, 0, 0, resize_flags | SWP_NOSIZE | SWP_NOMOVE);
     SetWindowPlacement(hwnd_, &windowed_placement_);
+    if (((GetWindowLongPtrW(hwnd_, GWL_EXSTYLE) & WS_EX_TOPMOST) != 0) != windowed_topmost_) {
+        SetWindowPos(hwnd_, windowed_topmost_ ? HWND_TOPMOST : HWND_NOTOPMOST, 0, 0, 0, 0,
+                     SWP_NOACTIVATE | SWP_NOSIZE | SWP_NOMOVE | SWP_NOOWNERZORDER);
+    }
 }
 
 LRESULT WINAPI WindowsPlatformBackend::StaticWndProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam) {
@@ -855,6 +939,18 @@ LRESULT WINAPI WindowsPlatformBackend::StaticWndProc(HWND hwnd, UINT message, WP
 }
 
 LRESULT WindowsPlatformBackend::WndProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam) {
+    if (borderless_) {
+        switch (message) {
+            case WM_ACTIVATE: SetActiveFullscreenLayer(LOWORD(wparam) != WA_INACTIVE && HIWORD(wparam) == 0); break;
+            case WM_SETFOCUS: SetActiveFullscreenLayer(true); break;
+            case WM_SIZE: if (wparam == SIZE_MINIMIZED) SetActiveFullscreenLayer(false); break;
+            case WM_ACTIVATEAPP: if (!wparam) SetActiveFullscreenLayer(false); break;
+            case WM_KILLFOCUS:
+                if (!IsChild(hwnd, reinterpret_cast<HWND>(wparam))) SetActiveFullscreenLayer(false);
+                break;
+            case WM_DESTROY: SetActiveFullscreenLayer(false); break;
+        }
+    }
     // Consume both halves of F11 at the window boundary; key repeat must not toggle twice.
     const bool match_window = window_kind_ == DesktopWindowKind::League || window_kind_ == DesktopWindowKind::Cup;
     if (match_window && wparam == VK_F11 && (message == WM_KEYDOWN || message == WM_KEYUP)) {

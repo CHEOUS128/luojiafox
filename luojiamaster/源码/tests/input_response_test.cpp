@@ -119,6 +119,37 @@ int Run() {
             Frame(); ImGui::GetIO().MouseDelta = ImVec2(1, -1);
             update_keyboard_mouse_state(sink);
             CHECK(packets.size() == 2); ExpectWire(packets.back(), 0, 0, 0, 0);
+
+            scope.Reset(); packets.clear(); scope.SetNowForTest(base);
+            enter_game_mode(); set_use_raw_mouse(true);
+            TeammatePointerGuard guard;
+            auto step = [&](bool viewing) {
+                auto result = guard.Advance(viewing, any_match_controls_held());
+                update_keyboard_mouse_state(sink, result.sample);
+                return result;
+            };
+            Frame(); Key(ImGuiKey_W); ImGui::GetIO().MouseDown[0] = true;
+            step(false); CHECK(packets.size() == 1); ExpectWire(packets.back(), 0, 0, 0, 1, true);
+            scope.SetNowForTest(base + std::chrono::milliseconds(1));
+            Frame(); Key(ImGuiKey_W); ImGui::GetIO().MouseDown[0] = true; add_raw_mouse_delta(900, 800);
+            CHECK(step(true).release_cursor); CHECK(packets.size() == 2); ExpectWire(packets.back(), 0, 0, 0, 0);
+            for (int tick = 1; tick <= 5; ++tick) {
+                scope.SetNowForTest(base + std::chrono::milliseconds(1 + 14 * tick));
+                Frame();
+                if (tick <= 2) ImGui::GetIO().MouseDown[0] = true;
+                if (tick == 3) Key(ImGuiKey_A); // Mouse up but a game key is still held.
+                ImGui::GetIO().MouseWheel = 1; add_raw_mouse_delta(900, 800);
+                const auto transition = step(tick == 1);
+                CHECK(transition.restore_cursor == (tick == 4));
+                CHECK(transition.sample == KeyboardMouseSample::Neutral);
+                CHECK(packets.size() == static_cast<size_t>(2 + tick));
+                ExpectWire(packets.back(), 0, 0, 0, 0);
+            }
+            scope.SetNowForTest(base + std::chrono::milliseconds(100));
+            Frame(); Key(ImGuiKey_D); add_raw_mouse_delta(5, 10);
+            CHECK(step(false).sample == KeyboardMouseSample::Match);
+            ExpectWire(packets.back(), 2, -4, 0, 8);
+            std::puts("PASS teammate overview: immediate neutral, held mouse/key blocked, recenter discarded, next fresh sample restored");
         }
         CHECK(!is_in_game_mode());
         set_game_input_capture_handler([](bool) {});

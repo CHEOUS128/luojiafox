@@ -118,9 +118,10 @@ public:
 
         DestroyDynamicTextureSet(udp_video_textures_);
         DestroyDynamicTextureSet(custom_video_textures_);
-        DestroyDynamicTextureSet(teammate_video_textures_);
+        for (auto &set : teammate_video_textures_) DestroyDynamicTextureSet(set);
         DestroyVulkanTexture(mini_map_texture_);
         DestroyVulkanTexture(ul_map_texture_);
+        DestroyVulkanTexture(commander_map_texture_);
 
         ImGui_ImplVulkan_Shutdown();
         ImGui_ImplGlfw_Shutdown();
@@ -210,7 +211,13 @@ public:
             case RoboGo::app::TextureSlot::CustomVideo:
                 return UploadDynamicTexture(custom_video_textures_, frame);
             case RoboGo::app::TextureSlot::TeammateVideo:
-                return UploadDynamicTexture(teammate_video_textures_, frame);
+                return UploadDynamicTexture(teammate_video_textures_[0], frame);
+            case RoboGo::app::TextureSlot::TeammateVideo2:
+                return UploadDynamicTexture(teammate_video_textures_[1], frame);
+            case RoboGo::app::TextureSlot::TeammateVideo3:
+                return UploadDynamicTexture(teammate_video_textures_[2], frame);
+            case RoboGo::app::TextureSlot::UcCommanderFlat:
+                return UploadStaticTexture(commander_map_texture_, frame.Pixels(), frame.width, frame.height);
             case RoboGo::app::TextureSlot::UlMap:
                 return UploadStaticTexture(ul_map_texture_, frame.Pixels(), frame.width, frame.height);
             case RoboGo::app::TextureSlot::MiniMap:
@@ -220,6 +227,7 @@ public:
     }
 
     [[nodiscard]] bool UploadTexture(const RoboGo::app::TextureSlot slot, const RoboGo::resource::DecodedImage &image) override {
+        if (slot == RoboGo::app::TextureSlot::UcCommanderFlat) return UploadStaticTexture(commander_map_texture_, image.pixels.data(), image.width, image.height);
         if (slot == RoboGo::app::TextureSlot::UlMap) return UploadStaticTexture(ul_map_texture_, image.pixels.data(), image.width, image.height);
         if (slot != RoboGo::app::TextureSlot::MiniMap) {
             return false;
@@ -234,7 +242,13 @@ public:
             case RoboGo::app::TextureSlot::CustomVideo:
                 return BuildTextureView(custom_video_textures_.textures[custom_video_textures_.current_index]);
             case RoboGo::app::TextureSlot::TeammateVideo:
-                return BuildTextureView(teammate_video_textures_.textures[teammate_video_textures_.current_index]);
+                return BuildTextureView(teammate_video_textures_[0].textures[teammate_video_textures_[0].current_index]);
+            case RoboGo::app::TextureSlot::TeammateVideo2:
+                return BuildTextureView(teammate_video_textures_[1].textures[teammate_video_textures_[1].current_index]);
+            case RoboGo::app::TextureSlot::TeammateVideo3:
+                return BuildTextureView(teammate_video_textures_[2].textures[teammate_video_textures_[2].current_index]);
+            case RoboGo::app::TextureSlot::UcCommanderFlat:
+                return BuildTextureView(commander_map_texture_);
             case RoboGo::app::TextureSlot::UlMap:
                 return BuildTextureView(ul_map_texture_);
             case RoboGo::app::TextureSlot::MiniMap:
@@ -866,9 +880,10 @@ private:
     float main_scale_ = 1.0f;
     LinuxDynamicTextureSet udp_video_textures_;
     LinuxDynamicTextureSet custom_video_textures_;
-    LinuxDynamicTextureSet teammate_video_textures_;
+    std::array<LinuxDynamicTextureSet, 3> teammate_video_textures_;
     LinuxVideoTexture mini_map_texture_;
     LinuxVideoTexture ul_map_texture_;
+    LinuxVideoTexture commander_map_texture_;
     bool initialized_ = false;
     bool game_input_captured_ = false;
 };

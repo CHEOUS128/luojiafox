@@ -1,4 +1,5 @@
 #include "start_panel.h"
+#include "panel/brand_mark.h"
 #include "keyboard_mouse_state_manager.h"
 #include "logging/logging.h"
 #include "panel_layout.h"
@@ -136,6 +137,7 @@ struct ButtonFeedback {
 struct TeamRobotSelectionState {
     int selected_team = 0;
     int selected_robot = 0;
+    bool commander = false;
 };
 
 struct MqttServerAddressState {
@@ -182,9 +184,13 @@ struct MenuInputs {
 };
 MenuInputs menu_inputs;
 
-const char *RoleLabel(int index, bool alliance) {
-    if (alliance && index == 0) return "重装 1 号";
-    if (alliance && index == 2) return "步兵 3 号";
+using RoboGo::app::Competition;
+const char *RoleLabel(int index, Competition competition) {
+    if (competition != Competition::Uc2026) {
+        if (index == 0) return "重装 1 号";
+        if (index == 2) return "步兵 3 号";
+        if (index == 3) return "步兵 4 号";
+    }
     return kLoginRobotNames[index];
 }
 
@@ -478,10 +484,12 @@ ImVec4 GetLoginConnectionStateColor(RoboGo::io::MqttClient::ConnectionState conn
     }
 }
 
-std::string GetSelectedLoginTargetText(const TeamRobotSelectionState &selection_state, bool alliance) {
+std::string GetSelectedLoginTargetText(const TeamRobotSelectionState &selection_state, Competition competition) {
+    if (selection_state.commander)
+        return std::string(kLoginTeamNames[selection_state.selected_team]) + " / 指挥手";
     const int robot_id = kLoginRobotIds[selection_state.selected_team][selection_state.selected_robot];
     return std::string(kLoginTeamNames[selection_state.selected_team]) + " / " +
-           RoleLabel(selection_state.selected_robot, alliance) + " (ID " + std::to_string(robot_id) + ")";
+           RoleLabel(selection_state.selected_robot, competition) + " (ID " + std::to_string(robot_id) + ")";
 }
 
 std::string TrimAsciiWhitespace(std::string_view text) {
@@ -706,7 +714,7 @@ bool SubmitLoginSelection(RoboGo::io::MqttClient &mqtt_client, bool local_trial)
     const auto &selection_state = GetTeamRobotSelectionState();
     const int current_robot_id = kLoginRobotIds[selection_state.selected_team][selection_state.selected_robot];
     if (local_trial) {
-        SPDLOG_INFO("进入本地试用 client_id={}", current_robot_id);
+        SPDLOG_INFO("进入本地测试 client_id={}", current_robot_id);
         mqtt_client.set_client_id(std::to_string(current_robot_id));
         return true;
     }
@@ -803,30 +811,40 @@ void ShowLoginTeamSelection(TeamRobotSelectionState &selection_state) {
     }
 }
 
-void ShowLoginRobotSelection(TeamRobotSelectionState &selection_state, bool alliance) {
+void ShowLoginRobotSelection(TeamRobotSelectionState &selection_state, Competition competition, bool local_trial) {
     const float button_gap = ImGui::GetStyle().ItemSpacing.x;
     constexpr std::array alliance_roles{0, 2};
     constexpr std::array cup_roles{0, 1, 2, 3, 4};
-    const std::span<const int> roles = alliance ? std::span<const int>(alliance_roles)
-                                                : std::span<const int>(cup_roles);
-    const float count = static_cast<float>(roles.size());
+    constexpr std::array cup_2027_roles{0, 2, 3};
+    std::span<const int> roles = cup_roles;
+    if (competition == Competition::Ul2027) roles = alliance_roles;
+    if (competition == Competition::Uc2027) roles = cup_2027_roles;
+    const bool offer_commander = competition == Competition::Uc2027 && local_trial;
+    const float count = static_cast<float>(roles.size() + offer_commander);
     const float button_width = (ImGui::GetContentRegionAvail().x - button_gap * (count - 1)) / count;
     const float button_height = kLoginRobotButtonHeight * ImGui::GetScale();
 
-    ImGui::TextDisabled("机器人");
+    ImGui::TextDisabled("岗位");
     for (const int i : roles) {
         if (i != roles.front()) {
             ImGui::SameLine();
         }
-        if (ShowCompactSelectionButton(RoleLabel(i, alliance),
-                                       selection_state.selected_robot == i,
+        if (ShowCompactSelectionButton(RoleLabel(i, competition),
+                                       !selection_state.commander && selection_state.selected_robot == i,
                                        GetSelectedRobotButtonStyle(selection_state),
                                        ImVec2(button_width, button_height))) {
             selection_state.selected_robot = i;
+            selection_state.commander = false;
             SPDLOG_INFO("登录面板选择机器人 label={} robot_id={}",
-                        kLoginRobotNames[i],
+                        RoleLabel(i, competition),
                         kLoginRobotIds[selection_state.selected_team][selection_state.selected_robot]);
         }
+    }
+    if (offer_commander) {
+        ImGui::SameLine();
+        if (ShowCompactSelectionButton("指挥手", selection_state.commander,
+                                      GetSelectedRobotButtonStyle(selection_state), {button_width, button_height}))
+            selection_state.commander = true;
     }
 }
 
@@ -852,7 +870,7 @@ void ShowMqttServerEndpointInput(RoboGo::io::MqttClient &mqtt_client) {
 bool ShowLogoutPanel(RoboGo::io::MqttClient &mqtt_client, bool local_trial, bool over_ul_desk) {
     ScopedTitledPanel logout_panel("LogoutPanel", ImGui::GetContentRegionAvail().x, "登录控制", ImVec4(1.0f, 0.3f, 0.3f, 1.0f));
     ScopedStyle logout_button_style = MakeButtonStyle(kRecoverButtonStyle);
-    if (ImGui::Button(local_trial ? "结束试用 / 换队" : "退出登录")) {
+    if (ImGui::Button(local_trial ? "结束测试 / 换队" : "退出登录")) {
         SPDLOG_INFO("退出登录按钮点击 client_id={}", mqtt_client.get_client_id());
         if (local_trial) return true;
         mqtt_client.set_client_id("");
@@ -861,7 +879,7 @@ bool ShowLogoutPanel(RoboGo::io::MqttClient &mqtt_client, bool local_trial, bool
     return false;
 }
 
-bool ShowTeamRobotSelection(RoboGo::io::MqttClient &mqtt_client, bool local_trial, bool alliance, bool over_ul_desk) {
+bool ShowTeamRobotSelection(RoboGo::io::MqttClient &mqtt_client, bool local_trial, Competition competition, bool over_ul_desk) {
     TeamRobotSelectionState &selection_state = GetTeamRobotSelectionState();
     const auto connection_state = mqtt_client.get_connection_state();
     const float selection_panel_height = GetLoginPanelHeight(connection_state, local_trial);
@@ -885,10 +903,10 @@ bool ShowTeamRobotSelection(RoboGo::io::MqttClient &mqtt_client, bool local_tria
     ImGui::Dummy(ImVec2(0.0f, kLoginStatusGap * ImGui::GetScale()));
     ShowLoginTeamSelection(selection_state);
     ImGui::Dummy(ImVec2(0.0f, kLoginSectionGap * ImGui::GetScale()));
-    ShowLoginRobotSelection(selection_state, alliance);
+    ShowLoginRobotSelection(selection_state, competition, local_trial);
     ImGui::Dummy(ImVec2(0.0f, kLoginTargetGap * ImGui::GetScale()));
     ImGui::TextDisabled("登录目标");
-    ImGui::TextUnformatted(GetSelectedLoginTargetText(selection_state, alliance).c_str());
+    ImGui::TextUnformatted(GetSelectedLoginTargetText(selection_state, competition).c_str());
     return false;
 }
 
@@ -1263,7 +1281,7 @@ void ShowMouseSensitivityRow() {
     }
 }
 
-MenuAction ShowMenuFooter(RoboGo::io::MqttClient &client, bool local_trial, bool over_ul_desk) {
+MenuAction ShowMenuFooter(RoboGo::io::MqttClient &client, bool local_trial, bool over_ul_desk, Competition competition) {
     const bool logged_in = client.get_connection_state() == RoboGo::io::MqttClient::ConnectionState::Connected;
     const float width = std::max(1.f, (ImGui::GetContentRegionAvail().x - ImGui::GetStyle().ItemSpacing.x) * .5f);
     const ImVec2 size(width, kPrimaryActionButtonHeight * ImGui::GetScale());
@@ -1271,9 +1289,12 @@ MenuAction ShowMenuFooter(RoboGo::io::MqttClient &client, bool local_trial, bool
     ImGui::SameLine();
     ScopedStyle primary_button_style = MakeEnterGameButtonStyle();
     const char *label = logged_in ? (over_ul_desk ? "回到比赛画面" : "进入比赛")
-                                  : (local_trial ? "开始试用" : "登录");
+                                  : (local_trial ? "开始测试" : "登录");
     if (ImGui::Button(label, size)) {
         if (!logged_in) {
+            const auto &seat = GetTeamRobotSelectionState();
+            if (local_trial && competition == Competition::Uc2027 && seat.commander)
+                return seat.selected_team == 0 ? MenuAction::CommanderRed : MenuAction::CommanderBlue;
             (void)SubmitLoginSelection(client, local_trial);
         } else if (over_ul_desk) {
             return MenuAction::Resume;
@@ -1326,17 +1347,17 @@ MenuAction StartPanel(const State &state, RoboGo::io::MqttClient &client, bool l
         ImGui::TextDisabled("兑换、回血和复活均为申请，结果由裁判端回传");
     } else {
         ImGui::Text("%s  /  %s", RoboGo::app::CompetitionName(state.competition),
-                    local_trial ? "本地试用" : "正式登录");
+                    local_trial ? "本地测试" : "正式登录");
         if (waiting_for_video && client.get_connection_state() != RoboGo::io::MqttClient::ConnectionState::Connected) {
             ImGui::SameLine();
             ImGui::TextDisabled("等待图传");
         }
     }
+    luojiamaster::brand::MenuSignature();
     ImGui::Separator();
     const float footer = kPrimaryActionButtonHeight * ImGui::GetScale() + ImGui::GetStyle().ItemSpacing.y;
-    const bool alliance = state.competition == RoboGo::app::Competition::Ul2027;
     if (ImGui::BeginChild("比赛菜单内容", ImVec2(0, -footer))) {
-        if (ShowTeamRobotSelection(client, local_trial, alliance, over_ul_desk)) action = MenuAction::ReturnToEvents;
+        if (ShowTeamRobotSelection(client, local_trial, state.competition, over_ul_desk)) action = MenuAction::ReturnToEvents;
         if (client.get_connection_state() == RoboGo::io::MqttClient::ConnectionState::Connected) {
             const StartPanelVisibility visibility = GetStartPanelVisibility(state);
             ShowAmmoAssemblyDeployRow(state, client, visibility);
@@ -1347,7 +1368,7 @@ MenuAction StartPanel(const State &state, RoboGo::io::MqttClient &client, bool l
         ShowMouseSensitivityRow();
     }
     ImGui::EndChild();
-    const MenuAction footer_action = ShowMenuFooter(client, local_trial, over_ul_desk);
+    const MenuAction footer_action = ShowMenuFooter(client, local_trial, over_ul_desk, state.competition);
     ImGui::End();
     return action == MenuAction::None ? footer_action : action;
 }

@@ -15,8 +15,11 @@ if (-not $Python) {
 }
 & $Python -c 'import numpy; from PIL import Image'
 if ($LASTEXITCODE) { throw '此Python缺少依赖，请用它执行：python -m pip install numpy pillow' }
-if (-not $InputPath) { $InputPath=Join-Path $root '素材\car_raw.bgr' }
-if (-not (Test-Path -LiteralPath $InputPath)) { throw '原片不存在，请用-InputPath指定已有视频。' }
+if (-not $InputPath) {
+    $InputPath=Join-Path $root '素材\car_raw.bgr'
+    if (-not (Test-Path -LiteralPath $InputPath)) { $InputPath=Join-Path $root '素材\演示-实车图传.mp4' }
+}
+if (-not (Test-Path -LiteralPath $InputPath -PathType Leaf)) { throw '找不到输入视频。可先运行 scripts\生成演示视频.ps1，或用 -InputPath 指定已有录像。' }
 if (-not $OutputPath) { $OutputPath=Join-Path $root ('runs\strategies\'+(Get-Date -Format 'yyyyMMdd_HHmmss')) }
 $arguments=@((Join-Path $root 'tools\run_strategies.py'),'--root',$root,'--input',([IO.Path]::GetFullPath($InputPath)),'--out',([IO.Path]::GetFullPath($OutputPath)),'--duration',"$Seconds",'--profiles')+$Profiles
 & $Python @arguments

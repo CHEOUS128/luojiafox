@@ -1,4 +1,5 @@
 #include "app/ul_preview.h"
+#include "panel/brand_mark.h"
 #include "app/ul_preview_ui.h"
 #include "app/latest_video_frame.h"
 #include "app/local_session_capture.h"
@@ -131,9 +132,9 @@ std::optional<SessionChoice> RunCompetitionLauncher(platform::PlatformBackend &b
         const float indent = std::max(1.f, (avail-width)*.5f);
         ImGui::Indent(indent);
         Gap(std::clamp(vp->WorkSize.y*.09f, 4.f, 78.f));
-        Kicker("LUOJIAMASTER    /    珞珈狐战队");
-        Gap(7);
-        Title(competition ? CompetitionName(*competition) : "选择赛事", std::clamp(width*.07f,24.f,40.f));
+        luojiamaster::brand::Masthead(!competition);
+        Gap(competition ? 6.f : 12.f);
+        Title(competition ? CompetitionName(*competition) : "选择赛事", std::clamp(width*.05f,20.f,30.f));
         Gap(14);
         if (!competition) {
             for (Competition event : {Competition::Uc2026, Competition::Ul2027, Competition::Uc2027}) {
@@ -144,8 +145,8 @@ std::optional<SessionChoice> RunCompetitionLauncher(platform::PlatformBackend &b
             if (Button("正式登录", true, width)) choice = SessionChoice{*competition, false};
             ImGui::TextDisabled("连接官方选手端");
             Gap(9);
-            if (Button("本地试用", false, width)) choice = SessionChoice{*competition, true};
-            ImGui::TextDisabled("双路录像和模拟赛况，操作仅在本机生效");
+            if (Button("本地测试", false, width)) choice = SessionChoice{*competition, true};
+            ImGui::TextDisabled("本车和队友均播放录像，可在比赛界面测试");
             Gap(13);
             if (Button("返回选择赛事")) competition.reset();
         }

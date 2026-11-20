@@ -9,3 +9,4 @@ void ShowMiniMap(const State &state,
                  const ImVec2 &mini_map_texture_size);
 
 void ShowAllianceVenueMap(ImTextureRef texture, const ImVec2 &size, bool blue);
+void ShowCupVenueMap(ImTextureRef texture, const ImVec2 &size, bool blue, bool team_known);

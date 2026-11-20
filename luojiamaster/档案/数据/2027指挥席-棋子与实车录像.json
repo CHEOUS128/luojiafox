@@ -1,0 +1,497 @@
+{
+  "complete": true,
+  "errors": [],
+  "framebuffer_sizes": [
+    [
+      1920,
+      1080
+    ]
+  ],
+  "lane_order": [
+    "1",
+    "3",
+    "4"
+  ],
+  "windows": [
+    {
+      "round": 1,
+      "mode": "light",
+      "presents": 3596,
+      "frames": [
+        1780,
+        1800,
+        1800
+      ],
+      "p95_ms": 18.432,
+      "longest_ms": 41.662,
+      "over33": 5,
+      "longest_lane_gaps_ms": [
+        84.165,
+        67.019,
+        67.019
+      ],
+      "markers": "off"
+    },
+    {
+      "round": 1,
+      "mode": "light",
+      "presents": 3592,
+      "frames": [
+        1782,
+        1798,
+        1799
+      ],
+      "p95_ms": 18.458,
+      "longest_ms": 40.5,
+      "over33": 15,
+      "longest_lane_gaps_ms": [
+        83.927,
+        69.061,
+        69.061
+      ],
+      "percent_of_off": [
+        100.11,
+        99.89,
+        99.94
+      ],
+      "markers": "on"
+    }
+  ],
+  "candidates": {
+    "on": {
+      "status": "pass",
+      "failed_checks": [],
+      "longest_video_freeze": {
+        "ms": 83.927,
+        "round": 1,
+        "lane": "1"
+      }
+    }
+  },
+  "seconds_per_window": 60,
+  "log_events": [
+    "2026-11-20 15:37:18.442 [info] COMMANDER_MARKERS_BEGIN round=1 mode=light markers=off width=1920 height=1080",
+    "2026-11-20 15:38:18.457 [info] COMMANDER_MARKERS_RESULT round=1 mode=light markers=off seconds=60 valid=true presents=3596 p95_ms=18.432 longest_ms=41.662 over33=5 f1=1780 f3=1800 f4=1800 gap1_ms=84.165 gap3_ms=67.019 gap4_ms=67.019",
+    "2026-11-20 15:38:23.506 [info] COMMANDER_MARKERS_BEGIN round=1 mode=light markers=on width=1920 height=1080",
+    "2026-11-20 15:39:23.509 [info] COMMANDER_MARKERS_RESULT round=1 mode=light markers=on seconds=60 valid=true presents=3592 p95_ms=18.458 longest_ms=40.500 over33=15 f1=1782 f3=1798 f4=1799 gap1_ms=83.927 gap3_ms=69.061 gap4_ms=69.061"
+  ],
+  "gpu": "NVIDIA GeForce RTX 4060 Laptop GPU",
+  "video_inputs": [
+    {
+      "file": "peer-view-1.bin",
+      "width": 1920,
+      "height": 1080,
+      "fps": 30,
+      "frames": 60,
+      "bytes": 1055056,
+      "sha256": "00839527312b38c41ace4fa199b9cd82834a2ead95e5fb7a09caee0049ed069e",
+      "source": "official feed (测试画面.h265)",
+      "source_start_seconds": 0
+    },
+    {
+      "file": "peer-view-2.bin",
+      "width": 1920,
+      "height": 1080,
+      "fps": 30,
+      "frames": 120,
+      "bytes": 622368,
+      "sha256": "699756fe07bec816575dd4bf31aabe5e68c33cb292e45b5ee72190e962bd47fe",
+      "source": "industrial camera (car_raw.bgr)",
+      "source_start_seconds": 5
+    },
+    {
+      "file": "peer-view-3.bin",
+      "width": 1920,
+      "height": 1080,
+      "fps": 30,
+      "frames": 120,
+      "bytes": 584030,
+      "sha256": "0d1ef237c3c321d614ea92c90eb10b2b2ff8759294070fed5cca7d2da9f93e78",
+      "source": "industrial camera (car_raw.bgr)",
+      "source_start_seconds": 10
+    }
+  ],
+  "log_sha256": "edc3c7957f0bae5b5747b99dc1938737984734e493352481c4d87dc577ec175c",
+  "executable_sha256": "6fe7747bd131e01efc7d6e1208867bfb54d34123f7b93562a66c7ba6101b5345",
+  "piece_size_check": {
+    "scope": "Actual RGBA readback of DX12 at 903x499; synthetic replay position only",
+    "method": "Before/after readback of one red infantry piece. Measure matte column span near its known ground point, excluding text and lines.",
+    "tolerance_px": {
+      "width_vs_ideal": 3,
+      "double_zoom_difference": 3,
+      "x_center": 2,
+      "floor_edge": 3.5
+    },
+    "captures": [
+      {
+        "view": "flat-top-1",
+        "location_uv": [
+          0.3,
+          0.45555556
+        ],
+        "projected_ground_centre_px": [
+          276.91,
+          228.26
+        ],
+        "body_width_px": 18,
+        "expected_width_px": 18.64,
+        "horizontal_centre_error_px": 0.09,
+        "body_bottom_px": 237,
+        "projected_ground_edge_px": 237.58,
+        "ground_edge_error_px": -0.58
+      },
+      {
+        "view": "flat-top-2",
+        "location_uv": [
+          0.3,
+          0.45555556
+        ],
+        "projected_ground_centre_px": [
+          102.32,
+          207.01
+        ],
+        "body_width_px": 37,
+        "expected_width_px": 37.28,
+        "horizontal_centre_error_px": 0.18,
+        "body_bottom_px": 225,
+        "projected_ground_edge_px": 225.65,
+        "ground_edge_error_px": -0.65
+      },
+      {
+        "view": "missing-top-1",
+        "location_uv": [
+          0.3,
+          0.45555556
+        ],
+        "projected_ground_centre_px": [
+          276.91,
+          228.26
+        ],
+        "body_width_px": 18,
+        "expected_width_px": 18.64,
+        "horizontal_centre_error_px": 0.09,
+        "body_bottom_px": 237,
+        "projected_ground_edge_px": 237.58,
+        "ground_edge_error_px": -0.58
+      },
+      {
+        "view": "missing-top-2",
+        "location_uv": [
+          0.3,
+          0.45555556
+        ],
+        "projected_ground_centre_px": [
+          102.32,
+          207.01
+        ],
+        "body_width_px": 37,
+        "expected_width_px": 37.28,
+        "horizontal_centre_error_px": 0.18,
+        "body_bottom_px": 225,
+        "projected_ground_edge_px": 225.65,
+        "ground_edge_error_px": -0.65
+      },
+      {
+        "view": "light-top-1",
+        "location_uv": [
+          0.3,
+          0.45555556
+        ],
+        "projected_ground_centre_px": [
+          289.18,
+          230.18
+        ],
+        "body_width_px": 17,
+        "expected_width_px": 17.39,
+        "horizontal_centre_error_px": 0.32,
+        "body_bottom_px": 239,
+        "projected_ground_edge_px": 238.87,
+        "ground_edge_error_px": 0.13,
+        "visible_centre_pixels": 63,
+        "below_floor_centre_pixels": 0,
+        "below_floor_total_changed_pixels_including_label": 609
+      },
+      {
+        "view": "light-top-2",
+        "location_uv": [
+          0.3,
+          0.45555556
+        ],
+        "projected_ground_centre_px": [
+          126.85,
+          210.85
+        ],
+        "body_width_px": 34,
+        "expected_width_px": 34.78,
+        "horizontal_centre_error_px": 0.15,
+        "body_bottom_px": 228,
+        "projected_ground_edge_px": 228.24,
+        "ground_edge_error_px": -0.24,
+        "visible_centre_pixels": 258,
+        "below_floor_centre_pixels": 0,
+        "below_floor_total_changed_pixels_including_label": 611
+      },
+      {
+        "view": "light-side-1",
+        "location_uv": [
+          0.3,
+          0.45555556
+        ],
+        "projected_ground_centre_px": [
+          353.57,
+          210.23
+        ],
+        "body_width_px": 11,
+        "expected_width_px": 11.74,
+        "horizontal_centre_error_px": -0.07,
+        "body_bottom_px": 214,
+        "projected_ground_edge_px": 214.79,
+        "ground_edge_error_px": -0.79,
+        "visible_centre_pixels": 29,
+        "below_floor_centre_pixels": 0,
+        "below_floor_total_changed_pixels_including_label": 610
+      },
+      {
+        "view": "light-side-2",
+        "location_uv": [
+          0.3,
+          0.45555556
+        ],
+        "projected_ground_centre_px": [
+          255.63,
+          170.96
+        ],
+        "body_width_px": 23,
+        "expected_width_px": 23.48,
+        "horizontal_centre_error_px": -0.13,
+        "body_bottom_px": 179,
+        "projected_ground_edge_px": 180.09,
+        "ground_edge_error_px": -1.09,
+        "visible_centre_pixels": 117,
+        "below_floor_centre_pixels": 0,
+        "below_floor_total_changed_pixels_including_label": 613
+      },
+      {
+        "view": "detailed-top-1",
+        "location_uv": [
+          0.3,
+          0.45555556
+        ],
+        "projected_ground_centre_px": [
+          289.18,
+          230.18
+        ],
+        "body_width_px": 17,
+        "expected_width_px": 17.39,
+        "horizontal_centre_error_px": 0.32,
+        "body_bottom_px": 239,
+        "projected_ground_edge_px": 238.87,
+        "ground_edge_error_px": 0.13,
+        "visible_centre_pixels": 63,
+        "below_floor_centre_pixels": 0,
+        "below_floor_total_changed_pixels_including_label": 609
+      },
+      {
+        "view": "detailed-top-2",
+        "location_uv": [
+          0.3,
+          0.45555556
+        ],
+        "projected_ground_centre_px": [
+          126.85,
+          210.85
+        ],
+        "body_width_px": 34,
+        "expected_width_px": 34.78,
+        "horizontal_centre_error_px": 0.15,
+        "body_bottom_px": 228,
+        "projected_ground_edge_px": 228.24,
+        "ground_edge_error_px": -0.24,
+        "visible_centre_pixels": 258,
+        "below_floor_centre_pixels": 0,
+        "below_floor_total_changed_pixels_including_label": 610
+      },
+      {
+        "view": "detailed-side-1",
+        "location_uv": [
+          0.3,
+          0.45555556
+        ],
+        "projected_ground_centre_px": [
+          353.57,
+          210.23
+        ],
+        "body_width_px": 11,
+        "expected_width_px": 11.74,
+        "horizontal_centre_error_px": -0.07,
+        "body_bottom_px": 214,
+        "projected_ground_edge_px": 214.79,
+        "ground_edge_error_px": -0.79,
+        "visible_centre_pixels": 29,
+        "below_floor_centre_pixels": 0,
+        "below_floor_total_changed_pixels_including_label": 609
+      },
+      {
+        "view": "detailed-side-2",
+        "location_uv": [
+          0.3,
+          0.45555556
+        ],
+        "projected_ground_centre_px": [
+          255.63,
+          170.96
+        ],
+        "body_width_px": 23,
+        "expected_width_px": 23.48,
+        "horizontal_centre_error_px": -0.13,
+        "body_bottom_px": 179,
+        "projected_ground_edge_px": 180.09,
+        "ground_edge_error_px": -1.09,
+        "visible_centre_pixels": 117,
+        "below_floor_centre_pixels": 0,
+        "below_floor_total_changed_pixels_including_label": 610
+      }
+    ],
+    "zoom_checks": [
+      {
+        "view": "flat-top",
+        "one_x_px": 18,
+        "two_x_px": 37,
+        "two_x_minus_twice_one_x_px": 1
+      },
+      {
+        "view": "missing-top",
+        "one_x_px": 18,
+        "two_x_px": 37,
+        "two_x_minus_twice_one_x_px": 1
+      },
+      {
+        "view": "light-top",
+        "one_x_px": 17,
+        "two_x_px": 34,
+        "two_x_minus_twice_one_x_px": 0
+      },
+      {
+        "view": "light-side",
+        "one_x_px": 11,
+        "two_x_px": 23,
+        "two_x_minus_twice_one_x_px": 1
+      },
+      {
+        "view": "detailed-top",
+        "one_x_px": 17,
+        "two_x_px": 34,
+        "two_x_minus_twice_one_x_px": 0
+      },
+      {
+        "view": "detailed-side",
+        "one_x_px": 11,
+        "two_x_px": 23,
+        "two_x_minus_twice_one_x_px": 1
+      }
+    ],
+    "edge_checks": [
+      {
+        "mode": "flat",
+        "edge": "left",
+        "centre_x_px": -4,
+        "body_pixels_in_edge_5x9_probe": 11
+      },
+      {
+        "mode": "flat",
+        "edge": "right",
+        "centre_x_px": 907,
+        "body_pixels_in_edge_5x9_probe": 14
+      },
+      {
+        "mode": "missing",
+        "edge": "left",
+        "centre_x_px": -4,
+        "body_pixels_in_edge_5x9_probe": 11
+      },
+      {
+        "mode": "missing",
+        "edge": "right",
+        "centre_x_px": 907,
+        "body_pixels_in_edge_5x9_probe": 14
+      },
+      {
+        "mode": "light",
+        "edge": "left",
+        "centre_x_px": -4,
+        "body_pixels_in_edge_5x9_probe": 15
+      },
+      {
+        "mode": "light",
+        "edge": "right",
+        "centre_x_px": 907,
+        "body_pixels_in_edge_5x9_probe": 9
+      },
+      {
+        "mode": "detailed",
+        "edge": "left",
+        "centre_x_px": -4,
+        "body_pixels_in_edge_5x9_probe": 15
+      },
+      {
+        "mode": "detailed",
+        "edge": "right",
+        "centre_x_px": 907,
+        "body_pixels_in_edge_5x9_probe": 9
+      }
+    ],
+    "missing_model_vs_flat": {
+      "1": {
+        "equal": true,
+        "rgba_sha256": "598597993bca91147ff6367bfab26175a4ec957051096754f7ee903fe32335c9"
+      },
+      "2": {
+        "equal": true,
+        "rgba_sha256": "f975f7fac5a74c1582121ea6282134cb9e1420eca5ef3e8a2cfc80b6e03bc9bf"
+      }
+    },
+    "passed": true
+  },
+  "piece_letter_check": {
+    "map_capture_pixels": [
+      903,
+      499
+    ],
+    "font": "resources/zcool.ttf",
+    "views_tested": [
+      "detailed-side-1",
+      "detailed-side-2",
+      "detailed-top-1",
+      "detailed-top-2",
+      "flat-top-1",
+      "flat-top-2",
+      "light-side-1",
+      "light-side-2",
+      "light-top-1",
+      "light-top-2",
+      "missing-top-1",
+      "missing-top-2"
+    ],
+    "crops_with_visible_strokes": 36,
+    "total_crops": 36,
+    "weakest_views": [
+      [
+        "light-side-1",
+        "infantry"
+      ],
+      [
+        "light-side-1",
+        "sentry"
+      ],
+      [
+        "detailed-side-1",
+        "infantry"
+      ],
+      [
+        "detailed-side-1",
+        "sentry"
+      ]
+    ],
+    "note": "字形对照使用实际绘制的棋面像素。小地图大角度斜视时，密集笔画容易靠在一起，滚轮拉近或回到俯视更容易认。"
+  }
+}

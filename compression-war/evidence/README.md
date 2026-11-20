@@ -1,6 +1,10 @@
-# 双包里程碑的最小复核证据
+# 压片平台验收证据
 
-这里只保留2026-11-09已验收的一次60秒真实相机运行，约2.3 MB。原始来源为本机`runs/two-packet-validation/20261109_191606_298/gui60`；重复试跑、GB级原片、编译产物与完整原片PNG继续留在被忽略的目录。
+这里保留两组可独立核查的结果。对比 B 档和原始基线，看[策略里程碑](strategy-milestone/README.md)。复核双包传输和像素是否一致，用下面的基线包。
+
+## 双包基线
+
+这份约 2.3 MB 的记录来自 2026-11-09 验收的一次 60 秒真实相机素材回放。原始来源为本机`runs/two-packet-validation/20261109_191606_298/gui60`；原片、编译产物和重复试跑均不入库。
 
 在`compression-war`根目录编译后运行：
 
@@ -34,7 +38,7 @@
 查看原生接收图像：
 
 ![相机192×152](two-packet-baseline/received-camera.png)
-![横屏全视野](two-packet-baseline/received-landscape.png)
-![竖屏全视野](two-packet-baseline/received-portrait.png)
+
+横屏和竖屏四角图保留在同目录，分别是当时后台验证裁边的 `received-landscape.png` 和 `received-portrait.png`。
 
 二进制包和PNG按二进制入库，CSV/TXT保留原始字节，避免Git换行转换导致证据SHA256变化。重放生成的`replayed-decoded.csv`可随时重新得到，不重复入库。

@@ -149,11 +149,20 @@ MainWindowActions ShowMainWindow(const State &state,
     ImGuiStyle &style = ImGui::GetStyle();
     float font_size = ImGui::GetFontSize();
 
-    // 队友画面按 L 接管主画面时，主背景让位给队友那一路（在下面统一画）。
-    const bool teammate_as_main = teammate_view.enabled && teammate_view.take_main_screen;
     const bool alliance = state.competition == RoboGo::app::Competition::Ul2027;
+    const bool cup_2027 = state.competition == RoboGo::app::Competition::Uc2027;
     const bool menu_open = alliance ? alliance_menu_open : !is_in_game_mode();
     const bool waiting_for_video = !udp_video_display_ready && !custom_video_display_ready;
+
+    if (teammate_view.count > 0 && teammate_view.take_main_screen &&
+        mqtt_client.get_connection_state() == RoboGo::io::MqttClient::ConnectionState::Connected) {
+        const int clicked = ShowTeammateOverview(teammate_view, menu_open, local_trial);
+        const auto action = menu_open ? DrawCenteredMenu(state, mqtt_client, local_trial, waiting_for_video, alliance)
+                                      : MenuAction::None;
+        return {.return_to_events = action == MenuAction::ReturnToEvents,
+                .close_menu = action == MenuAction::Resume,
+                .teammate_slot_clicked = clicked};
+    }
 
     const ImTextureRef background_video_texture_ref = using_custom_video_as_main
                                                               ? custom_video_texture_ref
@@ -168,7 +177,7 @@ MainWindowActions ShowMainWindow(const State &state,
     const bool main_image_available = using_custom_video_as_main
                                               ? (alliance ? custom_video_display_ready : custom_video_hold_as_main)
                                               : udp_video_display_ready;
-    if (!menu_open && !teammate_as_main && !main_image_available) {
+    if (!menu_open && !main_image_available) {
         // Background layer: never intercept input or cover the existing login/menu.
         const char *label = using_custom_video_as_main ? "等待工业相机图传" : "等待官方图传";
         const auto size = ImGui::CalcTextSize(label);
@@ -176,7 +185,7 @@ MainWindowActions ShowMainWindow(const State &state,
                               viewport->Pos.y + viewport->Size.y * (alliance ? 0.5f : 0.15f) + style.ItemSpacing.y);
         ImGui::GetBackgroundDrawList()->AddText(p, IM_COL32(201, 210, 215, 255), label);
     }
-    if (!teammate_as_main && main_image_available && background_video_texture_ref.GetTexID() != ImTextureID_Invalid) {
+    if (main_image_available && background_video_texture_ref.GetTexID() != ImTextureID_Invalid) {
         ImDrawList *draw_list = ImGui::GetBackgroundDrawList();
         // 180° 旋转放在 GPU 做（UV 翻转），避免 CPU 逐像素交换整帧 1080p 数据。
         // 这一步原来在解码管线里用 CPU 做，是画面卡顿/操作延迟的主要来源之一。
@@ -227,8 +236,8 @@ MainWindowActions ShowMainWindow(const State &state,
     // Wider monitors leave more space for video once the side readouts reach a comfortable width.
     const float left_panel_width = alliance ? std::min(viewport->Size.x * .30f, std::clamp(viewport->Size.x * (.20f - .02f * large_view), 14.f * font_size, 28.f * font_size))
                                             : viewport->Size.x * .20f;
-    const auto id = alliance ? mqtt_client.get_client_id() : std::string{};
-    const bool blue = id == "101" || id == "103";
+    const auto id = alliance || cup_2027 ? mqtt_client.get_client_id() : std::string{};
+    const bool blue = id.size() == 3 && id.front() == '1';
     const bool heavy = id == "1" || id == "101";
     ImGui::SetNextWindowPos(ImVec2(0, 0), ImGuiCond_Always);
     ImGui::SetNextWindowSize(ImVec2(viewport->Size.x, left_panel_top));
@@ -302,32 +311,26 @@ MainWindowActions ShowMainWindow(const State &state,
     }
 
     const float mini_map_width = left_panel_width;
-    const float mini_map_height = alliance ? std::min(viewport->Size.y * .33f, mini_map_width * 2.f/3.f + ImGui::GetTextLineHeightWithSpacing() + 2.f*style.WindowPadding.y)
-                                           : mini_map_width / 28 * 15;
+    float mini_map_height = mini_map_width / 28 * 15;
+    if (alliance || cup_2027) {
+        const float aspect = cup_2027 && mini_map_texture_size.x > 0.f
+            ? mini_map_texture_size.y / mini_map_texture_size.x : 2.f / 3.f;
+        mini_map_height = std::min(viewport->Size.y * .33f, mini_map_width * aspect
+                                   + ImGui::GetTextLineHeightWithSpacing() + 2.f * style.WindowPadding.y);
+    }
     ImGui::SetNextWindowPos(ImVec2(viewport->Size.x - mini_map_width, viewport->Size.y - mini_map_height), ImGuiCond_Always);
     ImGui::SetNextWindowSize(ImVec2(mini_map_width, mini_map_height));
     if (alliance) ShowAllianceVenueMap(mini_map_texture_ref, mini_map_texture_size, blue);
+    else if (cup_2027) ShowCupVenueMap(mini_map_texture_ref, mini_map_texture_size, blue, !id.empty());
     else ShowMiniMap(state, mqtt_client, mini_map_texture_ref, mini_map_texture_size);
 
-    // 队友视角小窗：占右侧栏最上面那一块，BuffPanel 从它下面开始。
-    // 默认就画（双击 exe 就有），标题条上的 [A]/[B] 点一下切角色。
-    float teammate_panel_width = left_panel_width;
-    float teammate_panel_height = 0.0f;
-    bool teammate_role_toggle_requested = false;
-    if (teammate_view.enabled || alliance) {
-        const float collapsed_height = TeammateCollapsedHeight();
-        const float expanded_height = std::min(teammate_panel_width * 9.f/16.f, viewport->Size.y * (alliance ? .29f : 1.f));
-        const float waiting_height = collapsed_height + 2.5f * ImGui::GetTextLineHeightWithSpacing();
-        teammate_panel_height = teammate_view.collapsed ? collapsed_height
-                              : alliance && !teammate_view.display_ready ? std::min(expanded_height, waiting_height)
-                              : expanded_height;
-        const ImVec2 teammate_pos(viewport->Size.x - teammate_panel_width, left_panel_top);
-        teammate_role_toggle_requested =
-                ShowTeammateViewport(teammate_view,
-                                     teammate_pos,
-                                     ImVec2(teammate_panel_width, teammate_panel_height),
-                                     alliance, local_trial);
-    }
+    // 给地图和增益留出位置。宽屏上小窗高度封顶，左右两侧不会挤到主画面中间。
+    const float sidebar_room = viewport->Size.y - left_panel_top - mini_map_height;
+    const float sidebar_max = std::min(viewport->Size.y * (alliance ? .29f : .43f),
+                                       std::max(0.f, sidebar_room - 3.f * ImGui::GetTextLineHeightWithSpacing()));
+    const float teammate_panel_height = ShowTeammateSidebar(teammate_view,
+            {viewport->Pos.x + viewport->Size.x - left_panel_width, viewport->Pos.y + left_panel_top},
+            left_panel_width, sidebar_max);
 
     float buff_panel_width = left_panel_width;
     // 小窗和 Buff 面板之间留 6 像素，不然两块面板会贴在一起像被压扁了。
@@ -341,11 +344,6 @@ MainWindowActions ShowMainWindow(const State &state,
     ImGui::SetNextWindowSize(ImVec2(buff_panel_width, buff_panel_height));
     ShowBuffPanel(state);
 
-    // L 接管主画面：画在所有面板的最上层。
-    if (teammate_as_main) {
-        ShowTeammateFullscreen(teammate_view, menu_open);
-    }
-
     ShowBottomPanel(state);
     if (large_view > 0.f) ImGui::PopFont();
     ImGui::PopItemFlag();
@@ -353,14 +351,15 @@ MainWindowActions ShowMainWindow(const State &state,
 
     if (!alliance && local_trial && is_in_game_mode()) {
         const ImVec2 p(viewport->Pos.x + style.WindowPadding.x, viewport->Pos.y + style.WindowPadding.y);
-        ImGui::GetForegroundDrawList()->AddText(p, IM_COL32(246,207,105,255), "本地试用");
+        ImGui::GetForegroundDrawList()->AddText(p, IM_COL32(246,207,105,255), "本地测试");
     }
     return MainWindowActions{.toggle_udp_video_inversion = toggle_udp_video_inversion_requested,
                              .return_to_events = menu_action == MenuAction::ReturnToEvents,
                              .close_menu = menu_action == MenuAction::Resume,
                              .open_menu = open_menu,
                              .toggle_main_video = toggle_main_video,
-                             .switch_teammate_role = teammate_role_toggle_requested};
+                             .commander_team = menu_action == MenuAction::CommanderRed ? 0 :
+                                               menu_action == MenuAction::CommanderBlue ? 1 : -1};
 }
 
 void UpdateState(State &state) {

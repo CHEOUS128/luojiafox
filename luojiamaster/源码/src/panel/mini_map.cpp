@@ -12,6 +12,26 @@ void ShowAllianceVenueMap(ImTextureRef texture, const ImVec2 &size, bool blue) {
     }
     ImGui::End();
 }
+
+void ShowCupVenueMap(ImTextureRef texture, const ImVec2 &size, bool blue, bool team_known) {
+    if (ImGui::Begin("CupVenueMap", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove |
+                     ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoBackground)) {
+        const char *label = !team_known ? "超级对抗赛地图" : blue ? "超级对抗赛地图 · 蓝方" : "超级对抗赛地图 · 红方";
+        hud::Label(label);
+        const ImVec2 p = ImGui::GetCursorScreenPos();
+        const ImVec2 area = ImGui::GetContentRegionAvail();
+        if (texture.GetTexID() == ImTextureID_Invalid || size.x <= 0.f || size.y <= 0.f) {
+            ImGui::TextDisabled("场馆图未就绪");
+        } else if (area.x > 0.f && area.y > 0.f) {
+            const auto box = RoboGo::app::ul_drawing::Fit(p, {p.x + area.x, p.y + area.y}, size.x / size.y);
+            const ImVec2 uv0 = blue ? ImVec2(1, 1) : ImVec2(0, 0);
+            const ImVec2 uv1 = blue ? ImVec2(0, 0) : ImVec2(1, 1);
+            ImGui::GetWindowDrawList()->AddImage(texture, box.a, box.b, uv0, uv1);
+        }
+    }
+    ImGui::End();
+}
+
 namespace {
 
 constexpr float kMapWidth = 280.0f;

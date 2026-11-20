@@ -113,21 +113,17 @@ inline constexpr auto kCustomVideoFallbackTimeout = std::chrono::milliseconds(50
 inline constexpr auto kTeammateVideoLiveTimeout = std::chrono::milliseconds(1000);
 inline constexpr auto kTeammateVideoOfflineTimeout = std::chrono::milliseconds(5000);
 
-// 队友画面（2027 自定义客户端互联）在 UI 层的全部状态。
-// 单独成一个结构体，免得 ShowMainWindow 的参数表继续膨胀。
-// 定义在 panel/teammate_panel.h，这里只是给调用方一个统一的入口。
-#include "panel/teammate_panel.h"
-
 State CreateInitialState();
 
-// 主窗口一帧里，用户通过界面触发、需要 application.cpp 去改状态的两件事。
+// 本帧的界面操作交由 application.cpp 更新。
 struct MainWindowActions {
     bool toggle_udp_video_inversion = false;  // 按 I / 点翻转按钮：切换官方 UDP 画面 180°
     bool return_to_events = false;
     bool close_menu = false;
     bool open_menu = false;
     bool toggle_main_video = false;
-    bool switch_teammate_role = false;        // 点队友小窗标题条上的 [A]/[B]：换队友角色
+    int teammate_slot_clicked = -1;           // 左键在队友总览选中的槽位
+    int commander_team = -1;                  // 本地观看席，0 红、1 蓝；无机器人身份
 };
 
 MainWindowActions ShowMainWindow(const State &state,

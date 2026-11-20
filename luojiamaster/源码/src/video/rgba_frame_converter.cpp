@@ -20,27 +20,29 @@ RgbaFrameConverter::~RgbaFrameConverter() {
     av_frame_free(&legacy_frame_);
 }
 
-std::optional<app::VideoFrame> RgbaFrameConverter::Convert(const AVFrame *frame) {
+std::optional<app::VideoFrame> RgbaFrameConverter::Convert(const AVFrame *frame, int max_width) {
     const auto begin = Clock::now();
     last_ = {};
     if (!frame || frame->width <= 0 || frame->height <= 0 || frame->width > 4096 || frame->height > 4096 ||
         (frame->format != AV_PIX_FMT_NV12 && frame->format != AV_PIX_FMT_YUV420P)) return {};
+    const int width = max_width > 0 ? std::min(frame->width, max_width) : frame->width;
+    const int height = std::max(1, (frame->height * width + frame->width / 2) / frame->width);
     context_ = sws_getCachedContext(context_, frame->width, frame->height, static_cast<AVPixelFormat>(frame->format),
-        frame->width, frame->height, AV_PIX_FMT_RGBA, SWS_FAST_BILINEAR, nullptr, nullptr, nullptr);
+        width, height, AV_PIX_FMT_RGBA, SWS_FAST_BILINEAR, nullptr, nullptr, nullptr);
     if (!context_) throw std::runtime_error("RGBA conversion context failed");
     app::VideoFrame output;
-    output.width = frame->width;
-    output.height = frame->height;
-    const auto row_bytes = static_cast<std::size_t>(frame->width) * 4;
+    output.width = width;
+    output.height = height;
+    const auto row_bytes = static_cast<std::size_t>(width) * 4;
     if (mode_ == RgbaConversionMode::LegacyCopy) {
         // Identical allocations, aligned intermediate and row copy to the stable client.
-        output.buffer.resize(row_bytes * frame->height);
+        output.buffer.resize(row_bytes * height);
         last_.allocation = true;
-        if (legacy_frame_->width != frame->width || legacy_frame_->height != frame->height) {
+        if (legacy_frame_->width != width || legacy_frame_->height != height) {
             av_frame_unref(legacy_frame_);
             legacy_frame_->format = AV_PIX_FMT_RGBA;
-            legacy_frame_->width = frame->width;
-            legacy_frame_->height = frame->height;
+            legacy_frame_->width = width;
+            legacy_frame_->height = height;
             if (av_frame_get_buffer(legacy_frame_, 32) < 0) {
                 av_frame_unref(legacy_frame_);
                 throw std::runtime_error("RGBA aligned legacy buffer allocation failed");
@@ -51,14 +53,14 @@ std::optional<app::VideoFrame> RgbaFrameConverter::Convert(const AVFrame *frame)
         const auto rows = sws_scale(context_, frame->data, frame->linesize, 0, frame->height,
                                     legacy_frame_->data, legacy_frame_->linesize);
         const auto convert_end = Clock::now();
-        if (rows != frame->height) throw std::runtime_error("RGBA conversion returned incomplete image");
-        for (int y = 0; y < frame->height; ++y)
+        if (rows != height) throw std::runtime_error("RGBA conversion returned incomplete image");
+        for (int y = 0; y < height; ++y)
             std::memcpy(output.buffer.data() + static_cast<std::size_t>(y) * row_bytes,
                         legacy_frame_->data[0] + static_cast<std::ptrdiff_t>(y) * legacy_frame_->linesize[0], row_bytes);
         const auto end = Clock::now();
         last_.convert_us = Micros(convert_begin, convert_end);
         last_.copy_us = Micros(convert_end, end);
-        last_.copied_bytes = row_bytes * frame->height;
+        last_.copied_bytes = row_bytes * height;
         last_.total_us = Micros(begin, end);
         return output;
     }
@@ -71,7 +73,7 @@ std::optional<app::VideoFrame> RgbaFrameConverter::Convert(const AVFrame *frame)
     // SIMD conversion has an aligned base, aligned rows and 64 B of row padding.
     // Extra tail padding protects the last row as well. No pointer survives a resize.
     const std::size_t stride = (row_bytes + 64 + 63) & ~std::size_t(63);
-    const std::size_t required = stride * frame->height + 127;
+    const std::size_t required = stride * height + 127;
     if (storage->size() != required) { storage->resize(required); last_.allocation = true; }
     const auto address = reinterpret_cast<std::uintptr_t>(storage->data());
     const std::size_t offset = (64 - (address & 63)) & 63;
@@ -83,7 +85,7 @@ std::optional<app::VideoFrame> RgbaFrameConverter::Convert(const AVFrame *frame)
     const auto convert_begin = Clock::now();
     const auto rows = sws_scale(context_, frame->data, frame->linesize, 0, frame->height, dest, pitches);
     const auto end = Clock::now();
-    if (rows != frame->height) throw std::runtime_error("RGBA conversion returned incomplete image");
+    if (rows != height) throw std::runtime_error("RGBA conversion returned incomplete image");
     last_.convert_us = Micros(convert_begin, end);
     last_.total_us = Micros(begin, end);
     return output;
