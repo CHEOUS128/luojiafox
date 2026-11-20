@@ -17,6 +17,23 @@ def sample():
 
 
 class AuditTests(unittest.TestCase):
+    def test_layout_pair_uses_both_real_windows_in_order(self):
+        lines = []
+        for layout in ("split", "floating"):
+            begin, result = [s.replace("COMMANDER_", "COMMANDER_LAYOUT_")
+                              .replace("mode=light", f"mode=light layout={layout}")
+                             for s in sample()[2:4]]
+            lines.append(begin)
+            lines.extend(f"COMMANDER_VIDEO seat={n} decoded=1920x1080 texture=320x180" for n in (1, 3, 4))
+            lines.append(result if layout == "split" else result.replace("f4=200", "f4=189"))
+        report = analyze(lines, layouts=True)
+        self.assertTrue(report["complete"], report["errors"])
+        self.assertEqual([w["layout"] for w in report["windows"]], ["split", "floating"])
+        self.assertEqual(report["windows"][1]["percent_of_split"], [100, 100, 94.5])
+        self.assertEqual(report["candidates"]["floating"]["status"], "fail")
+        self.assertFalse(analyze(lines[5:] + lines[:5], layouts=True)["complete"])
+        self.assertFalse(analyze(lines, markers=True)["complete"])
+
     def test_one_marker_pair_uses_actual_lane_counts_and_1080p(self):
         lines = []
         for index, setting in enumerate(("off", "on")):

@@ -1,4 +1,4 @@
-"""Audit one F11 client log: nine arena windows, or a pair with markers off/on."""
+"""Audit F11 replay comparisons for arenas, marker rendering or the two video layouts."""
 
 import argparse
 import hashlib
@@ -12,6 +12,7 @@ MODES = ("flat", "light", "detailed")
 LANES = ("1", "3", "4")
 EVENT = re.compile(r"\bCOMMANDER_(BEGIN|RESULT|INVALID)\s+(.+)")
 MARKER_EVENT = re.compile(r"\bCOMMANDER_MARKERS_(BEGIN|RESULT|INVALID)\s+(.+)")
+LAYOUT_EVENT = re.compile(r"\bCOMMANDER_LAYOUT_(BEGIN|RESULT|INVALID)\s+(.+)")
 VIDEO = re.compile(r"\bCOMMANDER_VIDEO seat=(\d+) decoded=(\d+x\d+) texture=(\d+x\d+)")
 
 
@@ -37,11 +38,17 @@ def read_result(fields):
                 over33=over, longest_lane_gaps_ms=gaps)
 
 
-def analyze(lines, *, markers=False):
-    modes = ("off", "on") if markers else MODES
-    rounds = (1,) if markers else (1, 2, 3)
+def analyze(lines, *, markers=False, layouts=False):
+    if markers and layouts:
+        raise ValueError("select only one comparison")
+    modes, events, setting = MODES, EVENT, "mode"
+    if markers:
+        modes, events, setting = ("off", "on"), MARKER_EVENT, "markers"
+    if layouts:
+        modes, events, setting = ("split", "floating"), LAYOUT_EVENT, "layout"
+    paired = markers or layouts
+    rounds = (1,) if paired else (1, 2, 3)
     baseline = modes[0]
-    events = MARKER_EVENT if markers else EVENT
     expected = [(r, m) for r in rounds for m in modes]
     starts, results, errors = {}, {}, []
     video_samples, raw_events = {}, []
@@ -49,13 +56,13 @@ def analyze(lines, *, markers=False):
     for line_no, line in enumerate(lines, 1):
         match = events.search(line)
         if not match:
-            if markers and current is not None:
+            if paired and current is not None:
                 video = VIDEO.search(line)
                 if video:
                     seat, decoded, _ = video.groups()
                     video_samples[current].setdefault(seat, set()).add(decoded)
             continue
-        if markers:
+        if paired:
             raw_events.append(line.strip())
         event, text = match.groups()
         try:
@@ -63,9 +70,9 @@ def analyze(lines, *, markers=False):
             fields = dict(pairs)
             if len(fields) != len(pairs):
                 raise ValueError("repeated field")
-            if markers and fields["mode"] != "light":
-                raise ValueError("the marker comparison requires the same light arena in both windows")
-            key = (int(fields["round"]), fields["markers" if markers else "mode"])
+            if paired and fields["mode"] != "light":
+                raise ValueError("the comparison requires the same light arena in both windows")
+            key = (int(fields["round"]), fields[setting])
             if key not in expected:
                 raise ValueError(f"unexpected round or mode {key}")
             if event == "INVALID":
@@ -73,18 +80,18 @@ def analyze(lines, *, markers=False):
             if event == "BEGIN":
                 if key in starts or current is not None:
                     raise ValueError(f"duplicate or overlapping start for {key}")
-                if markers and key != expected[len(starts)]:
-                    raise ValueError("markers must be off in the first window and on in the second")
+                if paired and key != expected[len(starts)]:
+                    raise ValueError(f"expected {modes[0]} first, then {modes[1]}")
                 starts[key] = [positive(fields, "width"), positive(fields, "height")]
                 current = key
-                if markers:
+                if paired:
                     video_samples[key] = {}
             else:
                 if current != key or key not in starts or key in results:
                     raise ValueError(f"result without matching unique BEGIN {key}")
                 current = None
                 results[key] = read_result(fields)
-                if markers and any(video_samples[key].get(seat) != {"1920x1080"} for seat in LANES):
+                if paired and any(video_samples[key].get(seat) != {"1920x1080"} for seat in LANES):
                     errors.append(f"line {line_no}: all three decoders must report 1920x1080 during {key[1]}")
         except (ValueError, KeyError) as exc:
             errors.append(f"line {line_no}: {exc}")
@@ -95,8 +102,8 @@ def analyze(lines, *, markers=False):
     dimensions = sorted({tuple(size) for size in starts.values()})
     if len(dimensions) != 1:
         errors.append("expected one common framebuffer size")
-    elif markers and dimensions != [(1920, 1080)]:
-        errors.append("marker benchmark requires a 1920x1080 F11 framebuffer")
+    elif paired and dimensions != [(1920, 1080)]:
+        errors.append("paired benchmark requires a 1920x1080 F11 framebuffer")
     for (r, mode), row in results.items():
         if mode == baseline and min(row["frames"]) == 0:
             errors.append(f"round {r}: zero-frame lane in {baseline} baseline")
@@ -127,9 +134,9 @@ def analyze(lines, *, markers=False):
     windows = [dict(round=r, mode=m, **results[r, m]) for r, m in expected if (r, m) in results]
     report = dict(complete=not errors, errors=errors, framebuffer_sizes=dimensions,
                   lane_order=list(LANES), windows=windows, candidates=candidates)
-    if markers:
+    if paired:
         for window in windows:
-            window["markers"] = window["mode"]
+            window[setting] = window["mode"]
             window["mode"] = "light"
         report["seconds_per_window"] = 60
         report["log_events"] = raw_events
@@ -139,14 +146,17 @@ def analyze(lines, *, markers=False):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("log", type=Path, help="one robogo.log")
-    parser.add_argument("--markers", action="store_true",
+    comparison = parser.add_mutually_exclusive_group()
+    comparison.add_argument("--markers", action="store_true",
                         help="audit the 1920x1080 light-arena marker comparison (off and on)")
+    comparison.add_argument("--layouts", action="store_true",
+                            help="audit the 1920x1080 split and floating replay layouts")
     parser.add_argument("--output", type=Path, help="write the same audit to a JSON file")
     args = parser.parse_args()
     if args.output and args.output.resolve() == args.log.resolve():
         parser.error("The output must be different from the source log.")
     raw = args.log.read_bytes()
-    report = analyze(raw.decode("utf-8-sig").splitlines(), markers=args.markers)
+    report = analyze(raw.decode("utf-8-sig").splitlines(), markers=args.markers, layouts=args.layouts)
     report["log_sha256"] = hashlib.sha256(raw).hexdigest()
     serialized = json.dumps(report, ensure_ascii=False, indent=2, allow_nan=False)
     if args.output:
@@ -155,7 +165,7 @@ def main():
         for row in report["windows"]:
             counts = "/".join(map(str, row["frames"]))
             gaps = "/".join(f"{n:.1f}" for n in row["longest_lane_gaps_ms"])
-            setting = row.get("markers", row["mode"])
+            setting = row.get("layout", row.get("markers", row["mode"]))
             print(f"{row['round']:5d} {setting:9s} {counts:18s} {row['p95_ms']:7.3f}  {gaps}")
         for mode, result in report["candidates"].items():
             print(f"{mode}: {result['status']}")

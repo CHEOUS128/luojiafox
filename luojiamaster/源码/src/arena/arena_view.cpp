@@ -312,13 +312,13 @@ void SetOrbitCentre(NavCamera& pose,float w, float h, bool flat, NavWorld world)
     pose.anchor={screen.x/w,screen.y/h};
 }
 
-void HandleMapGestures(Mode shown, ImVec2 pos, ImVec2 size) {
+void HandleMapGestures(Mode shown, ImVec2 pos, ImVec2 size, bool pointer_on_card) {
     const auto& io=ImGui::GetIO();
     if (shown==Mode::Unavailable || !ImGui::IsMousePosValid(&io.MousePos) || io.AppFocusLost) {
         drag={}; pending_focus={}; return;
     }
     const bool flat=shown==Mode::Flat;
-    const bool hovered=ImGui::IsItemHovered();
+    const bool hovered=!pointer_on_card && ImGui::IsItemHovered();
     const bool left_pressed=ImGui::IsMouseClicked(ImGuiMouseButton_Left);
     const bool right_pressed=ImGui::IsMouseClicked(ImGuiMouseButton_Right);
     const NavPoint pointer{io.MousePos.x-pos.x,io.MousePos.y-pos.y};
@@ -382,10 +382,15 @@ void HandleMapGestures(Mode shown, ImVec2 pos, ImVec2 size) {
 void ResetCamera() { camera={}; drag={}; pending_focus={}; }
 const char* Status() { return status.c_str(); }
 Mode Draw(const ImVec2& size, Mode requested, ImTextureID flat, double benchmark_seconds,
-          const std::vector<ReplayMarker>& markers) {
+          const std::vector<ReplayMarker>& markers, ReplayCanvas* canvas, int replay_team, bool pointer_on_card) {
+    if (canvas) *canvas={};
     if (size.x<1 || size.y<1) return Mode::Unavailable;
     const auto pos=ImGui::GetCursorScreenPos();
-    ImGui::InvisibleButton("##arena-surface",size,ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonRight);
+    // A card under the pointer owns a new press. A drag that began on the
+    // arena keeps its original ImGui item until the release is delivered.
+    const bool was_dragging=drag.button!=-1;
+    if (pointer_on_card && !was_dragging) ImGui::Dummy(size);
+    else ImGui::InvisibleButton("##arena-surface",size,ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonRight);
     Mode shown=flat ? Mode::Flat : Mode::Unavailable;
 #ifdef _WIN32
     bool use_mesh=requested==Mode::Light || requested==Mode::Detailed;
@@ -395,9 +400,31 @@ Mode Draw(const ImVec2& size, Mode requested, ImTextureID flat, double benchmark
         else if(m.resident) shown=requested;
     } else status.clear();
 #endif
-    if (benchmark_seconds<0) HandleMapGestures(shown,pos,size);
+    if (benchmark_seconds<0) HandleMapGestures(shown,pos,size,pointer_on_card);
     auto* list=ImGui::GetWindowDrawList();
     const ImVec2 end(pos.x+size.x,pos.y+size.y);
+    if (canvas) {
+        canvas->lo=pos;
+        canvas->hi=end;
+        canvas->map_dragging=was_dragging || drag.button!=-1;
+    }
+    const auto draw_badges=[&](auto project,bool flat_view) {
+        badges::Draw(list,markers,{pos,end},project,flat_view,
+            [&](const badges::Box& label,const badges::Box& piece) {
+                if (canvas && canvas->label_count<static_cast<int>(canvas->labels.size()))
+                    canvas->labels[canvas->label_count++]={label.lo,label.hi,piece.lo,piece.hi};
+            });
+        if (!canvas) return;
+        constexpr std::array<int,3> seats{1,3,4};
+        for (const auto& marker:markers) {
+            if (marker.team!=replay_team) continue;
+            const auto seat=std::find(seats.begin(),seats.end(),marker.number);
+            if (seat==seats.end()) continue;
+            const ImVec2 pt=project(marker.u,marker.v,marker.floor_y);
+            const bool inside=pt.x>=pos.x && pt.x<end.x && pt.y>=pos.y && pt.y<end.y;
+            canvas->pins[seat-seats.begin()]={pt,true,inside,marker.age_seconds};
+        }
+    };
     list->PushClipRect(pos,end,true);
     list->AddRectFilled(pos,end,IM_COL32(23,27,33,255));
     if(shown==Mode::Flat) {
@@ -405,7 +432,7 @@ Mode Draw(const ImVec2& size, Mode requested, ImTextureID flat, double benchmark
         const auto origin=camera.FlatOrigin(size.x,size.y);
         const ImVec2 start(pos.x+origin.x,pos.y+origin.y);
         list->AddImage(flat,start,ImVec2(start.x+903*mag,start.y+499*mag));
-        badges::Draw(list,markers,{pos,end},[&](float u,float v,float) {
+        draw_badges([&](float u,float v,float) {
             const auto p=RuleFigurePoint(u,v);
             return ImVec2(start.x+p.x*mag,start.y+p.y*mag);
         },true);
@@ -425,7 +452,7 @@ Mode Draw(const ImVec2& size, Mode requested, ImTextureID flat, double benchmark
         list->AddCallback(Render,nullptr);
         list->AddCallback(ImGui::GetPlatformIO().DrawCallback_ResetRenderState,nullptr);
         if (shown==requested && !markers.empty()) {
-            badges::Draw(list,markers,{pos,end},[&](float u,float v,float y) {
+            draw_badges([&](float u,float v,float y) {
                 const auto p=nav.Project(size.x,size.y,false,{(u-.5f)*28.f,y,(v-.5f)*15.f});
                 return ImVec2(pos.x+p.x,pos.y+p.y);
             },false);

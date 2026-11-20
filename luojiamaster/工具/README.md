@@ -275,4 +275,10 @@ python .\luojiamaster\源码\tests\prepare_commander_replays.py --client .\luoji
 
 用 `analyze_commander_benchmark.py <本次日志文件路径> --markers` 可复核这两档。
 
+**对比两种指挥席布局**也使用上面准备的 `$clips`。按 F11 后自动按顺序播放左右分栏和随车小窗，每档预热 5 秒、记录 60 秒，精简场馆、三路录像和样例路线相同。用 `analyze_commander_benchmark.py <本次日志文件路径> --layouts` 读取每路显示的新画面数、最长停顿及整窗刷新间隔。
+
+```powershell
+& .\luojiamaster\程序\luojiamaster.exe --local-trial --competition=uc2027 --commander-layout-benchmark --test-display-1080 --commander-video-dir $clips
+```
+
 要指定 Windows 已检测到的 1920×1080 屏，将上面的 `--commander-benchmark` 换成 `--commander-benchmark-1080-display`。程序不会更改 Windows 的分辨率。

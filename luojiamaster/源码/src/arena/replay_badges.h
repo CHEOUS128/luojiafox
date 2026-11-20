@@ -41,9 +41,9 @@ inline Box Place(const Box& piece, ImVec2 size, const Box& canvas, const Box* us
     return best;
 }
 
-template<class Project>
+template<class Project,class ObserveLabel>
 void Draw(ImDrawList* draw, const std::vector<ReplayMarker>& markers,
-          const Box& canvas, Project project, bool flat) {
+          const Box& canvas, Project project, bool flat, ObserveLabel observe_label) {
     const float font = ImGui::GetFontSize();
     std::array<Box,16> occupied; // all visible pieces, then their name plates
     std::array<const ReplayMarker*,8> visible{};
@@ -102,6 +102,7 @@ void Draw(ImDrawList* draw, const std::vector<ReplayMarker>& markers,
         const Box& piece=occupied[i];
         const Box b = Place(piece,size,canvas,occupied.data(),reserved);
         occupied[reserved++] = b;
+        observe_label(b,piece);
         const ImU32 color = old ? IM_COL32(174,180,188,200)
                             : m.team ? IM_COL32(93,212,255,255) : IM_COL32(255,124,116,255);
         const ImVec2 mid{(piece.lo.x+piece.hi.x)*.5f,(piece.lo.y+piece.hi.y)*.5f};

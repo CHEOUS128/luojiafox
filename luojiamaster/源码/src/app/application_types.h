@@ -5,6 +5,7 @@
 namespace RoboGo::app {
 
 enum class Competition { Uc2026, Ul2027, Uc2027 };
+enum class CommanderComparison { Arenas, Markers, Layouts };
 
 inline constexpr const char *CompetitionName(Competition competition) {
     switch (competition) {
@@ -72,7 +73,7 @@ struct LaunchOptions {
     bool local_trial = false;
     bool uc_classic = false;
     bool commander_benchmark = false;
-    bool commander_marker_benchmark = false;
+    CommanderComparison commander_comparison = CommanderComparison::Arenas;
     bool benchmark_match_monitor = false;
     std::string commander_video_dir;
     std::string mqtt_server;

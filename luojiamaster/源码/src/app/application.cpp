@@ -606,7 +606,10 @@ LaunchOptions ParseLaunchOptions(const std::vector<std::string> &args) {
             options.commander_benchmark = true;
         } else if (args[i] == "--commander-marker-benchmark") {
             options.commander_benchmark = true;
-            options.commander_marker_benchmark = true;
+            options.commander_comparison = CommanderComparison::Markers;
+        } else if (args[i] == "--commander-layout-benchmark") {
+            options.commander_benchmark = true;
+            options.commander_comparison = CommanderComparison::Layouts;
         } else if (args[i] == "--commander-video-dir") {
             if (i + 1 >= args.size() || args[i + 1].empty() || args[i + 1].starts_with("--"))
                 throw std::invalid_argument("Missing --commander-video-dir directory");
@@ -712,7 +715,7 @@ int RunApplication(platform::PlatformBackend &platform_backend, const LaunchOpti
         bool commander_active = false;
         CommanderDeskState commander_state;
         std::optional<CommanderBenchmark> benchmark;
-        if (options.commander_benchmark) benchmark.emplace(options.commander_marker_benchmark);
+        if (options.commander_benchmark) benchmark.emplace(options.commander_comparison);
         bool trial_started = false;
         int trial_second = -1;
         auto trial_start = std::chrono::steady_clock::time_point{};
@@ -951,9 +954,11 @@ int RunApplication(platform::PlatformBackend &platform_backend, const LaunchOpti
                 if (benchmark) {
                     commander_state.requested_mode = benchmark->Requested();
                     commander_state.show_markers = benchmark->MarkersEnabled();
+                    commander_state.floating_cards = benchmark->FloatingCards();
                 }
                 const bool previously_paused = commander_state.replay.Blue3Paused();
-                commander_actions = ShowCommanderDesk(commander_state, teammate_view, mini_map_texture.texture_ref.GetTexID(), now,
+                const auto replay_now = benchmark ? benchmark->ReplayTime(now) : now;
+                commander_actions = ShowCommanderDesk(commander_state, teammate_view, mini_map_texture.texture_ref.GetTexID(), replay_now,
                                                         benchmark ? benchmark->CameraSeconds() : -1.);
                 if (previously_paused != commander_state.replay.Blue3Paused())
                     SPDLOG_INFO("指挥席本地样例 蓝3位置={}", commander_state.replay.Blue3Paused() ? "暂停" : "恢复");
@@ -989,7 +994,8 @@ int RunApplication(platform::PlatformBackend &platform_backend, const LaunchOpti
                 if (benchmark) ui_actions.commander_team = 0;
                 if (commander_allowed && ui_actions.commander_team >= 0) {
                     commander_state.team = ui_actions.commander_team;
-                    commander_state.replay.Start(Clock::now());
+                    commander_state.replay.Start(options.commander_comparison == CommanderComparison::Layouts
+                                                ? Clock::time_point{} : Clock::now());
                     background_services.SelectCommanderPeers(options, commander_state.team);
                     RoboGo::arena::ResetCamera();
                     commander_active = true;

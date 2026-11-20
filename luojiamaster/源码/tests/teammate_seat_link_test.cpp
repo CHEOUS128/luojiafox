@@ -98,6 +98,21 @@ bool RecordedSeat(Competition competition, int local, int remote, const std::vec
     return ok;
 }
 
+bool CheckCommanderPreviewWidth(bool floating) {
+    CommanderDeskState desk;
+    desk.floating_cards = floating;
+    desk.thumbnail_pixels = {650.f, 205.f};
+    if (desk.PreviewWidth(0, 1920, 1080) != 384 || desk.PreviewWidth(0, 320, 180) != 0) return false;
+    desk.zoom[0] = 2.f;
+    if (desk.PreviewWidth(0, 1920, 1080) != 0) return false;
+    desk.focused = 1;
+    // A zoomed peer stays visible behind the focused card in floating mode.
+    if (desk.PreviewWidth(0, 1920, 1080) != (floating ? 0 : 384) ||
+        desk.PreviewWidth(1, 1920, 1080) != 0) return false;
+    desk.focused = -1;
+    return desk.PreviewWidth(1, 1920, 1080) == 384;
+}
+
 bool CheckCommanderConversion() {
     using namespace RoboGo;
     using Frame = app::VideoFrame;
@@ -106,15 +121,6 @@ bool CheckCommanderConversion() {
     video::TeammateVideoReceiver optimized({.reuse_aligned_rgba = true}, [&](Frame &&frame) { pooled.Push(std::move(frame)); });
     const auto fixtures = platform_util::PathFromUtf8(__FILE__).parent_path() / "fixtures";
     std::array<std::optional<Frame>, 3> retained;
-    CommanderDeskState desk;
-    desk.thumbnail_pixels = {650.f, 205.f};
-    if (desk.PreviewWidth(0, 1920, 1080) != 384 || desk.PreviewWidth(0, 320, 180) != 0) return false;
-    desk.zoom[0] = 2.f;
-    if (desk.PreviewWidth(0, 1920, 1080) != 0) return false;
-    desk.focused = 1;
-    if (desk.PreviewWidth(0, 1920, 1080) != 384 || desk.PreviewWidth(1, 1920, 1080) != 0) return false;
-    desk.focused = -1;
-    if (desk.PreviewWidth(1, 1920, 1080) != 384) return false;
     // The clips are independent HEVC streams at different output sizes.
     for (int clip = 1; clip <= 3; ++clip) {
         auto input = platform_util::OpenBinaryInput(platform_util::PathToUtf8(fixtures / ("peer-view-" + std::to_string(clip) + ".bin")));
@@ -183,6 +189,8 @@ int main() {
         std::cout << (value ? "PASS " : "FAIL ") << name << '\n';
         errors += !value;
     };
+    check(CheckCommanderPreviewWidth(false), "split layout: focused video and zoom use expected preview sizes");
+    check(CheckCommanderPreviewWidth(true), "floating layout: background zoomed card keeps its source resolution");
     check(CheckCommanderConversion(), "three real commander clips match legacy RGBA, bounded pool resumes after a drop");
     constexpr Competition ul = Competition::Ul2027, uc = Competition::Uc2027;
     check(TeamSeatIds(ul, 3) == std::vector<int>{1} && TeamSeatIds(ul, 101) == std::vector<int>{103},
