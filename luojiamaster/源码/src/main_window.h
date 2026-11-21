@@ -49,6 +49,7 @@ struct State {
     };
     std::array<UlRosterEvidence, 2> ul_roster_caps{}; // red, blue; reset on a new round
     std::optional<GameStatus> game_status;
+    std::chrono::steady_clock::time_point cup_clock_received_at{};
     std::optional<TimedMatchNotice> match_notice;
     // Global Event 15 identifies a result, without a team or robot ID.
     std::optional<uint8_t> cup_last_assembly_result;
@@ -66,6 +67,7 @@ struct State {
     std::optional<MapClickInfo> map_click_info;
     std::optional<RadarInfoToClient> radar_info_to_client;
     std::optional<TechCoreMotionStateSync> tech_core_motion_state_sync;
+    std::chrono::steady_clock::time_point cup_core_received_at{};
     std::optional<RobotPerformanceSelectionSync> robot_performance_selection_sync;
     std::optional<ReturnedPreference> shooter_return, chassis_return, sentry_return;
     std::chrono::steady_clock::time_point last_received_robot_performance_selection_sync;

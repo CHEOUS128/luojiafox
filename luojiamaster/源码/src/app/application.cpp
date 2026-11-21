@@ -168,10 +168,13 @@ public:
         if (options.local_trial) {
             mqtt_client_ = std::make_unique<RoboGo::io::MqttClient>(
                 [this, cup = options.competition](const std::string &topic, const std::string &payload) {
-                    if (cup != RoboGo::app::Competition::Ul2027) return;
                     const std::lock_guard lock(trial_writer_mutex_);
-                    if (auto reply = trial_loadout_.Reply(topic, payload)) {
-                        OnMessage("RobotPerformanceSelectionSync", *reply);
+                    if (cup == RoboGo::app::Competition::Uc2027) {
+                        cup_seat_.Receive(topic, payload);
+                    } else if (cup == RoboGo::app::Competition::Ul2027) {
+                        if (auto reply = trial_loadout_.Reply(topic, payload)) {
+                            OnMessage("RobotPerformanceSelectionSync", *reply);
+                        }
                     }
                 });
             video_stream_manager_ = std::make_unique<RoboGo::video::VideoStreamManager>(on_frame);
@@ -345,13 +348,16 @@ public:
                           RoboGo::app::Competition cup, int login_id) {
         if (!replay_) return;
         RoboGo::app::LocalSessionReplay::MatchTick tick;
-        if (cup == RoboGo::app::Competition::Ul2027) {
+        if (cup != RoboGo::app::Competition::Uc2026) {
             tick = [this, cup, login_id](int second) {
                 const std::lock_guard lock(trial_writer_mutex_);
+                const auto emit = [this](const auto &topic, const auto &payload) { OnMessage(topic, payload); };
+                if (cup == RoboGo::app::Competition::Uc2027) {
+                    cup_seat_.Tick(login_id, second, emit);
+                    return;
+                }
                 trial_loadout_.Advance(login_id, second);
-                RoboGo::app::EmitTrialMatch(cup, login_id, second, [this](const auto &topic, const auto &payload) {
-                    OnMessage(topic, payload);
-                }, trial_loadout_.chassis);
+                RoboGo::app::EmitTrialMatch(cup, login_id, second, emit, trial_loadout_.chassis);
             };
         }
         replay_->Start(start, std::move(tick));
@@ -459,6 +465,7 @@ private:
     // Serialize local referee settings and the two local writers to the SPSC queue.
     std::mutex trial_writer_mutex_;
     RoboGo::app::UlTrialLoadout trial_loadout_;
+    RoboGo::app::CupTrialSeat cup_seat_;
     std::atomic<std::uint64_t> messages_dropped_{0};
     RoboGo::app::LatestVideoFrameMailbox<VideoFrame> video_frame_queue_;
     RoboGo::app::LatestVideoFrameMailbox<VideoFrame> custom_video_frame_queue_;
@@ -794,7 +801,7 @@ int RunApplication(platform::PlatformBackend &platform_backend, const LaunchOpti
                     if (!alliance && IsCupMapSeat(login_id)) enter_game_mode();
                     SPDLOG_INFO("本地测试开始 robot_id={}", login_id);
                 }
-                if (options.competition != Competition::Ul2027) {
+                if (options.competition == Competition::Uc2026) {
                     const int seconds = static_cast<int>(std::chrono::duration_cast<std::chrono::seconds>(
                         std::chrono::steady_clock::now() - trial_start).count());
                     if (seconds != trial_second) {

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "app/application_types.h"
+#include "app/cup_role_status.h"
 
 namespace RoboGo::app {
 
@@ -72,8 +73,27 @@ inline GameStatus TrialClock(Competition competition, int elapsed_seconds) {
     return clock;
 }
 
-inline GameStatus CupTrialClock(int elapsed_seconds) {
-    return TrialClock(Competition::Uc2027, elapsed_seconds);
+// Each interactive UC round has time to open the menu before the 39-second
+// match excerpt. The operator and commander share this clock.
+inline constexpr int kCupTrialPreparationSeconds = 25;
+inline constexpr int kCupTrialPeriod = kCupTrialPreparationSeconds + kTrialRoundSeconds;
+
+inline int CupTrialExcerptSecond(int second) {
+    return second / kCupTrialPeriod * kTrialRoundSeconds +
+           std::max(0, second % kCupTrialPeriod - kCupTrialPreparationSeconds);
+}
+
+inline GameStatus CupTrialClock(int second) {
+    if (second < 0) return {};
+    GameStatus clock = TrialClock(Competition::Uc2027, CupTrialExcerptSecond(second));
+    const int phase_second = second % kCupTrialPeriod;
+    if (phase_second < kCupTrialPreparationSeconds) {
+        constexpr int self_check_start = kCupTrialPreparationSeconds - 3;
+        const bool preparing = phase_second < self_check_start;
+        clock.set_current_stage(preparing ? 1 : 2);
+        clock.set_stage_countdown_sec((preparing ? self_check_start : kCupTrialPreparationSeconds) - phase_second);
+    }
+    return clock;
 }
 
 inline void FillCupTrialScore(GlobalUnitStatus &units, bool blue, int tick) {
@@ -172,13 +192,14 @@ inline void EmitUlHudSample(int id, int tick, int chassis, const TrialMessageSin
 
 // A short, repeatable end-of-round excerpt. Video uses its own recorded timestamps.
 inline void EmitTrialMatch(Competition competition, int robot_id, int elapsed_seconds,
-                           const TrialMessageSink &emit, int chassis = 0) {
+                           const TrialMessageSink &emit, int chassis = 0,
+                           const GameStatus *session_clock = nullptr) {
     if (elapsed_seconds < 0 || robot_id <= 0) return;
     const int tick = elapsed_seconds % kTrialRoundSeconds;
     const bool ul = competition == Competition::Ul2027;
     const bool cup = competition == Competition::Uc2027;
-    if (chassis == 0) chassis = DefaultUlChassis(robot_id);
-    const GameStatus clock = TrialClock(competition, elapsed_seconds);
+    if (ul && chassis == 0) chassis = DefaultUlChassis(robot_id);
+    const GameStatus clock = session_clock ? *session_clock : TrialClock(competition, elapsed_seconds);
     emit("GameStatus", clock.SerializeAsString());
 
     RobotStaticStatus identity;
@@ -192,9 +213,17 @@ inline void EmitTrialMatch(Competition competition, int robot_id, int elapsed_se
         if (robot_id % 100 == 3) identity.set_performance_system_chassis(chassis);
         identity.set_max_heat(100);
         identity.set_max_buffer_energy(100);
-    } else if (cup && tick >= 3) {
+    } else if (cup && (tick >= 3 || chassis != 0)) {
         const int role = robot_id % 100;
-        if (role == 3 || role == 4) identity.set_performance_system_chassis(role == 3 ? 2 : 1);
+        if (tick >= 3) {
+            identity.set_alive_state(TrialHealth(robot_id, tick) ? 1 : 2);
+            if (role == 3 || role == 4) identity.set_level(1);
+        }
+        if (role == 3 || role == 4) {
+            // The old recorded example has a preset for each seat. The
+            // interactive mock referee supplies its own actual selection.
+            identity.set_performance_system_chassis(chassis ? chassis : (role == 3 ? 2 : 1));
+        }
     }
     emit("RobotStaticStatus", identity.SerializeAsString());
     if (!ul && tick < 3) return;
@@ -223,11 +252,105 @@ inline void EmitTrialMatch(Competition competition, int robot_id, int elapsed_se
         GlobalLogisticsStatus logistics;
         // Only the separate logistics message says which team's level has changed.
         logistics.set_tech_level(robot_id < 100 && tick >= 19 ? 1 : 0);
+        logistics.set_remaining_economy(1000);
         emit("GlobalLogisticsStatus", logistics.SerializeAsString());
         RobotDynamicStatus body;
         body.set_current_health(TrialHealth(robot_id, tick));
+        body.set_can_remote_heal(body.current_health() > 0 && tick >= 16 && tick < 33);
         emit("RobotDynamicStatus", body.SerializeAsString());
+        RobotRespawnStatus revival;
+        const bool waiting = body.current_health() == 0;
+        revival.set_is_pending_respawn(waiting);
+        revival.set_can_free_respawn(false);  // This last-minute excerpt ends before Blue 3 earns a free return.
+        revival.set_can_pay_for_respawn(waiting);
+        if (waiting) revival.set_gold_cost_for_respawn(580); // Last minute, level 1, table 5-7.
+        emit("RobotRespawnStatus", revival.SerializeAsString());
         EmitCupTrialEvent(tick, emit);
     }
 }
+
+class CupTrialSeat {
+public:
+    bool Receive(const std::string &topic, const std::string &payload) {
+        if (topic == "AssemblyCommand") return QueueAssembly(payload);
+        if (topic != "RobotPerformanceSelectionCommand" || !can_change_) return false;
+        RobotPerformanceSelectionCommand request;
+        if (!request.ParseFromString(payload) || !request.has_chassis() ||
+            (request.chassis() != 1 && request.chassis() != 2)) return false;
+        pending_chassis_ = static_cast<int>(request.chassis());
+        return true;
+    }
+
+    void Tick(int seat, int second, const TrialMessageSink &emit) {
+        if (second < 0 || seat <= 0) {
+            *this = {};
+            return;
+        }
+        const int round = second / kCupTrialPeriod;
+        if (seat_ != seat || round_ != round) {
+            *this = {};
+            seat_ = seat;
+            round_ = round;
+        }
+        const GameStatus clock = CupTrialClock(second);
+        const auto stage = clock.current_stage();
+        const bool infantry = seat == 3 || seat == 4 || seat == 103 || seat == 104;
+        can_change_ = infantry && !clock.is_paused() && CupChassisStage(stage);
+        if (pending_chassis_) chassis_ = *pending_chassis_;
+        if (infantry && !chassis_ && stage >= 4) chassis_ = 1;
+        EmitTrialMatch(Competition::Uc2027, seat, CupTrialExcerptSecond(second), emit, chassis_, &clock);
+        const bool heavy = seat == 1 || seat == 101;
+        assembly_open_ = heavy && stage == 4 && !clock.is_paused();
+        if (heavy && stage == 4) {
+            if (pending_assembly_) {
+                if (*pending_assembly_ == 0) {
+                    basic_state_ = 2;
+                    started_with_remaining_ = clock.stage_countdown_sec();
+                } else {
+                    basic_state_ = 1;
+                }
+                pending_assembly_.reset();
+            }
+            if (basic_state_ == 2 && started_with_remaining_ - clock.stage_countdown_sec() >= 2) basic_state_ = 3;
+            TechCoreMotionStateSync core;
+            core.set_maximum_difficulty_level(1);
+            core.set_basic_state(basic_state_);
+            core.set_putin_state(basic_state_ == 3 ? 1 : 0);
+            core.set_move_state(0);
+            core.set_rotate_state(0);
+            emit("TechCoreMotionStateSync", core.SerializeAsString());
+        }
+        if (pending_chassis_) {
+            RobotPerformanceSelectionSync sync;
+            sync.set_chassis(*pending_chassis_);
+            emit("RobotPerformanceSelectionSync", sync.SerializeAsString());
+            pending_chassis_.reset();
+        }
+    }
+
+private:
+    bool QueueAssembly(const std::string &payload) {
+        if (!assembly_open_ || pending_assembly_) return false;
+        AssemblyCommand request;
+        if (!request.ParseFromString(payload) || !request.has_operation()) return false;
+        const auto action = request.operation();
+        const bool start = action == 0 && basic_state_ == 1 &&
+                           request.has_difficulty() && request.difficulty() == 1;
+        const bool confirm = action == 1 && basic_state_ == 3;
+        const bool cancel = action == 2 && basic_state_ != 1;
+        if (!start && !confirm && !cancel) return false;
+        pending_assembly_ = action;
+        return true;
+    }
+
+    int seat_ = 0;
+    int round_ = -1;
+    int chassis_ = 0;
+    bool can_change_ = false;
+    std::optional<int> pending_chassis_;
+    bool assembly_open_ = false;
+    uint32_t basic_state_ = 1;
+    int started_with_remaining_ = 0;
+    std::optional<uint32_t> pending_assembly_;
+};
 } // namespace RoboGo::app

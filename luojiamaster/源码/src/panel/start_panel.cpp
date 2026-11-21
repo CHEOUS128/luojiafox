@@ -1,4 +1,7 @@
 #include "start_panel.h"
+#include "app/cup_role_status.h"
+#include "panel/cup_assembly_menu.h"
+#include "panel/cup_recovery_menu.h"
 #include "panel/brand_mark.h"
 #include "keyboard_mouse_state_manager.h"
 #include "logging/logging.h"
@@ -181,6 +184,11 @@ struct MenuInputs {
     AssemblyPanelState assembly;
     DartPanelState dart;
     PerformancePanelState performance;
+    CupAssemblyMenuState cup_assembly;
+    luojiamaster::cup_menu::CupRecoveryUi cup_recovery;
+    std::optional<ReturnedPreference> cup_chassis_request;
+    uint32_t cup_robot = 0;
+    uint64_t cup_round = 0;
 };
 MenuInputs menu_inputs;
 
@@ -1281,6 +1289,69 @@ void ShowMouseSensitivityRow() {
     }
 }
 
+void ShowCupChassis(const State &state, RoboGo::io::MqttClient &client, bool can_select, bool local_trial) {
+    using RoboGo::app::CupChassisName;
+    const auto &robot = *state.robot_static_status;
+    const std::string actual = robot.has_performance_system_chassis()
+        ? CupChassisName(robot.performance_system_chassis()) : "等待上报";
+    ImGui::Text("本车底盘  %s", actual.c_str());
+    ImGui::TextDisabled("赛前可选，开赛后锁定。未选时规则默认血量优先。");
+    const auto &request = menu_inputs.cup_chassis_request;
+    const auto now = std::chrono::steady_clock::now();
+    const bool ready = !request || now - request->received_at >= std::chrono::milliseconds(100);
+    ImGui::BeginDisabled(!can_select || !ready);
+    for (uint32_t option : {1u, 2u}) {
+        if (option == 2) ImGui::SameLine();
+        if (ImGui::Button(CupChassisName(option).c_str())) {
+            RobotPerformanceSelectionCommand command;
+            command.set_chassis(option);  // Optional fields: send only the choice that was clicked.
+            menu_inputs.cup_chassis_request = ReturnedPreference{option, std::chrono::steady_clock::now()};
+            PublishProto(client, "RobotPerformanceSelectionCommand", command);
+        }
+    }
+    ImGui::EndDisabled();
+    const auto &sync = state.chassis_return;
+    if (request) {
+        const bool newer = sync && sync->received_at > request->received_at;
+        const std::string status = !newer ? "等待状态同步" :
+            sync->value == request->value ? "回传值一致" : "回传值不同：" + CupChassisName(sync->value);
+        ImGui::TextWrapped("申请：%s  ·  %s%s", CupChassisName(request->value).c_str(),
+                           local_trial ? "本地测试 / " : "", status.c_str());
+    } else if (sync) {
+        ImGui::Text("最近同步：%s", CupChassisName(sync->value).c_str());
+    }
+}
+
+void ShowCupRoleMenu(const State &state, RoboGo::io::MqttClient &client, bool local_trial) {
+    const uint32_t robot = GetCurrentRobotId(state);
+    if (robot != menu_inputs.cup_robot || state.round_generation != menu_inputs.cup_round) {
+        menu_inputs.cup_chassis_request.reset();
+        menu_inputs.cup_robot = robot;
+        menu_inputs.cup_round = state.round_generation;
+    }
+    if (!IsOneOf(robot, 1, 3, 4, 101, 103, 104) || client.get_client_id() != std::to_string(robot)) {
+        ImGui::TextUnformatted("等待裁判同步本席身份");
+        return;
+    }
+    const auto &game = state.game_status;
+    const bool fresh = game && std::chrono::steady_clock::now() - state.cup_clock_received_at < std::chrono::seconds(4);
+    const bool running = fresh && game->has_is_paused() && !game->is_paused() && game->has_current_stage();
+    constexpr std::array<const char *,6> names{"未开赛", "准备阶段", "裁判自检", "开赛倒计时", "比赛中", "结算"};
+    const auto stage = game && game->has_current_stage() ? game->current_stage() : 6u;
+    const char *phase = !fresh || stage >= names.size() ? "等待比赛阶段" :
+                        !game->has_is_paused() ? "等待暂停状态" :
+                        game->is_paused() ? "比赛暂停" : names[stage];
+    const bool heavy = robot % 100 == 1;
+    ImGui::TextColored(ImVec4(1.f, .82f, .45f, 1.f), "%s%s %u 号  /  %s",
+                       robot >= 100 ? "蓝方" : "红方", heavy ? "重装" : "步兵", robot % 100, phase);
+    ImGui::Separator();
+    const bool in_play = running && stage == 4;
+    if (heavy) ShowCupAssemblyMenu(state, client, in_play, menu_inputs.cup_assembly);
+    else ShowCupChassis(state, client, running && RoboGo::app::CupChassisStage(stage), local_trial);
+    ImGui::Spacing();
+    luojiamaster::cup_menu::DrawCupRecovery(state, client, menu_inputs.cup_recovery, local_trial);
+}
+
 MenuAction ShowMenuFooter(RoboGo::io::MqttClient &client, bool local_trial, bool over_ul_desk, Competition competition) {
     const bool logged_in = client.get_connection_state() == RoboGo::io::MqttClient::ConnectionState::Connected;
     const float width = std::max(1.f, (ImGui::GetContentRegionAvail().x - ImGui::GetStyle().ItemSpacing.x) * .5f);
@@ -1288,7 +1359,7 @@ MenuAction ShowMenuFooter(RoboGo::io::MqttClient &client, bool local_trial, bool
     if (ImGui::Button("返回赛事选择", size)) return MenuAction::ReturnToEvents;
     ImGui::SameLine();
     ScopedStyle primary_button_style = MakeEnterGameButtonStyle();
-    const char *label = logged_in ? (over_ul_desk ? "回到比赛画面" : "进入比赛")
+    const char *label = logged_in ? (over_ul_desk || competition == Competition::Uc2027 ? "回到比赛画面" : "进入比赛")
                                   : (local_trial ? "开始测试" : "登录");
     if (ImGui::Button(label, size)) {
         if (!logged_in) {
@@ -1341,7 +1412,11 @@ MenuAction StartPanel(const State &state, RoboGo::io::MqttClient &client, bool l
     // Raise the menu above HUD windows without stealing focus from its input fields.
     ImGui::BringWindowToDisplayFront(ImGui::GetCurrentWindow());
     MenuAction action = MenuAction::None;
-    if (over_ul_desk) {
+    const bool cup_menu = state.competition == Competition::Uc2027 &&
+        client.get_connection_state() == RoboGo::io::MqttClient::ConnectionState::Connected;
+    if (cup_menu) {
+        ImGui::Text("2027 超级对抗赛  /  岗位菜单  /  %s", local_trial ? "本地测试" : "正式登录");
+    } else if (over_ul_desk) {
         ImGui::TextUnformatted("比赛菜单");
         ImGui::SameLine();
         ImGui::TextDisabled("兑换、回血和复活均为申请，结果由裁判端回传");
@@ -1357,8 +1432,9 @@ MenuAction StartPanel(const State &state, RoboGo::io::MqttClient &client, bool l
     ImGui::Separator();
     const float footer = kPrimaryActionButtonHeight * ImGui::GetScale() + ImGui::GetStyle().ItemSpacing.y;
     if (ImGui::BeginChild("比赛菜单内容", ImVec2(0, -footer))) {
-        if (ShowTeamRobotSelection(client, local_trial, state.competition, over_ul_desk)) action = MenuAction::ReturnToEvents;
-        if (client.get_connection_state() == RoboGo::io::MqttClient::ConnectionState::Connected) {
+        if (cup_menu) ShowCupRoleMenu(state, client, local_trial);
+        if (ShowTeamRobotSelection(client, local_trial, state.competition, over_ul_desk || cup_menu)) action = MenuAction::ReturnToEvents;
+        if (!cup_menu && client.get_connection_state() == RoboGo::io::MqttClient::ConnectionState::Connected) {
             const StartPanelVisibility visibility = GetStartPanelVisibility(state);
             ShowAmmoAssemblyDeployRow(state, client, visibility);
             ShowRecoverReviveRow(state, client, visibility);

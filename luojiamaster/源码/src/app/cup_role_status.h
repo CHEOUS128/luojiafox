@@ -9,6 +9,11 @@
 
 namespace RoboGo::app {
 
+inline bool CupChassisStage(std::uint32_t stage) {
+    // Preparation and referee self-check. Close submissions during the final countdown.
+    return stage == 1 || stage == 2;
+}
+
 // UC 2027 protocol §2.2.7: event 15 is a public result, without a team or a robot ID.
 inline std::optional<std::uint8_t> CupAssemblyResultCode(std::string_view param) {
     if (param.empty()) return std::nullopt;

@@ -26,13 +26,16 @@ int EmitFixture(const char *id_arg, const char *duration_arg, std::string_view e
                          (event == "uc2027" && (id == 4 || id == 104));
     if (!allowed || duration == 0 || duration > 3600) return 2;
     const Competition competition = event == "uc2027" ? Competition::Uc2027 : Competition::Ul2027;
+    CupTrialSeat cup_seat;
     for (int second = 0; second < duration; ++second) {
-        EmitTrialMatch(competition, id, second, [&](const std::string &topic, const std::string &bytes) {
+        const auto emit = [&](const std::string &topic, const std::string &bytes) {
             static constexpr char hex[] = "0123456789abcdef";
             std::cout << second << ' ' << topic << ' ';
             for (unsigned char byte : bytes) std::cout << hex[byte >> 4] << hex[byte & 15];
             std::cout << '\n';
-        });
+        };
+        if (competition == Competition::Uc2027) cup_seat.Tick(id, second, emit);
+        else EmitTrialMatch(competition, id, second, emit);
     }
     return std::cout ? 0 : 1;
 }
@@ -372,6 +375,102 @@ int main(int argc, char **argv) {
         check(!state.global_logistics_status && !state.cup_last_assembly_result &&
               !state.robot_static_status->has_performance_system_chassis(), "UC new round clears prior role data");
     }
-    if (!failures) std::cout << "UL and legacy fixtures passed. UC 2027: six seats, scoreboard, chassis, tech levels, assembly results and round reset passed\n";
+    {
+        for (const int seat : {3, 4, 103, 104}) {
+            CupTrialSeat ref;
+            RobotStaticStatus self;
+            RobotPerformanceSelectionSync receipt;
+            GameStatus stage;
+            int receipts = 0;
+            const auto emit = [&](const std::string &topic, const std::string &bytes) {
+                if (topic == "RobotStaticStatus") check(self.ParseFromString(bytes), "cup menu identity");
+                if (topic == "GameStatus") check(stage.ParseFromString(bytes), "cup menu stage");
+                if (topic == "RobotPerformanceSelectionSync") {
+                    ++receipts;
+                    check(receipt.ParseFromString(bytes), "cup menu receipt");
+                }
+            };
+            RobotPerformanceSelectionCommand selection;
+            selection.set_chassis(2);
+            auto send = [&] { return ref.Receive(request_topic, selection.SerializeAsString()); };
+            check(!send(), "unsigned seat cannot submit");
+            ref.Tick(seat, 0, emit);
+            check(stage.current_stage() == 1 && !self.has_performance_system_chassis(),
+                  "cup preparation starts awaiting hardware profile");
+            selection.set_chassis(0);
+            check(!send(), "zero chassis is invalid");
+            selection.set_chassis(2);
+            check(send() && receipts == 0, "cup submitted but still awaiting independent receipt");
+            ref.Tick(seat, 1, emit);
+            check(receipts == 1 && receipt.has_chassis() && receipt.chassis() == 2 &&
+                  !receipt.has_shooter() && !receipt.has_sentry_control() &&
+                  self.robot_id() == static_cast<uint32_t>(seat) && self.performance_system_chassis() == 2,
+                  "cup four infantry seats receive only the requested chassis field");
+            ref.Tick(seat, 22, emit);
+            check(stage.current_stage() == 2 && send(), "self-check still allows selection");
+            for (int second : {25, 28, 34, 39, 58}) {
+                ref.Tick(seat, second, emit);
+                check(!send(), "countdown, active, paused and settled phases lock selection");
+                check(self.performance_system_chassis() == 2, "chosen profile survives throughout its round");
+            }
+            ref.Tick(seat, kCupTrialPeriod, emit);
+            check(stage.current_round() == 2 && stage.current_stage() == 1 &&
+                  !self.has_performance_system_chassis(), "next round clears previous selection");
+            ref.Tick(seat, kCupTrialPeriod + 28, emit);
+            check(self.performance_system_chassis() == 1, "cup default health chassis when no choice made");
+            ref.Tick(seat, kCupTrialPeriod * 2, emit);
+            check(send(), "queued selection before seat change");
+            const int previous_receipts = receipts;
+            ref.Tick(1, kCupTrialPeriod * 2 + 1, emit);
+            check(!send() && !self.has_performance_system_chassis() && receipts == previous_receipts,
+                  "heavy seat cannot submit or inherit previous infantry request");
+        }
+        CupTrialSeat ref;
+        TechCoreMotionStateSync core;
+        RobotRespawnStatus revival;
+        const auto emit = [&](const std::string &topic, const std::string &bytes) {
+            if (topic == "TechCoreMotionStateSync") check(core.ParseFromString(bytes), "cup local prop state");
+            if (topic == "RobotRespawnStatus") check(revival.ParseFromString(bytes), "cup local revival state");
+        };
+        AssemblyCommand operation;
+        auto send = [&] { return ref.Receive("AssemblyCommand", operation.SerializeAsString()); };
+        for (int seat : {1, 101}) {
+            ref.Tick(seat, 0, emit);
+            operation.set_operation(0);
+            operation.set_difficulty(1);
+            check(!send(), "cup assembly waits for an active match");
+            ref.Tick(seat, 28, emit);
+            operation.set_difficulty(2);
+            check(core.basic_state() == 1 && core.maximum_difficulty_level() == 1 && !send(),
+                  "cup mock prop only offers its published level");
+            operation.set_difficulty(1);
+            check(send() && !send(), "cup assembly begins once");
+            ref.Tick(seat, 29, emit);
+            check(core.basic_state() == 2 && core.putin_state() == 0, "cup local prop reports motion");
+            operation.clear_difficulty();
+            operation.set_operation(1);
+            check(!send(), "cannot confirm while prop moving");
+            ref.Tick(seat, 31, emit);
+            check(core.basic_state() == 3 && core.putin_state() == 1 && send(),
+                  "cup reached and inserted prop can be confirmed");
+            ref.Tick(seat, 32, emit);
+            check(core.basic_state() == 1 && !send(), "cup confirmation returns prop to idle");
+            operation.set_operation(0);
+            operation.set_difficulty(1);
+            check(send(), "cup assembly starts again");
+            ref.Tick(seat, 33, emit);
+            ref.Tick(seat, 34, emit);
+            operation.set_operation(2);
+            check(core.basic_state() == 2 && !send(), "cup pause prevents cancellation");
+            ref.Tick(seat, 39, emit);
+            check(core.basic_state() == 2 && send(), "prop clock held during pause, can now cancel");
+            ref.Tick(seat, 40, emit);
+            check(core.basic_state() == 1 && !send(), "cancel resets activity on next tick");
+        }
+        ref.Tick(103, 32, emit);
+        check(revival.has_is_pending_respawn() && revival.is_pending_respawn() &&
+              !ref.Receive("AssemblyCommand", operation.SerializeAsString()), "different seat has independent status");
+    }
+    if (!failures) std::cout << "UL and legacy fixtures passed. UC 2027: six seats, scoreboard, chassis, tech levels, assembly, menu phases, referee sync and round reset passed\n";
     return failures ? 1 : 0;
 }

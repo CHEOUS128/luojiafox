@@ -11,9 +11,6 @@ void ShowBottomPanel(const State &state) {
     };
 
     std::vector<StatusLine> status_lines;
-    if (state.match_notice && std::chrono::steady_clock::now() < state.match_notice->until) {
-        status_lines.push_back({state.match_notice->text, {.98f, .85f, .52f, 1.f}});
-    }
 
     // 复活状态显示
     if (state.robot_respawn_status.has_value()) {

@@ -130,6 +130,34 @@ namespace {
         return StartPanel(state, client, local_trial, over_alliance_hud, waiting);
     }
 
+    void DrawMatchNotice(const TimedMatchNotice &notice, const ImGuiViewport &view) {
+        if (notice.text.empty() || std::chrono::steady_clock::now() >= notice.until) return;
+        // One line below the scoreboard. The event log keeps the full message.
+        auto *font = ImGui::GetFont();
+        const float size = 2.f * std::round(std::clamp(std::min(view.Size.y / 42.f, view.Size.x / 62.f), 16.f, 40.f) / 2.f);
+        const float max_width = std::max(1.f, view.Size.x * .50f - size);
+        const char *start = notice.text.c_str();
+        const char *end = start + std::min(notice.text.size(), notice.text.find_first_of("\r\n"));
+        const char *visible_end = start;
+        float width = font->CalcTextSizeA(size, max_width, 0.f, start, end, &visible_end).x;
+        const bool shortened = visible_end != start + notice.text.size();
+        float suffix_width = 0.f;
+        if (shortened) {
+            suffix_width = font->CalcTextSizeA(size, FLT_MAX, 0.f, "…").x;
+            width = font->CalcTextSizeA(size, std::max(1.f, max_width - suffix_width), 0.f,
+                                        start, end, &visible_end).x;
+        }
+        const float x = view.Pos.x + (view.Size.x - width - suffix_width) * .5f;
+        const float y = view.Pos.y + view.Size.y * .21f;
+        auto *draw = ImGui::GetForegroundDrawList();
+        draw->AddRectFilled({x - .58f * size, y - .23f * size},
+                            {x + width + suffix_width + .58f * size, y + 1.23f * size},
+                            IM_COL32(12, 19, 24, 207), .27f * size);
+        constexpr auto color = IM_COL32(255, 227, 159, 255);
+        draw->AddText(font, size, {x, y}, color, start, visible_end);
+        if (shortened) draw->AddText(font, size, {x + width, y}, color, "…");
+    }
+
     constexpr float kHeroRulerSpacingPx = 200.0f;
     constexpr ImU32 kRulerLineColor = IM_COL32(180, 80, 255, 120);
     constexpr ImU32 kRulerLabelColor = IM_COL32(255, 255, 255, 180);
@@ -201,6 +229,10 @@ MainWindowActions ShowMainWindow(const State &state,
     const bool waiting_for_video = !udp_video_display_ready && !custom_video_display_ready;
 
     const bool expanded_map = map_open;
+    if (state.match_notice && !menu_open &&
+        mqtt_client.get_connection_state() == RoboGo::io::MqttClient::ConnectionState::Connected) {
+        DrawMatchNotice(*state.match_notice, *viewport);
+    }
     if (!local_trial || alliance) {
         local_cup_replay = nullptr;
         local_recordings = nullptr;
@@ -525,6 +557,7 @@ void HandleMqttMessage(State &state,
                             kInitialAirSupportCounterRemaining);
             }
             RoboGo::app::ApplyMatchClock(state, std::move(game_status));
+            state.cup_clock_received_at = received_at;
         } else {
             log_parse_failure(topic);
         }
@@ -985,6 +1018,7 @@ void HandleMqttMessage(State &state,
         if (tech_core_motion_state_sync.ParseFromString(payload)) {
             log_parse_success(topic, tech_core_motion_state_sync);
             state.tech_core_motion_state_sync = tech_core_motion_state_sync;
+            state.cup_core_received_at = received_at;
         } else {
             log_parse_failure(topic);
         }
@@ -994,6 +1028,10 @@ void HandleMqttMessage(State &state,
             log_parse_success(topic, robot_performance_selection_sync);
             state.robot_performance_selection_sync = robot_performance_selection_sync;
             state.last_received_robot_performance_selection_sync = received_at;
+            if (state.competition == RoboGo::app::Competition::Uc2027 &&
+                robot_performance_selection_sync.has_chassis()) {
+                state.chassis_return = ReturnedPreference{robot_performance_selection_sync.chassis(), received_at};
+            }
             if (state.competition == RoboGo::app::Competition::Ul2027) {
                 const auto &sync = robot_performance_selection_sync;
                 if (sync.has_shooter()) state.shooter_return = ReturnedPreference{sync.shooter(), received_at};
