@@ -95,7 +95,9 @@ inline void EmitCupTrialEvent(int tick, const TrialMessageSink &emit) {
     Event notice;
     switch (tick) {
         case 6:  notice.set_event_id(5); notice.set_param("1"); break;
+        case 8:  notice.set_event_id(15); notice.set_param("2"); break;
         case 16: notice.set_event_id(6); notice.set_param("2"); break;
+        case 19: notice.set_event_id(15); notice.set_param("0"); break;
         case 23: notice.set_event_id(7); notice.set_param("2"); break;
         case 28: notice.set_event_id(8); notice.set_param("1"); break;
         default: return;
@@ -190,6 +192,9 @@ inline void EmitTrialMatch(Competition competition, int robot_id, int elapsed_se
         if (robot_id % 100 == 3) identity.set_performance_system_chassis(chassis);
         identity.set_max_heat(100);
         identity.set_max_buffer_energy(100);
+    } else if (cup && tick >= 3) {
+        const int role = robot_id % 100;
+        if (role == 3 || role == 4) identity.set_performance_system_chassis(role == 3 ? 2 : 1);
     }
     emit("RobotStaticStatus", identity.SerializeAsString());
     if (!ul && tick < 3) return;
@@ -215,6 +220,10 @@ inline void EmitTrialMatch(Competition competition, int robot_id, int elapsed_se
     emit("GlobalUnitStatus", units.SerializeAsString());
     if (ul && tick >= 3) EmitUlHudSample(robot_id, tick, chassis, emit);
     if (cup) {
+        GlobalLogisticsStatus logistics;
+        // Only the separate logistics message says which team's level has changed.
+        logistics.set_tech_level(robot_id < 100 && tick >= 19 ? 1 : 0);
+        emit("GlobalLogisticsStatus", logistics.SerializeAsString());
         RobotDynamicStatus body;
         body.set_current_health(TrialHealth(robot_id, tick));
         emit("RobotDynamicStatus", body.SerializeAsString());

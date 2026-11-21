@@ -50,6 +50,8 @@ struct State {
     std::array<UlRosterEvidence, 2> ul_roster_caps{}; // red, blue; reset on a new round
     std::optional<GameStatus> game_status;
     std::optional<TimedMatchNotice> match_notice;
+    // Global Event 15 identifies a result, without a team or robot ID.
+    std::optional<uint8_t> cup_last_assembly_result;
     std::optional<GlobalUnitStatus> global_unit_status;
     std::optional<GlobalLogisticsStatus> global_logistics_status;
     std::optional<GlobalSpecialMechanism> global_special_mechanism;

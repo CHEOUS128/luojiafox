@@ -1,6 +1,7 @@
 #include "main_window.h"
 #include "panel/cup_map_panel.h"
 #include "app/match_values.h"
+#include "app/cup_role_status.h"
 #include "keyboard_mouse_state_manager.h"
 #include "logging/logging.h"
 #include "panel/bottom_panel.h"
@@ -636,7 +637,16 @@ void HandleMqttMessage(State &state,
             log_parse_success(topic, event);
             if (state.competition != RoboGo::app::Competition::Uc2026) {
                 if (!event.has_event_id()) return;
-                const auto text = MatchEvent2027(event, state.competition == RoboGo::app::Competition::Uc2027);
+                const bool cup = state.competition == RoboGo::app::Competition::Uc2027;
+                std::string text;
+                if (cup && event.event_id() == 15) {
+                    state.cup_last_assembly_result = RoboGo::app::CupAssemblyResultCode(event.param());
+                    text = "装配通报 · " + (state.cup_last_assembly_result
+                        ? RoboGo::app::CupAssemblyResultName(*state.cup_last_assembly_result)
+                        : std::string("结果未识别"));
+                } else {
+                    text = MatchEvent2027(event, cup);
+                }
                 state.match_notice = TimedMatchNotice{text, received_at + std::chrono::seconds(5)};
                 AppendSystemLog(state, 0, text);
                 return;

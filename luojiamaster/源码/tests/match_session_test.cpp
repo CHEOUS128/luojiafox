@@ -1,4 +1,5 @@
 #include "app/match_values.h"
+#include "app/cup_role_status.h"
 #include "app/ul_live_view.h"
 #include "app/trial_match.h"
 
@@ -291,6 +292,10 @@ int main(int argc, char **argv) {
         check(units.ParseFromString(std::string("\x48\x00", 2)) && !CupOutpostHp(state, false) &&
               CupOutpostHp(state, true) == 0u && !CupBaseHp(state, true), "field 9 zero survives while fields 1/4 are absent");
     }
+    check(CupAssemblyResultCode("0") == 0 && CupAssemblyResultCode("8") == 8 &&
+          CupAssemblyResultCode("9") == 9, "UC assembly result preserves zero and unknown codes");
+    check(!CupAssemblyResultCode("") && !CupAssemblyResultCode("2,0") && !CupAssemblyResultCode("256"),
+          "UC malformed assembly result has no value");
     for (const int seat : {1, 3, 4, 101, 103, 104}) {
         State state{};
         state.competition = Competition::Uc2027;
@@ -305,19 +310,33 @@ int main(int argc, char **argv) {
                     check(state.robot_static_status.emplace().ParseFromString(wire), "UC identity payload");
                 } else if (topic == "GlobalUnitStatus") {
                     check(state.global_unit_status.emplace().ParseFromString(wire), "UC scoreboard payload");
+                } else if (topic == "GlobalLogisticsStatus") {
+                    check(state.global_logistics_status.emplace().ParseFromString(wire), "UC logistics payload");
                 } else if (topic == "Event") {
                     Event notice;
                     check(notice.ParseFromString(wire), "UC notice payload");
                     events.emplace_back(notice.event_id(), notice.param());
+                    if (notice.event_id() == 15) state.cup_last_assembly_result = CupAssemblyResultCode(notice.param());
                 }
             });
         };
         sample(0);
         check(!CupBaseHp(state, false) && !CupOutpostHp(state, true), "UC waits for unit packet");
+        check(state.robot_static_status && !state.robot_static_status->has_performance_system_chassis() &&
+              !state.global_logistics_status && !state.cup_last_assembly_result, "UC seat waits for first role data");
         sample(3);
+        const int role = seat % 100;
+        check(state.global_logistics_status && state.global_logistics_status->has_tech_level() &&
+              state.global_logistics_status->tech_level() == 0, "UC reported starting tech level is zero");
+        if (role == 1) check(!state.robot_static_status->has_performance_system_chassis(), "UC heavy has no infantry chassis");
+        else check(state.robot_static_status->has_performance_system_chassis() &&
+                   state.robot_static_status->performance_system_chassis() == (role == 3 ? 2u : 1u),
+                   "UC confirmed chassis matches the selected infantry seat");
         check(CupBaseHp(state, true) == 10000u && CupOutpostHp(state, true) == 1000u &&
               ControlDegree2027(state, false) == 0u && ControlDegree2027(state, true) == 0u, "UC starting reserves and zero points");
         sample(6);
+        sample(8);
+        check(state.cup_last_assembly_result == 2, "UC new public assembly report: timeout");
         sample(9);
         check(state.game_status && state.game_status->is_paused() && state.game_status->stage_countdown_sec() == 19, "UC clock paused");
         const auto paused_red = ControlDegree2027(state, false);
@@ -329,9 +348,15 @@ int main(int argc, char **argv) {
         check(CupBaseHp(state, false) == 9800u && CupBaseHp(state, true) == 9250u &&
               CupOutpostHp(state, false) == 870u && CupOutpostHp(state, true) == 640u,
               "UC red/blue bases and fixed R/B outposts agree across six seats");
+        sample(19);
+        check(state.cup_last_assembly_result == 0 && state.global_logistics_status &&
+              state.global_logistics_status->has_tech_level() &&
+              state.global_logistics_status->tech_level() == (seat < 100 ? 1u : 0u),
+              "UC public assembly success and independent team-specific tech level");
         sample(23);
         sample(28);
-        const std::vector<std::pair<uint32_t, std::string>> expected_events{{5,"1"},{6,"2"},{7,"2"},{8,"1"}};
+        const std::vector<std::pair<uint32_t, std::string>> expected_events{
+            {5,"1"}, {15,"2"}, {6,"2"}, {15,"0"}, {7,"2"}, {8,"1"}};
         check(events == expected_events, "UC local notices use 2027 ids and absolute parameters");
         sample(33);
         const auto red = ControlDegree2027(state, false), blue = ControlDegree2027(state, true);
@@ -344,7 +369,9 @@ int main(int argc, char **argv) {
               !state.match_notice && state.system_logs.empty() && !state.global_unit_status &&
               state.robot_static_status && state.robot_static_status->robot_id() == static_cast<uint32_t>(seat),
               "UC new round clears prior board and notices but preserves the seat");
+        check(!state.global_logistics_status && !state.cup_last_assembly_result &&
+              !state.robot_static_status->has_performance_system_chassis(), "UC new round clears prior role data");
     }
-    if (!failures) std::cout << "UL and legacy fixtures passed. UC 2027: six operator seats, fixed R/B sites, relative base HP, missing/zero, pause, settlement and round reset passed\n";
+    if (!failures) std::cout << "UL and legacy fixtures passed. UC 2027: six seats, scoreboard, chassis, tech levels, assembly results and round reset passed\n";
     return failures ? 1 : 0;
 }

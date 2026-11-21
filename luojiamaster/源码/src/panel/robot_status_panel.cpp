@@ -1,4 +1,5 @@
 #include "robot_status_panel.h"
+#include "app/cup_role_status.h"
 #include "hud_text.h"
 
 namespace {
@@ -31,6 +32,25 @@ void Show2027Status(const State &state) {
     StatusMeter("血量", Received(d, &RobotDynamicStatus::has_current_health, &RobotDynamicStatus::current_health),
                   Received(s, &RobotStaticStatus::has_max_health, &RobotStaticStatus::max_health),
                   {1.f,.68f,.64f,1.f});
+    if (state.competition == RoboGo::app::Competition::Uc2027 && s && s->has_robot_id()) {
+        switch (s->robot_id()) {
+            case 1: case 101: {
+                const auto tech = Received(state.global_logistics_status, &GlobalLogisticsStatus::has_tech_level,
+                                           &GlobalLogisticsStatus::tech_level);
+                hud::Text(hud::white, "己方科技等级  %s", NumberOrWait(tech).c_str());
+                const auto result = state.cup_last_assembly_result;
+                const auto text = result ? RoboGo::app::CupAssemblyResultName(*result) : "等待";
+                hud::Text(hud::white, "最近装配通报  %s", text.c_str());
+                break;
+            }
+            case 3: case 4: case 103: case 104: {
+                const auto chassis = s->has_performance_system_chassis()
+                    ? RoboGo::app::CupChassisName(s->performance_system_chassis()) : "等待";
+                hud::Text(hud::white, "本车底盘  %s", chassis.c_str());
+                break;
+            }
+        }
+    }
     StatusMeter("缓冲能量", Received(d, &RobotDynamicStatus::has_current_buffer_energy, &RobotDynamicStatus::current_buffer_energy),
                   Received(s, &RobotStaticStatus::has_max_buffer_energy, &RobotStaticStatus::max_buffer_energy),
                   {.6f,.85f,1.f,1.f});
