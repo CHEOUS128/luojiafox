@@ -36,6 +36,49 @@ namespace {
         return std::nullopt;
     }
 
+    std::string MatchEvent2027(const Event &event, bool cup) {
+        const auto &param = event.param();
+        if (event.event_id() == 1) {
+            // The defeated robot is first on the wire.
+            if (auto robots = SplitByComma(param)) {
+                const auto name = [](const std::string &id) {
+                    if (id == "1" || id == "101") return std::string(id == "1" ? "红方重装" : "蓝方重装");
+                    return GetRobotName(id);
+                };
+                return name(robots->second) + " 击败了 " + name(robots->first);
+            }
+        } else if (cup) {
+            // These event parameters name absolute sides in protocol §2.2.7.
+            // Unlike the GlobalUnitStatus control-state enums, they do not depend on the login.
+            switch (event.event_id()) {
+                case 2:
+                    if (param == "11") return "R 前哨站已被摧毁";
+                    if (param == "111") return "B 前哨站已被摧毁";
+                    break;
+                case 5:
+                case 6: {
+                    const std::string site = event.event_id() == 5 ? "R 前哨阵地" : "B 前哨阵地";
+                    if (param == "1") return "红方临时控制" + site;
+                    if (param == "2") return "红方完全控制" + site;
+                    if (param == "3") return "蓝方临时控制" + site;
+                    if (param == "4") return "蓝方完全控制" + site;
+                    break;
+                }
+                case 7:
+                    if (param == "1") return "红方完全控制 R 基地阵地";
+                    if (param == "2") return "蓝方临时控制 R 基地阵地";
+                    break;
+                case 8:
+                    if (param == "1") return "蓝方完全控制 B 基地阵地";
+                    if (param == "2") return "红方临时控制 B 基地阵地";
+                    break;
+            }
+        }
+        auto text = "比赛事件 " + std::to_string(event.event_id());
+        if (!param.empty()) text += " · " + param;
+        return text;
+    }
+
     void AppendLogBuffer(State &state, std::vector<LogEntry> &buffer, int type, const std::string &text) {
         LogEntry log_entry;
         time_t now = time(nullptr);
@@ -261,7 +304,7 @@ MainWindowActions ShowMainWindow(const State &state,
     bool open_menu = false;
     if (alliance) {
         open_menu = ShowAllianceHeader(state, local_trial, blue, heavy);
-    } else ShowHeaderPanel(state);
+    } else ShowHeaderPanel(state, local_trial);
 
     const float legacy_status_height = font_size * 10 + style.SeparatorSize + 4.0f * 4 + style.ItemSpacing.y * 10 + style.WindowPadding.y * 2;
     const float robot_status_panel_height = alliance ? std::min(legacy_status_height, (viewport->Size.y-left_panel_top)*.49f)
@@ -366,7 +409,7 @@ MainWindowActions ShowMainWindow(const State &state,
     ImGui::PopItemFlag();
     if (menu_open) menu_action = DrawCenteredMenu(state, mqtt_client, local_trial, waiting_for_video, alliance);
 
-    if (!alliance && local_trial && is_in_game_mode()) {
+    if (!alliance && !cup_2027 && local_trial && is_in_game_mode()) {
         const ImVec2 p(viewport->Pos.x + style.WindowPadding.x, viewport->Pos.y + style.WindowPadding.y);
         ImGui::GetForegroundDrawList()->AddText(p, IM_COL32(246,207,105,255), "本地测试");
     }
@@ -475,7 +518,7 @@ void HandleMqttMessage(State &state,
             const bool was_playing = state.game_status.has_value()
                                      && state.game_status->current_stage() == kGameStagePlaying;
             const bool is_playing = game_status.current_stage() == kGameStagePlaying;
-            if (!was_playing && is_playing) {
+            if (state.competition == RoboGo::app::Competition::Uc2026 && !was_playing && is_playing) {
                 ResetAirSupportCounterForMatchStart(state.air_support_custom_control);
                 SPDLOG_INFO("比赛开始，空中支援剩余反制次数初始化为{}",
                             kInitialAirSupportCounterRemaining);
@@ -591,28 +634,18 @@ void HandleMqttMessage(State &state,
         Event event;
         if (event.ParseFromString(payload)) {
             log_parse_success(topic, event);
+            if (state.competition != RoboGo::app::Competition::Uc2026) {
+                if (!event.has_event_id()) return;
+                const auto text = MatchEvent2027(event, state.competition == RoboGo::app::Competition::Uc2027);
+                state.match_notice = TimedMatchNotice{text, received_at + std::chrono::seconds(5)};
+                AppendSystemLog(state, 0, text);
+                return;
+            }
             LogEntry log_entry;
             time_t now = time(nullptr);
             tm *timeinfo = localtime(&now);
             strftime(log_entry.time, sizeof(log_entry.time), "%H:%M:%S", timeinfo);
             log_entry.type = 0;
-            if (state.competition == RoboGo::app::Competition::Ul2027) {
-                // 2027 Event 1 carries the defeated robot first, followed by the victor.
-                const auto robots = SplitByComma(event.param());
-                if (event.event_id() == 1 && robots) {
-                    const auto name = [](const std::string &id) {
-                        if (id == "1" || id == "101") return std::string(id == "1" ? "红方重装" : "蓝方重装");
-                        return GetRobotName(id);
-                    };
-                    log_entry.text = name(robots->second) + " 击败了 " + name(robots->first);
-                } else {
-                    log_entry.text = "比赛事件 " + std::to_string(event.event_id());
-                    if (!event.param().empty()) log_entry.text += " · " + event.param();
-                }
-                state.match_notice = TimedMatchNotice{log_entry.text, std::chrono::steady_clock::now() + std::chrono::seconds(5)};
-                AppendSystemLog(state, 0, log_entry.text);
-                return;
-            }
             switch (event.event_id()) {
                 case 1: {
                     // 击杀事件（参数 1 为被击杀者，参数 2 为击杀者，如"1,101"，代表蓝方英雄击击毁红方英雄）

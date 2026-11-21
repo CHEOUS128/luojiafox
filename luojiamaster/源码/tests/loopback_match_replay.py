@@ -1,4 +1,4 @@
-"""Serve one UL trial to the Windows client's official login on this PC (Python 3).
+"""Serve a 2027 match fixture to the Windows client's official login on this PC.
 
 TCP MQTT 3.1.1 and UDP both use 127.0.0.1. No client application messages
 are applied or forwarded. Pass --check to validate the inputs without networking.
@@ -50,8 +50,8 @@ def recording(path):
     return [(us - first, topic, data) for us, topic, data in merged], period_us
 
 
-def match_messages(exe, role, seconds):
-    result = subprocess.run([str(exe), "--emit-fixture", str(role), str(seconds)],
+def match_messages(exe, role, seconds, competition):
+    result = subprocess.run([str(exe), "--emit-fixture", str(role), str(seconds), competition],
                             check=True, capture_output=True, text=True, encoding="ascii", timeout=20)
     ticks = [[] for _ in range(seconds)]
     for line in result.stdout.splitlines():
@@ -105,13 +105,14 @@ def mqtt_string(data, i):
     return data[i+2:end], end
 
 
-def handshake(conn):
+def handshake(conn, competition):
     header, body = mqtt_read(conn)
     if header != 0x10 or body[:7] != b"\x00\x04MQTT\x04":
         raise ValueError("Expected MQTT 3.1.1 CONNECT")
     role = int(mqtt_string(body, 10)[0])
-    if role not in (1, 3, 101, 103):
-        raise ValueError("Use a UL player role")
+    roles = (1, 3, 4, 101, 103, 104) if competition == "uc2027" else (1, 3, 101, 103)
+    if role not in roles:
+        raise ValueError(f"Use an operator role for {competition}")
     conn.sendall(mqtt_packet(0x20, bytes(2)))
     header, body = mqtt_read(conn)
     if header != 0x82:
@@ -129,8 +130,8 @@ def handshake(conn):
 
 
 def run_session(conn, udp, events, period, args):
-    role, subscriptions = handshake(conn)
-    ticks = match_messages(args.fixture_exe, role, args.seconds)
+    role, subscriptions = handshake(conn, args.competition)
+    ticks = match_messages(args.fixture_exe, role, args.seconds, args.competition)
     sent_topics = {topic for tick in ticks for topic, _ in tick} | {CBB}
     if not sent_topics <= subscriptions:
         raise ValueError(f"Missing official subscriptions: {sent_topics - subscriptions}")
@@ -216,6 +217,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--capture", type=Path, default=HERE / "fixtures" / "双路视频样本.bin")
     parser.add_argument("--fixture-exe", type=Path, default=HERE.parent / "build/release/match_session_test.exe")
+    parser.add_argument("--competition", choices=("ul2027", "uc2027"), default="ul2027")
     parser.add_argument("--mqtt-port", type=int, default=59335)
     parser.add_argument("--video-port", type=int, default=59336)
     parser.add_argument("--seconds", type=int, default=180)
@@ -231,8 +233,8 @@ def main():
         packets = [p for _, topic, p in events if topic == lane]
         print(f"{lane.decode()}: records={len(packets)} wire_sha256={hashlib.sha256(b''.join(packets)).hexdigest()}")
     if args.check:
-        ticks = match_messages(args.fixture_exe, 3, args.seconds)
-        print(f"ticks={len(ticks)} messages={sum(map(len,ticks))} period_us={period}")
+        ticks = match_messages(args.fixture_exe, 3, args.seconds, args.competition)
+        print(f"competition={args.competition} ticks={len(ticks)} messages={sum(map(len,ticks))} period_us={period}")
         return
     with socket.socket() as srv, socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as udp:
         srv.bind((HOST, args.mqtt_port))

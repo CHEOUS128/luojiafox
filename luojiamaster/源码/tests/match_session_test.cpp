@@ -17,12 +17,16 @@ int ReadPositive(std::string_view value) {
 }
 
 // Loopback QA feeds these exact bytes to the standard MQTT subscriber.
-int EmitFixture(const char *id_arg, const char *duration_arg) {
+int EmitFixture(const char *id_arg, const char *duration_arg, std::string_view event) {
+    if (event != "ul2027" && event != "uc2027") return 2;
     const int id = ReadPositive(id_arg);
     const int duration = ReadPositive(duration_arg);
-    if ((id != 1 && id != 3 && id != 101 && id != 103) || duration == 0 || duration > 3600) return 2;
+    const bool allowed = id == 1 || id == 3 || id == 101 || id == 103 ||
+                         (event == "uc2027" && (id == 4 || id == 104));
+    if (!allowed || duration == 0 || duration > 3600) return 2;
+    const Competition competition = event == "uc2027" ? Competition::Uc2027 : Competition::Ul2027;
     for (int second = 0; second < duration; ++second) {
-        EmitTrialMatch(Competition::Ul2027, id, second, [&](const std::string &topic, const std::string &bytes) {
+        EmitTrialMatch(competition, id, second, [&](const std::string &topic, const std::string &bytes) {
             static constexpr char hex[] = "0123456789abcdef";
             std::cout << second << ' ' << topic << ' ';
             for (unsigned char byte : bytes) std::cout << hex[byte >> 4] << hex[byte & 15];
@@ -34,7 +38,8 @@ int EmitFixture(const char *id_arg, const char *duration_arg) {
 }
 
 int main(int argc, char **argv) {
-    if (argc == 4 && std::string_view(argv[1]) == "--emit-fixture") return EmitFixture(argv[2], argv[3]);
+    if ((argc == 4 || argc == 5) && std::string_view(argv[1]) == "--emit-fixture")
+        return EmitFixture(argv[2], argv[3], argc == 5 ? argv[4] : "ul2027");
     if (argc != 1) return 2;
     int failures = 0;
     auto check = [&](bool result, const char *name) {
@@ -267,6 +272,79 @@ int main(int argc, char **argv) {
         check(state.global_unit_status && state.global_unit_status->robot_health_size() == 10, "legacy roster");
         check(!state.robot_dynamic_status && !state.robot_module_status, "legacy fixture preserved");
     }
-    if (!failures) std::cout << "Four seats: 600/600 -> 600/599 -> 600/595 -> 600/585; HP caps, absent/zero, round reset and legacy fixture passed\n";
+    {
+        State state{};
+        state.competition = Competition::Uc2027;
+        auto &units = state.global_unit_status.emplace();
+        // Official wire fields 1=ally base 0, 3=control state 2, 4=R site 0,
+        // 6=opposing base 120, 8=control state 1. B site intentionally absent.
+        check(units.ParseFromString(std::string("\x08\x00\x18\x02\x20\x00\x30\x78\x40\x01", 10)), "UC wire fields");
+        check(!CupBaseHp(state, false) && !CupBaseHp(state, true), "unknown seat cannot assign base colors");
+        check(CupOutpostHp(state, false) == 0u && !CupOutpostHp(state, true), "R site zero and absent B independent of seat");
+        auto &identity = state.robot_static_status.emplace();
+        for (int seat : {1, 103}) {
+            identity.set_robot_id(seat);
+            check(CupBaseHp(state, seat >= 100) == 0u && CupBaseHp(state, seat < 100) == 120u,
+                  "UC relative base HP ignores legacy shield values");
+            check(CupOutpostHp(state, false) == 0u && !CupOutpostHp(state, true), "fixed sites do not swap on blue login");
+        }
+        check(units.ParseFromString(std::string("\x48\x00", 2)) && !CupOutpostHp(state, false) &&
+              CupOutpostHp(state, true) == 0u && !CupBaseHp(state, true), "field 9 zero survives while fields 1/4 are absent");
+    }
+    for (const int seat : {1, 3, 4, 101, 103, 104}) {
+        State state{};
+        state.competition = Competition::Uc2027;
+        std::vector<std::pair<uint32_t, std::string>> events;
+        auto sample = [&](int second) {
+            EmitTrialMatch(state.competition, seat, second, [&](const std::string &topic, const std::string &wire) {
+                if (topic == "GameStatus") {
+                    GameStatus clock;
+                    check(clock.ParseFromString(wire), "UC clock payload");
+                    ApplyMatchClock(state, std::move(clock));
+                } else if (topic == "RobotStaticStatus") {
+                    check(state.robot_static_status.emplace().ParseFromString(wire), "UC identity payload");
+                } else if (topic == "GlobalUnitStatus") {
+                    check(state.global_unit_status.emplace().ParseFromString(wire), "UC scoreboard payload");
+                } else if (topic == "Event") {
+                    Event notice;
+                    check(notice.ParseFromString(wire), "UC notice payload");
+                    events.emplace_back(notice.event_id(), notice.param());
+                }
+            });
+        };
+        sample(0);
+        check(!CupBaseHp(state, false) && !CupOutpostHp(state, true), "UC waits for unit packet");
+        sample(3);
+        check(CupBaseHp(state, true) == 10000u && CupOutpostHp(state, true) == 1000u &&
+              ControlDegree2027(state, false) == 0u && ControlDegree2027(state, true) == 0u, "UC starting reserves and zero points");
+        sample(6);
+        sample(9);
+        check(state.game_status && state.game_status->is_paused() && state.game_status->stage_countdown_sec() == 19, "UC clock paused");
+        const auto paused_red = ControlDegree2027(state, false);
+        sample(13);
+        check(state.game_status && state.game_status->stage_countdown_sec() == 19 && paused_red == ControlDegree2027(state, false),
+              "UC clock and points stay still during pause");
+        sample(16);
+        check(state.game_status && !state.game_status->is_paused() && state.game_status->stage_countdown_sec() < 19, "UC clock resumed");
+        check(CupBaseHp(state, false) == 9800u && CupBaseHp(state, true) == 9250u &&
+              CupOutpostHp(state, false) == 870u && CupOutpostHp(state, true) == 640u,
+              "UC red/blue bases and fixed R/B outposts agree across six seats");
+        sample(23);
+        sample(28);
+        const std::vector<std::pair<uint32_t, std::string>> expected_events{{5,"1"},{6,"2"},{7,"2"},{8,"1"}};
+        check(events == expected_events, "UC local notices use 2027 ids and absolute parameters");
+        sample(33);
+        const auto red = ControlDegree2027(state, false), blue = ControlDegree2027(state, true);
+        check(state.game_status && state.game_status->current_stage() == 5 && state.game_status->game_result() == 1 &&
+              state.game_status->end_reason() == 2 && red && blue && *red > *blue, "UC settlement reports red ahead by cumulative control");
+        state.match_notice = TimedMatchNotice{"old", std::chrono::steady_clock::time_point::max()};
+        state.system_logs.emplace_back();
+        sample(39);
+        check(state.game_status && state.game_status->current_round() == 2 && state.round_generation == 1 &&
+              !state.match_notice && state.system_logs.empty() && !state.global_unit_status &&
+              state.robot_static_status && state.robot_static_status->robot_id() == static_cast<uint32_t>(seat),
+              "UC new round clears prior board and notices but preserves the seat");
+    }
+    if (!failures) std::cout << "UL and legacy fixtures passed. UC 2027: six operator seats, fixed R/B sites, relative base HP, missing/zero, pause, settlement and round reset passed\n";
     return failures ? 1 : 0;
 }

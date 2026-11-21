@@ -42,6 +42,67 @@ inline int TrialHealth(int id, int tick) {
     return (id < 100 ? 100 : 200) + id % 100;
 }
 
+// Both operator and commander see the same clock. The local excerpt starts
+// with three seconds of countdown and pauses with 19 seconds remaining.
+inline GameStatus TrialClock(Competition competition, int elapsed_seconds) {
+    GameStatus clock;
+    if (elapsed_seconds < 0) return clock;
+    const int tick = elapsed_seconds % kTrialRoundSeconds;
+    const bool paused = tick >= 9 && tick < 14;
+    const bool settled = tick >= 33;
+    clock.set_current_stage(tick < 3 ? 3 : settled ? 5 : 4);
+    clock.set_is_paused(paused);
+    const int seconds_left = tick < 3 ? 3 - tick : tick < 9 ? 28 - tick :
+                             paused ? 19 : std::max(0, 33 - tick);
+    clock.set_stage_countdown_sec(seconds_left);
+    if (competition == Competition::Uc2027) {
+        const int round = elapsed_seconds / kTrialRoundSeconds % 2 + 1;
+        clock.set_current_round(round);
+        clock.set_total_rounds(3);
+        clock.set_red_score(round - 1 + (settled ? 1 : 0));
+        clock.set_blue_score(0);
+        clock.set_game_result(settled ? 1 : 255);
+        clock.set_end_reason(settled ? 2 : 255);
+    } else {
+        const bool ul = competition == Competition::Ul2027;
+        clock.set_current_round(elapsed_seconds / kTrialRoundSeconds + 1);
+        clock.set_game_result(settled ? (ul ? 1 : 0) : 255);
+        if (ul && settled) clock.set_end_reason(2);
+    }
+    return clock;
+}
+
+inline GameStatus CupTrialClock(int elapsed_seconds) {
+    return TrialClock(Competition::Uc2027, elapsed_seconds);
+}
+
+inline void FillCupTrialScore(GlobalUnitStatus &units, bool blue, int tick) {
+    const int red_base = tick < 7 ? 10000 : 9800;
+    const int blue_base = tick < 7 ? 10000 : 9250;
+    units.set_base_health(blue ? blue_base : red_base);
+    units.set_enemy_base_health(blue ? red_base : blue_base);
+    // Field 4 is always site R and field 9 is always site B in 2027.
+    units.set_outpost_health(tick < 7 ? 1000 : 870);
+    units.set_enemy_outpost_health(tick < 16 ? 1000 : 640);
+    const int running = std::clamp(tick - 3, 0, 6) + std::clamp(tick - 14, 0, 19);
+    const int red_points = running * 2;
+    const int blue_points = running;
+    units.set_total_cp_ally(blue ? blue_points : red_points);
+    units.set_total_cp_enemy(blue ? red_points : blue_points);
+}
+
+inline void EmitCupTrialEvent(int tick, const TrialMessageSink &emit) {
+    Event notice;
+    switch (tick) {
+        case 6:  notice.set_event_id(5); notice.set_param("1"); break;
+        case 16: notice.set_event_id(6); notice.set_param("2"); break;
+        case 23: notice.set_event_id(7); notice.set_param("2"); break;
+        case 28: notice.set_event_id(8); notice.set_param("1"); break;
+        default: return;
+    }
+    emit("Event", notice.SerializeAsString());
+}
+
 inline int UlTrialMaxHealth(int id, int seat, int chassis) {
     switch (id % 100) {
         case 1: return 100;  // No module installation in this excerpt.
@@ -112,20 +173,10 @@ inline void EmitTrialMatch(Competition competition, int robot_id, int elapsed_se
                            const TrialMessageSink &emit, int chassis = 0) {
     if (elapsed_seconds < 0 || robot_id <= 0) return;
     const int tick = elapsed_seconds % kTrialRoundSeconds;
-    const int round = elapsed_seconds / kTrialRoundSeconds + 1;
     const bool ul = competition == Competition::Ul2027;
+    const bool cup = competition == Competition::Uc2027;
     if (chassis == 0) chassis = DefaultUlChassis(robot_id);
-    GameStatus clock;
-    clock.set_current_round(round);
-    const bool paused = tick >= 9 && tick < 14;
-    const bool settled = tick >= 33;
-    clock.set_current_stage(tick < 3 ? 3 : settled ? 5 : 4);
-    clock.set_is_paused(paused);
-    const int seconds_left = tick < 3 ? 3 - tick : (tick < 9 ? 28 - tick :
-                             (paused ? 19 : std::max(0, 33 - tick)));
-    clock.set_stage_countdown_sec(seconds_left);
-    clock.set_game_result(settled ? (ul ? 1 : 0) : 255);
-    if (ul && settled) clock.set_end_reason(2); // Control degree.
+    const GameStatus clock = TrialClock(competition, elapsed_seconds);
     emit("GameStatus", clock.SerializeAsString());
 
     RobotStaticStatus identity;
@@ -158,8 +209,16 @@ inline void EmitTrialMatch(Competition competition, int robot_id, int elapsed_se
     if (ul) {
         units.set_total_cp_ally(robot_id >= 100 ? UlTrialBlueControl(tick) : 600);
         units.set_total_cp_enemy(robot_id >= 100 ? 600 : UlTrialBlueControl(tick));
+    } else if (cup) {
+        FillCupTrialScore(units, robot_id >= 100, tick);
     }
     emit("GlobalUnitStatus", units.SerializeAsString());
     if (ul && tick >= 3) EmitUlHudSample(robot_id, tick, chassis, emit);
+    if (cup) {
+        RobotDynamicStatus body;
+        body.set_current_health(TrialHealth(robot_id, tick));
+        emit("RobotDynamicStatus", body.SerializeAsString());
+        EmitCupTrialEvent(tick, emit);
+    }
 }
 } // namespace RoboGo::app

@@ -13,7 +13,7 @@ inline void ExpireHudTimers(State &state, std::chrono::steady_clock::time_point 
 inline void ApplyMatchClock(State &state, GameStatus received) {
     if (received.has_current_round() && state.game_status && state.game_status->has_current_round() &&
         state.game_status->current_round() != received.current_round()) {
-        if (state.competition == Competition::Ul2027) {
+        if (state.competition == Competition::Ul2027 || state.competition == Competition::Uc2027) {
             // Keep the identity and log sequence of this login. Every other
             // displayed value belongs to the finished round until sent again.
             State next{};
@@ -24,8 +24,6 @@ inline void ApplyMatchClock(State &state, GameStatus received) {
                 next.robot_static_status.emplace().set_robot_id(state.robot_static_status->robot_id());
             }
             state = std::move(next);
-        } else if (state.competition == Competition::Uc2027) {
-            state.global_unit_status.reset();
         }
     }
     state.game_status = std::move(received);
@@ -54,6 +52,32 @@ inline std::optional<uint32_t> Health2027(const std::optional<RobotStaticStatus>
 }
 
 inline constexpr uint32_t kUlStartingControlDegree = 600;
+
+// RMUC 2027 §2.2.4: the base pair is relative to the signed-in team.
+inline std::optional<uint32_t> CupBaseHp(const State &state, bool blue) {
+    const auto &units = state.global_unit_status;
+    const auto own_blue = BlueIdentity2027(state.robot_static_status);
+    if (!units || !own_blue) return {};
+    if (blue == *own_blue) {
+        if (units->has_base_health()) return units->base_health();
+    } else if (units->has_enemy_base_health()) {
+        return units->enemy_base_health();
+    }
+    return {};
+}
+
+// Wire fields 4 and 9 keep their legacy generated names. In RMUC 2027
+// they always refer to the R and B sites, regardless of seat or ownership.
+inline std::optional<uint32_t> CupOutpostHp(const State &state, bool b_site) {
+    const auto &units = state.global_unit_status;
+    if (!units) return {};
+    if (b_site) {
+        if (units->has_enemy_outpost_health()) return units->enemy_outpost_health();
+    } else if (units->has_outpost_health()) {
+        return units->outpost_health();
+    }
+    return {};
+}
 
 inline std::optional<uint32_t> ControlDegree2027(const State &state, bool blue) {
     const auto own_blue = BlueIdentity2027(state.robot_static_status);

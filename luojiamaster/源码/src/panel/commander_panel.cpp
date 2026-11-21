@@ -1,4 +1,5 @@
 #include "commander_panel.h"
+#include "header_panel.h"
 #include "panel/replay_video_cards.h"
 #include "panel/brand_mark.h"
 
@@ -75,6 +76,7 @@ void SignalMenu(CommanderDeskState &desk, const TeammateViewState &feeds,
 } // namespace
 
 CommanderDeskActions ShowCommanderDesk(CommanderDeskState &desk, const TeammateViewState &feeds,
+                                       const GameStatus *game,
                                        ImTextureID field_plan, RoboGo::app::CommanderMarkerReplay::Time frame_time,
                                        double benchmark_seconds) {
     CommanderDeskActions actions;
@@ -118,6 +120,11 @@ CommanderDeskActions ShowCommanderDesk(CommanderDeskState &desk, const TeammateV
         luojiamaster::brand::DrawHudMarkInGap(ImGui::GetWindowDrawList(), headerEnd.x + pad,
                 viewport->WorkPos.x + viewport->WorkSize.x - pad,
                 (ImGui::GetItemRectMin().y + headerEnd.y) * .5f, ImGui::GetFontSize() * 1.25f);
+        const auto round = game && game->has_current_round() ? std::to_string(game->current_round()) : "等待";
+        const auto red = game && game->has_red_score() ? std::to_string(game->red_score()) : "等待";
+        const auto blue = game && game->has_blue_score() ? std::to_string(game->blue_score()) : "等待";
+        ImGui::TextWrapped("第 %s 局   %s   %s     比分  红 %s  ·  蓝 %s", round.c_str(),
+                           CupPhaseText(game).c_str(), CupTimeText(game).c_str(), red.c_str(), blue.c_str());
         ImGui::Separator();
         int clicked = -1;
         const bool interactive = benchmark_seconds < 0.;

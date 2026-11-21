@@ -159,9 +159,148 @@ const char *GetGameResultName(uint32_t game_result) {
     }
 }
 
-void ShowHeaderPanel(const State &state) {
+std::string CupPhaseText(const GameStatus *game) {
+    if (!game) return "等待赛况";
+    if (game->has_current_stage() && game->current_stage() == 5) {
+        const char *winner = game->has_game_result() ? GetGameResultName(game->game_result()) : nullptr;
+        std::string phase = winner ? winner : "比赛结算";
+        constexpr std::array<const char *, 8> reasons{
+            "", "基地被摧毁", "累计控制度", "全队总伤害", "全队剩余血量", "平局", "异常终止", "裁判判定"};
+        if (game->has_end_reason() && game->end_reason() > 0 && game->end_reason() < reasons.size()) {
+            const char *reason = reasons[game->end_reason()];
+            if (phase != reason) phase.append(" · ").append(reason);
+        }
+        return phase;
+    }
+    if (game->has_is_paused() && game->is_paused()) return "已暂停";
+    constexpr std::array<const char *, 5> phases{"未开赛", "准备阶段", "裁判自检", "开赛倒计时", "比赛中"};
+    if (!game->has_current_stage()) return "等待赛况";
+    return game->current_stage() < phases.size() ? phases[game->current_stage()] : "未知阶段";
+}
+
+std::string CupTimeText(const GameStatus *game) {
+    if (!game || !game->has_stage_countdown_sec() || game->stage_countdown_sec() < 0) return "--:--";
+    const auto seconds = game->stage_countdown_sec();
+    char buffer[32];
+    ImFormatString(buffer, IM_ARRAYSIZE(buffer), "%02d:%02d", seconds / 60, seconds % 60);
+    return buffer;
+}
+
+namespace {
+void CupCenteredText(ImDrawList *draw, float center, float top, float font, float width,
+                     const char *text, ImU32 color = IM_COL32_WHITE) {
+    const float fitted_font = font * std::min(1.f, width / std::max(1.f, TextWidth(text, font)));
+    CenteredText(draw, center, top, fitted_font, text, color);
+}
+
+// The neutral outpost meter belongs to a fixed R/B location, independent of who controls it.
+void DrawCupHealthMeter(ImDrawList *draw, float left, float right, float top, float height,
+                        const char *label, std::optional<uint32_t> hp, uint32_t cap,
+                        ImU32 tint, bool fill_from_right, float font) {
+    const ImVec2 start{left, top}, end{right, top + height};
+    const float radius = height * .18f;
+    draw->AddRectFilled(start, end, IM_COL32(27, 35, 43, 145), radius);
+    if (hp && *hp > 0) {
+        const float width = (right - left) * static_cast<float>(std::min(*hp, cap)) / static_cast<float>(cap);
+        draw->AddRectFilled({fill_from_right ? right - width : left, top},
+                            {fill_from_right ? right : left + width, end.y}, tint, radius);
+    }
+    draw->AddRect(start, end, tint, radius);
+    char number[32] = "等待";
+    if (hp) ImFormatString(number, IM_ARRAYSIZE(number), "%u / %u", *hp, cap);
+    const float inset = font * .45f;
+    const float combined_width = TextWidth(label, font) + TextWidth(number, font) + inset;
+    const float text_font = font * std::min(1.f, std::max(1.f, right - left - 2.f * inset) / combined_width);
+    const float y = top + .5f * (height - text_font);
+    hud::Outline(draw, {left + inset, y}, IM_COL32_WHITE, label, text_font);
+    hud::Outline(draw, {right - inset - TextWidth(number, text_font), y}, IM_COL32_WHITE, number, text_font);
+}
+
+void DrawCupTeam(ImDrawList *draw, const State &state, bool blue, float left, float right,
+                 float top, float font) {
+    const ImU32 tint = blue ? IM_COL32(21, 157, 201, 245) : IM_COL32(201, 64, 68, 245);
+    DrawCupHealthMeter(draw, left, right, top, 1.44f * font, blue ? "蓝方基地" : "红方基地",
+                       RoboGo::app::CupBaseHp(state, blue), 10000, tint, !blue, font);
+
+    const float width = right - left;
+    const float gap = .5f * font;
+    const float outpost_width = .55f * width;
+    const float station_left = blue ? right - outpost_width : left;
+    const float cp_center = blue ? (left + station_left - gap) * .5f : (left + outpost_width + gap + right) * .5f;
+    DrawCupHealthMeter(draw, station_left, station_left + outpost_width, top + 1.65f * font,
+                       1.20f * font, blue ? "B 前哨站" : "R 前哨站", RoboGo::app::CupOutpostHp(state, blue),
+                       1000, IM_COL32(102, 125, 140, 215), !blue, .91f * font);
+    char control[64] = "累计控制度  等待";
+    if (const auto cp = RoboGo::app::ControlDegree2027(state, blue))
+        ImFormatString(control, IM_ARRAYSIZE(control), "累计控制度  %u", *cp);
+    CupCenteredText(draw, cp_center, top + 1.74f * font, font, width - outpost_width - gap, control);
+
+    constexpr std::array<int, 4> ids{1, 3, 4, 7};
+    constexpr std::array<const char *, 4> names{"重装 1", "步兵 3", "步兵 4", "哨兵 7"};
+    const float slot = width / ids.size();
+    for (size_t i = 0; i < ids.size(); ++i) {
+        const float x = left + slot * (static_cast<float>(i) + .5f);
+        const auto hp = RoboGo::app::Health2027(state.robot_static_status, state.global_unit_status, blue, ids[i]);
+        const float y = top + 3.18f * font;
+        // Other seats' maximum HP is not sent in the public roster. Show the actual reading.
+        CupCenteredText(draw, x, y, .88f * font, slot - gap, names[i]);
+        char hp_text[32] = "等待";
+        if (hp) ImFormatString(hp_text, IM_ARRAYSIZE(hp_text), "%u", *hp);
+        CupCenteredText(draw, x, y + 1.04f * font, font, slot - gap, hp_text,
+                        hp && *hp == 0 ? IM_COL32(255, 199, 113, 255) : IM_COL32_WHITE);
+    }
+}
+
+void DrawCupHeader(const State &state, bool local_trial) {
+    auto *draw = ImGui::GetWindowDrawList();
+    const auto pos = ImGui::GetWindowPos(), size = ImGui::GetWindowSize();
+    const float font = std::max(1.f, std::min({size.x / 85.f, size.y / 6.15f, 34.f * ImGui::GetScale()}));
+    const float center = pos.x + size.x * .5f, half = 6.4f * font;
+    const float top = pos.y + .30f * font;
+    DrawCupTeam(draw, state, false, pos.x + font, center - half, top, font);
+    DrawCupTeam(draw, state, true, center + half, pos.x + size.x - font, top, font);
+
+    const auto *game = state.game_status ? &*state.game_status : nullptr;
+    const auto time = CupTimeText(game);
+    const auto phase = CupPhaseText(game);
+    const bool paused = game && game->has_is_paused() && game->is_paused();
+    const float center_width = 2.f * half - font * .4f;
+    CupCenteredText(draw, center, top, .92f * font, center_width, "2027 超级对抗赛");
+    CupCenteredText(draw, center, top + .92f * font, 1.65f * font, center_width, time.c_str(),
+                    paused ? IM_COL32(255, 211, 127, 255) : IM_COL32_WHITE);
+    luojiamaster::brand::DrawHudMarkInGap(draw, center - half + .3f * font,
+            center - .5f * TextWidth(time.c_str(), 1.65f * font) - .3f * font, top + 1.72f * font, font);
+    CupCenteredText(draw, center, top + 2.65f * font, font, center_width, phase.c_str());
+
+    std::string round = "局数待定";
+    if (game && game->has_current_round()) {
+        round = "第 " + std::to_string(game->current_round());
+        if (game->has_total_rounds()) round += "/" + std::to_string(game->total_rounds());
+        round += " 局";
+    }
+    const auto red = game && game->has_red_score() ? std::to_string(game->red_score()) : "等待";
+    const auto blue = game && game->has_blue_score() ? std::to_string(game->blue_score()) : "等待";
+    const auto score = round + " · 比分 " + red + " : " + blue;
+    CupCenteredText(draw, center, top + 3.80f * font, .88f * font, center_width, score.c_str());
+
+    const auto own_blue = RoboGo::app::BlueIdentity2027(state.robot_static_status);
+    const auto role = own_blue ? state.robot_static_status->robot_id() % 100u : 0u;
+    const char *seat = role == 1 ? "重装 1" : role == 3 ? "步兵 3" : role == 4 ? "步兵 4" : nullptr;
+    std::string identity = local_trial ? "本地测试" : "正式";
+    if (seat) identity.append(*own_blue ? " · 蓝方" : " · 红方").append(seat);
+    else identity += " · 身份待确认";
+    CupCenteredText(draw, center, top + 4.89f * font, .86f * font, center_width, identity.c_str());
+}
+} // namespace
+
+void ShowHeaderPanel(const State &state, bool local_trial) {
     ImGuiWindowFlags window_flags = ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoBackground | ImGuiWindowFlags_NoSavedSettings;
     if (!ImGui::Begin("HeaderWindow", nullptr, window_flags)) {
+        ImGui::End();
+        return;
+    }
+    if (state.competition == RoboGo::app::Competition::Uc2027) {
+        DrawCupHeader(state, local_trial);
         ImGui::End();
         return;
     }

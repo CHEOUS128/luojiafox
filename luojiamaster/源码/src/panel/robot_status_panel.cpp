@@ -13,7 +13,7 @@ std::string NumberOrWait(std::optional<uint32_t> value) {
     return value ? std::to_string(*value) : "等待";
 }
 
-void AllianceMeter(const char *label, std::optional<uint32_t> current,
+void StatusMeter(const char *label, std::optional<uint32_t> current,
                    std::optional<uint32_t> limit, const ImVec4 &color) {
     hud::Text(ImGui::GetColorU32(color), "%s  %s / %s", label, NumberOrWait(current).c_str(), NumberOrWait(limit).c_str());
     if (current && limit && *limit != 0) {
@@ -23,15 +23,15 @@ void AllianceMeter(const char *label, std::optional<uint32_t> current,
     }
 }
 
-void AllianceStatus(const State &state) {
+void Show2027Status(const State &state) {
     const auto &s = state.robot_static_status;
     const auto &d = state.robot_dynamic_status;
     hud::Label("本车状态");
     ImGui::Separator();
-    AllianceMeter("血量", Received(d, &RobotDynamicStatus::has_current_health, &RobotDynamicStatus::current_health),
+    StatusMeter("血量", Received(d, &RobotDynamicStatus::has_current_health, &RobotDynamicStatus::current_health),
                   Received(s, &RobotStaticStatus::has_max_health, &RobotStaticStatus::max_health),
                   {1.f,.68f,.64f,1.f});
-    AllianceMeter("缓冲能量", Received(d, &RobotDynamicStatus::has_current_buffer_energy, &RobotDynamicStatus::current_buffer_energy),
+    StatusMeter("缓冲能量", Received(d, &RobotDynamicStatus::has_current_buffer_energy, &RobotDynamicStatus::current_buffer_energy),
                   Received(s, &RobotStaticStatus::has_max_buffer_energy, &RobotStaticStatus::max_buffer_energy),
                   {.6f,.85f,1.f,1.f});
     const auto level = Received(s, &RobotStaticStatus::has_level, &RobotStaticStatus::level);
@@ -87,9 +87,9 @@ void ShowRobotStatusPanel(const State &state) {
         ImGui::End();
         return;
     }
-    if (state.competition == RoboGo::app::Competition::Ul2027) {
+    if (state.competition != RoboGo::app::Competition::Uc2026) {
         ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, {ImGui::GetStyle().ItemSpacing.x, 2.f});
-        AllianceStatus(state);
+        Show2027Status(state);
         ImGui::PopStyleVar();
         ImGui::End();
         return;

@@ -803,6 +803,14 @@ int RunApplication(platform::PlatformBackend &platform_backend, const LaunchOpti
                             [&](const auto &topic, const auto &payload) { background_services.OnMessage(topic, payload); });
                     }
                 }
+            } else if (commander_active) {
+                // The local spectator receives only the public match clock, without a robot login.
+                const int seconds = static_cast<int>(std::chrono::duration_cast<std::chrono::seconds>(
+                    Clock::now() - trial_start).count());
+                if (seconds != trial_second) {
+                    trial_second = seconds;
+                    background_services.OnMessage("GameStatus", CupTrialClock(seconds).SerializeAsString());
+                }
             } else if (options.local_trial && trial_started) {
                 session_result = kReturnToLauncher;
                 break;
@@ -1009,7 +1017,8 @@ int RunApplication(platform::PlatformBackend &platform_backend, const LaunchOpti
                 }
                 const bool previously_paused = commander_state.replay.Blue3Paused();
                 const auto replay_now = benchmark ? benchmark->ReplayTime(now) : now;
-                commander_actions = ShowCommanderDesk(commander_state, teammate_view, mini_map_texture.texture_ref.GetTexID(), replay_now,
+                commander_actions = ShowCommanderDesk(commander_state, teammate_view, state.game_status ? &*state.game_status : nullptr,
+                                                       mini_map_texture.texture_ref.GetTexID(), replay_now,
                                                         benchmark ? benchmark->CameraSeconds() : -1.);
                 if (previously_paused != commander_state.replay.Blue3Paused())
                     SPDLOG_INFO("指挥席本地样例 蓝3位置={}", commander_state.replay.Blue3Paused() ? "暂停" : "恢复");
@@ -1056,6 +1065,8 @@ int RunApplication(platform::PlatformBackend &platform_backend, const LaunchOpti
                                                 ? Clock::time_point{} : Clock::now());
                     background_services.SelectCommanderPeers(options, commander_state.team);
                     RoboGo::arena::ResetCamera();
+                    trial_start = Clock::now();
+                    trial_second = -1;
                     commander_active = true;
                 }
             }

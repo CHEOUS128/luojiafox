@@ -36,6 +36,9 @@ struct CommanderDeskActions {
     RoboGo::arena::Mode actual_mode = RoboGo::arena::Mode::Unavailable;
 };
 
+class GameStatus;
+
 CommanderDeskActions ShowCommanderDesk(CommanderDeskState &desk, const TeammateViewState &feeds,
+                                       const GameStatus *game,
                                        ImTextureID field_plan, RoboGo::app::CommanderMarkerReplay::Time frame_time,
                                        double benchmark_seconds = -1);

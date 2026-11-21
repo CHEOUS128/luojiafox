@@ -28,7 +28,8 @@ void ShowBottomPanel(const State &state) {
     }
 
     // 装配状态显示
-    if (state.tech_core_motion_state_sync.has_value()) {
+    const bool cup_2027 = state.competition == RoboGo::app::Competition::Uc2027;
+    if (!cup_2027 && state.tech_core_motion_state_sync.has_value()) {
         const auto &sync = *state.tech_core_motion_state_sync;
 
         // 判断是否在装配中：basic_state 为 2（运动中）或 3（已到达对应位姿）时表示在装配
@@ -66,7 +67,7 @@ void ShowBottomPanel(const State &state) {
         }
     }
 
-    if (state.air_support_status_sync.has_value()) {
+    if (!cup_2027 && state.air_support_status_sync.has_value()) {
         const auto &sync = *state.air_support_status_sync;
         std::string air_support_text = "空中支援: ";
         air_support_text += GetAirSupportStatusName(sync.airsupport_status());
@@ -93,7 +94,7 @@ void ShowBottomPanel(const State &state) {
 
     const uint8_t air_support_counter_countdown =
             GetAirSupportCounterCooldownByte(state.air_support_custom_control, std::chrono::steady_clock::now());
-    if (air_support_counter_countdown != kInactiveAirSupportCounterCooldown) {
+    if (!cup_2027 && air_support_counter_countdown != kInactiveAirSupportCounterCooldown) {
         std::string counter_text = "空中支援反制倒计时: ";
         counter_text += std::to_string(air_support_counter_countdown);
         counter_text += "s";
@@ -119,7 +120,7 @@ void ShowBottomPanel(const State &state) {
     for (const auto &line: status_lines) {
         ImVec2 text_size = ImGui::CalcTextSize(line.text.c_str());
         ImGui::SetCursorPosX(std::max(0.f, (viewport->Size.x - text_size.x) / 2.0f));
-        if (state.competition == RoboGo::app::Competition::Ul2027) {
+        if (state.competition != RoboGo::app::Competition::Uc2026) {
             const ImVec2 p = ImGui::GetCursorScreenPos();
             ImGui::GetWindowDrawList()->AddRectFilled({p.x - 5.f, p.y - 2.f},
                     {p.x + text_size.x + 5.f, p.y + text_size.y + 2.f}, IM_COL32(10, 17, 23, 215), 4.f);
